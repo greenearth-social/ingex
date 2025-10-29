@@ -129,8 +129,11 @@ func runIngestion(ctx context.Context, config *Config, logger *IngestLogger, sou
 	// Process rows from spooler
 	rowChan := spooler.GetRowChannel()
 	var batch []ElasticsearchDoc
+	var tombstoneBatch []TombstoneDoc
+	var deleteBatch []string
 	const batchSize = 100
 	processedCount := 0
+	deletedCount := 0
 	skippedCount := 0
 
 	for {
@@ -153,23 +156,50 @@ func runIngestion(ctx context.Context, config *Config, logger *IngestLogger, sou
 			msg := NewMegaStreamMessage(row.AtURI, row.DID, row.RawPost, row.Inferences, logger)
 
 			if msg.IsDelete() {
-				skippedCount++
+				tombstone := CreateTombstoneDoc(msg)
+				tombstoneBatch = append(tombstoneBatch, tombstone)
+				deleteBatch = append(deleteBatch, msg.GetAtURI())
+
+				if len(tombstoneBatch) >= batchSize {
+					if err := bulkIndexTombstones(ctx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
+						logger.Error("Failed to bulk index tombstones: %v", err)
+					} else {
+						if dryRun {
+							logger.Info("Dry-run: Would index %d tombstones", len(tombstoneBatch))
+						} else {
+							logger.Info("Indexed %d tombstones", len(tombstoneBatch))
+						}
+					}
+
+					if err := bulkDelete(ctx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
+						logger.Error("Failed to bulk delete posts: %v", err)
+					} else {
+						deletedCount += len(deleteBatch)
+						if dryRun {
+							logger.Info("Dry-run: Would delete batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
+						} else {
+							logger.Info("Deleted batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
+						}
+					}
+
+					tombstoneBatch = tombstoneBatch[:0]
+					deleteBatch = deleteBatch[:0]
+				}
 				continue
 			}
 
 			doc := CreateElasticsearchDoc(msg)
 			batch = append(batch, doc)
 
-			// Bulk index when batch is full
 			if len(batch) >= batchSize {
 				if err := bulkIndex(ctx, esClient, "posts", batch, dryRun, logger); err != nil {
 					logger.Error("Failed to bulk index batch: %v", err)
 				} else {
 					processedCount += len(batch)
 					if dryRun {
-						logger.Info("Dry-run: Would index batch: %d documents (total: %d, skipped: %d)", len(batch), processedCount, skippedCount)
+						logger.Info("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
 					} else {
-						logger.Info("Indexed batch: %d documents (total: %d, skipped: %d)", len(batch), processedCount, skippedCount)
+						logger.Info("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
 					}
 				}
 				batch = batch[:0]
@@ -192,5 +222,29 @@ cleanup:
 		}
 	}
 
-	logger.Info("Spooler ingestion complete. Processed: %d, Skipped: %d", processedCount, skippedCount)
+	// Index remaining tombstones and delete posts
+	if len(tombstoneBatch) > 0 {
+		if err := bulkIndexTombstones(ctx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
+			logger.Error("Failed to bulk index final tombstone batch: %v", err)
+		} else {
+			if dryRun {
+				logger.Info("Dry-run: Would index final batch: %d tombstones", len(tombstoneBatch))
+			} else {
+				logger.Info("Indexed final batch: %d tombstones", len(tombstoneBatch))
+			}
+		}
+
+		if err := bulkDelete(ctx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
+			logger.Error("Failed to bulk delete final batch: %v", err)
+		} else {
+			deletedCount += len(deleteBatch)
+			if dryRun {
+				logger.Info("Dry-run: Would delete final batch: %d posts", len(deleteBatch))
+			} else {
+				logger.Info("Deleted final batch: %d posts", len(deleteBatch))
+			}
+		}
+	}
+
+	logger.Info("Spooler ingestion complete. Processed: %d, Deleted: %d, Skipped: %d", processedCount, deletedCount, skippedCount)
 }

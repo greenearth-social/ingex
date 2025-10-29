@@ -17,6 +17,7 @@ type MegaStreamMessage interface {
 	GetThreadParentPost() string
 	GetQuotePost() string
 	GetEmbeddings() map[string][]float32
+	GetTimeUs() int64
 	IsDelete() bool
 }
 
@@ -30,6 +31,7 @@ type megaStreamMessage struct {
 	threadParentPost string
 	quotePost        string
 	embeddings       map[string][]float32
+	timeUs           int64
 	isDelete         bool
 	parseError       error
 }
@@ -61,6 +63,10 @@ func (m *megaStreamMessage) parseRawPost(rawPostJSON string, logger *IngestLogge
 	if !ok {
 		logger.Debug("No message field in raw_post for %s", m.atURI)
 		return
+	}
+
+	if timeUs, ok := message["time_us"].(float64); ok {
+		m.timeUs = int64(timeUs)
 	}
 
 	commit, ok := message["commit"].(map[string]interface{})
@@ -180,6 +186,10 @@ func (m *megaStreamMessage) GetQuotePost() string {
 
 func (m *megaStreamMessage) GetEmbeddings() map[string][]float32 {
 	return m.embeddings
+}
+
+func (m *megaStreamMessage) GetTimeUs() int64 {
+	return m.timeUs
 }
 
 func (m *megaStreamMessage) IsDelete() bool {

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: post-tombstones-alias
+  namespace: greenearth-local
+data:
+  post-tombstones-alias.json: |
+    {
+      "actions": [
+        {
+          "add": {
+            "index": "post_tombstones_v1",
+            "alias": "post_tombstones"
+          }
+        }
+      ]
+    }

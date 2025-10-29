@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: post-tombstones-index-template
+  namespace: greenearth-stage
+data:
+  post-tombstones-index-template.json: |
+    {
+      "index_patterns": ["post_tombstones_v1*"],
+      "template": {
+        "settings": {
+          "number_of_shards": 1,
+          "number_of_replicas": 0
+        },
+        "mappings": {
+          "properties": {
+            "at_uri": {
+              "type": "keyword",
+              "index": true
+            },
+            "author_did": {
+              "type": "keyword",
+              "index": true
+            },
+            "deleted_at": {
+              "type": "date",
+              "format": "iso8601"
+            },
+            "indexed_at": {
+              "type": "date",
+              "format": "iso8601"
+            }
+          }
+        }
+      }
+    }

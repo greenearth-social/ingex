@@ -66,7 +66,7 @@ go build -o ingest
 ```
 "indices": [
       {
-      "names": ["posts", "posts_v1*"],
+      "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1"],
       "privileges": ["create_doc", "create", "delete", "index", "write", "all"]
       }
 ]

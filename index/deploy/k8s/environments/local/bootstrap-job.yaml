@@ -37,18 +37,37 @@ spec:
             -H "Content-Type: application/json" \
             -d @/templates/posts-index-template.json
 
-          echo "Index template applied successfully!"
+          echo "Posts index template applied successfully!"
 
-          # Create initial index to establish alias
+          # Apply post_tombstones index template
+          curl -k -X PUT "https://greenearth-es-local-es-http:9200/_index_template/post_tombstones_template" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d @/templates/post-tombstones-index-template.json
+
+          echo "Post tombstones index template applied successfully!"
+
+          # Create initial posts index to establish alias
           curl -k -X PUT "https://greenearth-es-local-es-http:9200/posts_v1" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json"
 
-          # Apply alias
+          # Create initial post_tombstones index to establish alias
+          curl -k -X PUT "https://greenearth-es-local-es-http:9200/post_tombstones_v1" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json"
+
+          # Apply posts alias
           curl -k -X POST "https://greenearth-es-local-es-http:9200/_aliases" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
             -d @/aliases/posts-alias.json
+
+          # Apply post_tombstones alias
+          curl -k -X POST "https://greenearth-es-local-es-http:9200/_aliases" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d @/aliases/post-tombstones-alias.json
 
           echo "Bootstrap completed successfully!"
         volumeMounts:
@@ -58,8 +77,16 @@ spec:
           mountPath: /aliases
       volumes:
       - name: templates
-        configMap:
-          name: posts-index-template
+        projected:
+          sources:
+          - configMap:
+              name: posts-index-template
+          - configMap:
+              name: post-tombstones-index-template
       - name: aliases
-        configMap:
-          name: posts-alias
+        projected:
+          sources:
+          - configMap:
+              name: posts-alias
+          - configMap:
+              name: post-tombstones-alias
