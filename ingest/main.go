@@ -113,7 +113,7 @@ func runIngestion(ctx context.Context, config *Config, logger *IngestLogger, sou
 	if source == "local" {
 		spooler = NewLocalSpooler(config.LocalSQLiteDBPath, mode, interval, stateManager, logger)
 	} else {
-		spooler, err = NewS3Spooler(config.S3SQLiteDBBucket, config.S3SQLiteDBPrefix, config.AWSRegion, mode, interval, stateManager, logger)
+		spooler, err = NewS3Spooler(config.S3SQLiteDBBucket, config.S3SQLiteDBPrefix, config.AWSRegion, config.AWSS3AccessKey, config.AWSS3SecretKey, mode, interval, stateManager, logger)
 		if err != nil {
 			logger.Error("Failed to create S3 spooler: %v", err)
 			os.Exit(1)
