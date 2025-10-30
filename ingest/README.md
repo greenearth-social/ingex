@@ -128,7 +128,7 @@ go run ./cmd/megastream_ingest --source local --mode once
 **Local Source:**
 
 ```bash
-export SQLITE_DB_PATH="/path/to/megastream/mega_jetstream_20250909_204657.db"
+export LOCAL_SQLITE_DB_PATH="/path/to/megastream/"
 export ELASTICSEARCH_URL="https://localhost:9200"
 export ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
 export LOGGING_ENABLED="true"
