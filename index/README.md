@@ -115,7 +115,7 @@ kubectl create namespace greenearth-local
 kubectl create namespace greenearth-stage
 ```
 
-**IMPORTANT**: From here on, greenearth-local / greenearth-stage will be referred to as $NAMESPACE. 
+**IMPORTANT**: From here on, greenearth-local / greenearth-stage will be referred to as $NAMESPACE.
 The environment, local/stage, will be referred to as $DEPLOYMENT_ENV.
 
 ### 4. Deploy DaemonSet for Virtual Memory (Stage Only)
@@ -328,7 +328,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "cluster": ["manage_index_templates", "monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1"],
+            "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1", "likes", "likes_v1"],
             "privileges": ["create_doc", "create", "delete", "index", "write", "all"]
           }
         ]
