@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -220,14 +221,14 @@ func TestBulkOperations_DryRun(t *testing.T) {
 			DeletedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 
-		err := bulkIndexTombstones(nil, nil, "post_tombstones", []TombstoneDoc{tombstone}, true, logger)
+		err := bulkIndexTombstones(context.TODO(), nil, "post_tombstones", []TombstoneDoc{tombstone}, true, logger)
 		if err != nil {
 			t.Errorf("Expected no error in dry-run mode, got: %v", err)
 		}
 	})
 
 	t.Run("bulkDelete dry-run returns no error", func(t *testing.T) {
-		err := bulkDelete(nil, nil, "posts", []string{"at://did:plc:test/app.bsky.feed.post/123"}, true, logger)
+		err := bulkDelete(context.TODO(), nil, "posts", []string{"at://did:plc:test/app.bsky.feed.post/123"}, true, logger)
 		if err != nil {
 			t.Errorf("Expected no error in dry-run mode, got: %v", err)
 		}
@@ -238,14 +239,14 @@ func TestBulkOperations_EmptyBatch(t *testing.T) {
 	logger := NewLogger(false)
 
 	t.Run("bulkIndexTombstones empty batch returns no error", func(t *testing.T) {
-		err := bulkIndexTombstones(nil, nil, "post_tombstones", []TombstoneDoc{}, false, logger)
+		err := bulkIndexTombstones(context.TODO(), nil, "post_tombstones", []TombstoneDoc{}, false, logger)
 		if err != nil {
 			t.Errorf("Expected no error for empty batch, got: %v", err)
 		}
 	})
 
 	t.Run("bulkDelete empty batch returns no error", func(t *testing.T) {
-		err := bulkDelete(nil, nil, "posts", []string{}, false, logger)
+		err := bulkDelete(context.TODO(), nil, "posts", []string{}, false, logger)
 		if err != nil {
 			t.Errorf("Expected no error for empty batch, got: %v", err)
 		}
