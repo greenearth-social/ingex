@@ -70,8 +70,25 @@ func NewLocalSpooler(directory string, mode string, interval time.Duration, stat
 	}
 }
 
-func NewS3Spooler(bucket, prefix, region string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger) (*S3Spooler, error) {
-	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(region))
+func NewS3Spooler(bucket, prefix, region, accessKey, secretKey string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger) (*S3Spooler, error) {
+	var cfg aws.Config
+	var err error
+
+	if accessKey != "" && secretKey != "" {
+		cfg, err = config.LoadDefaultConfig(
+			context.Background(),
+			config.WithRegion(region),
+			config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+				return aws.Credentials{
+					AccessKeyID:     accessKey,
+					SecretAccessKey: secretKey,
+				}, nil
+			})),
+		)
+	} else {
+		cfg, err = config.LoadDefaultConfig(context.Background(), config.WithRegion(region))
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}

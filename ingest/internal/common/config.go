@@ -30,6 +30,8 @@ type Config struct {
 	SpoolIntervalSec  int
 	SpoolStateFile    string
 	AWSRegion         string
+	AWSS3AccessKey    string
+	AWSS3SecretKey    string
 
 	// Logging configuration
 	LoggingEnabled bool
@@ -51,6 +53,8 @@ func LoadConfig() *Config {
 		SpoolIntervalSec:     getEnvInt("SPOOL_INTERVAL_SEC", 60),
 		SpoolStateFile:       getEnv("SPOOL_STATE_FILE", ".processed_files.json"),
 		AWSRegion:            getEnv("AWS_REGION", "us-east-1"),
+		AWSS3AccessKey:       getEnv("AWS_S3_ACCESS_KEY", ""),
+		AWSS3SecretKey:       getEnv("AWS_S3_SECRET_KEY", ""),
 		LoggingEnabled:       getEnvBool("LOGGING_ENABLED", true),
 	}
 }

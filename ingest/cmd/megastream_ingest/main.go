@@ -116,7 +116,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	if source == "local" {
 		spooler = megastream_ingest.NewLocalSpooler(config.LocalSQLiteDBPath, mode, interval, stateManager, logger)
 	} else {
-		spooler, err = megastream_ingest.NewS3Spooler(config.S3SQLiteDBBucket, config.S3SQLiteDBPrefix, config.AWSRegion, mode, interval, stateManager, logger)
+		spooler, err = megastream_ingest.NewS3Spooler(config.S3SQLiteDBBucket, config.S3SQLiteDBPrefix, config.AWSRegion, config.AWSS3AccessKey, config.AWSS3SecretKey, mode, interval, stateManager, logger)
 		if err != nil {
 			logger.Error("Failed to create S3 spooler: %v", err)
 			os.Exit(1)
