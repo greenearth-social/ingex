@@ -31,18 +31,13 @@ Configuration is done through environment variables:
 ```bash
 # Basic usage
 ./jetstream_ingest
-
-# Dry-run mode (no writes to Elasticsearch)
-./jetstream_ingest -dry-run
-
-# Skip TLS verification (local development only)
-./jetstream_ingest -skip-tls-verify
 ```
 
 ## Command Line Flags
 
 - `-dry-run` - Run without writing to Elasticsearch
 - `-skip-tls-verify` - Skip TLS certificate verification (use for local development only)
+- `-no-rewind` - Do not rewind to the last processed timestamp
 
 ## Elasticsearch Index
 
@@ -72,11 +67,17 @@ Likes are batched and indexed in groups of 100 to optimize Elasticsearch perform
 
 The service responds to SIGINT and SIGTERM signals, completing the current batch before shutting down.
 
+### Use of the Jetstream cursor
+
+By default, the service will use the Jetstream cursor to rewind to the last processed timestamp. This helps to
+guarantee that we don't miss any data.
+
 ## Notes
 
-- This service does not maintain cursor state. If the service is restarted, it will start receiving new events from that point forward. Historical likes will not be retrieved.
 - The service only processes "Like" events. Other event types from the Jetstream are ignored.
 - Connection failures trigger automatic reconnection with logging for visibility.
+- Starting the service with rewind enabled (default) might result in processing a large number of entries
+  very quickly, as it catches up.
 
 ## Building
 
