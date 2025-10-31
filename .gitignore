@@ -41,3 +41,7 @@ claude.md
 # MegaStream Test Data
 ingest/test_data/graze
 ingest/test_data/parquet
+
+# Ignore binaries
+ingest/megastream_ingest
+ingest/jetstream_ingest

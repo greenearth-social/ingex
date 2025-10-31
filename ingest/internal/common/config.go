@@ -11,8 +11,9 @@ type Config struct {
 	// SQLite configuration
 	SQLiteDBPath string
 
-	// WebSocket configuration (for future use)
+	// WebSocket configuration
 	TurboStreamURL string
+	JetstreamURL   string
 
 	// Elasticsearch configuration
 	ElasticsearchURL    string
@@ -42,6 +43,7 @@ func LoadConfig() *Config {
 	return &Config{
 		SQLiteDBPath:         getEnv("SQLITE_DB_PATH", ""),
 		TurboStreamURL:       getEnv("TURBOSTREAM_URL", ""),
+		JetstreamURL:         getEnv("JETSTREAM_URL", "wss://jetstream2.us-east.bsky.network/subscribe"),
 		WebSocketWorkers:     getEnvInt("WEBSOCKET_WORKERS", 3),
 		ElasticsearchURL:     getEnv("ELASTICSEARCH_URL", ""),
 		ElasticsearchAPIKey:  getEnv("ELASTICSEARCH_API_KEY", ""),

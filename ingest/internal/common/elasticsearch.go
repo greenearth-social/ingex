@@ -33,6 +33,15 @@ type TombstoneDoc struct {
 	IndexedAt string `json:"indexed_at"`
 }
 
+// LikeDoc represents the document structure for indexing likes
+type LikeDoc struct {
+	URI        string `json:"uri"`
+	SubjectURI string `json:"subject_uri"`
+	AuthorDID  string `json:"author_did"`
+	CreatedAt  string `json:"created_at"`
+	IndexedAt  string `json:"indexed_at"`
+}
+
 // ElasticsearchConfig holds configuration for Elasticsearch connection
 type ElasticsearchConfig struct {
 	URL           string
@@ -367,4 +376,102 @@ func CreateTombstoneDoc(msg MegaStreamMessage) TombstoneDoc {
 		DeletedAt: deletedAt.Format(time.RFC3339),
 		IndexedAt: now.Format(time.RFC3339),
 	}
+}
+
+// CreateLikeDoc creates a LikeDoc from a JetstreamMessage
+func CreateLikeDoc(msg JetstreamMessage) LikeDoc {
+	return LikeDoc{
+		URI:        msg.GetURI(),
+		SubjectURI: msg.GetSubjectURI(),
+		AuthorDID:  msg.GetAuthorDID(),
+		CreatedAt:  msg.GetCreatedAt(),
+		IndexedAt:  time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+// BulkIndexLikes indexes a batch of like documents to Elasticsearch
+func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index string, docs []LikeDoc, dryRun bool, logger *IngestLogger) error {
+	if len(docs) == 0 {
+		return nil
+	}
+
+	if dryRun {
+		logger.Debug("Dry-run: Skipping bulk index of %d likes to index '%s'", len(docs), index)
+		return nil
+	}
+
+	var buf bytes.Buffer
+	validDocCount := 0
+
+	for _, doc := range docs {
+		if doc.URI == "" {
+			logger.Error("Skipping like with empty URI (author_did: %s)", doc.AuthorDID)
+			continue
+		}
+
+		meta := map[string]interface{}{
+			"index": map[string]interface{}{
+				"_index": index,
+				"_id":    doc.URI,
+			},
+		}
+
+		validDocCount++
+
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			return fmt.Errorf("failed to marshal metadata: %w", err)
+		}
+
+		buf.Write(metaJSON)
+		buf.WriteByte('\n')
+
+		docJSON, err := json.Marshal(doc)
+		if err != nil {
+			return fmt.Errorf("failed to marshal like document: %w", err)
+		}
+
+		buf.Write(docJSON)
+		buf.WriteByte('\n')
+	}
+
+	if validDocCount == 0 {
+		logger.Error("No valid likes to index (all had empty URI)")
+		return fmt.Errorf("no valid likes in batch")
+	}
+
+	res, err := client.Bulk(
+		bytes.NewReader(buf.Bytes()),
+		client.Bulk.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("bulk like request failed: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		return fmt.Errorf("bulk like request returned error: %s", res.String())
+	}
+
+	var bulkResponse struct {
+		Errors bool `json:"errors"`
+		Items  []map[string]struct {
+			Error *struct {
+				Type   string `json:"type"`
+				Reason string `json:"reason"`
+			} `json:"error"`
+		} `json:"items"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
+		return fmt.Errorf("failed to parse bulk like response: %w", err)
+	}
+
+	if bulkResponse.Errors {
+		itemsJSON, _ := json.Marshal(bulkResponse.Items)
+		logger.Error("Bulk like indexing failed with errors. Response items: %s", string(itemsJSON))
+		return fmt.Errorf("bulk like indexing failed: some documents had errors (see logs for details)")
+	}
+
+	return nil
 }

@@ -4,7 +4,7 @@ This directory contains all infrastructure and deployment configurations for the
 
 ## Directory Structure
 
-```
+```text
 index/
 ├── README.md                           # This file
 └── deploy/                            # Deployment configurations
@@ -20,6 +20,7 @@ index/
 The indexing infrastructure uses **Elastic Cloud on Kubernetes (ECK)** to deploy and manage Elasticsearch clusters across different environments.
 
 ### Technology Stack
+
 - **Elasticsearch 9.0.0**: Search engine and document store
 - **Kibana 9.0.0**: Web UI for Elasticsearch management and visualization
 - **ECK 3.1.0**: Kubernetes operator for Elasticsearch lifecycle management
@@ -30,6 +31,7 @@ The indexing infrastructure uses **Elastic Cloud on Kubernetes (ECK)** to deploy
 ### Environment-Specific Configurations
 
 #### Local Development
+
 - **Elasticsearch**: Single-node cluster optimized for laptop resources
   - 2GB memory allocation with 1GB JVM heap
   - 5GB storage for testing
@@ -43,6 +45,7 @@ The indexing infrastructure uses **Elastic Cloud on Kubernetes (ECK)** to deploy
   - Resource requests: 1GB RAM, 500m CPU
 
 #### Production
+
 - **Multi-node cluster** (1 master + 2 data nodes) - TODO: upgrade cluster sizes depending on scale
 - **Higher resource allocation** for production workloads
 - **50GB storage per data node**
@@ -55,12 +58,14 @@ This guide covers deploying Elasticsearch and Kibana to both local (minikube) an
 ### Prerequisites
 
 **Local Environment:**
+
 - Docker
 - minikube or other local Kubernetes cluster
 - kubectl
 - openssl (for generating passwords)
 
 **Stage Environment:**
+
 - Google Cloud CLI (`gcloud`) installed and authenticated
 - **Kubernetes Engine Admin** IAM role for ECK operator installation
 - kubectl installed locally
@@ -71,12 +76,14 @@ This guide covers deploying Elasticsearch and Kibana to both local (minikube) an
 ### 1. Create or Configure Kubernetes Cluster
 
 **Local:**
+
 ```bash
 # Ensure minikube is running
 minikube status
 ```
 
 **Stage:**
+
 ```bash
 # Create GKE Autopilot cluster
 gcloud container clusters create-auto greenearth-stage-cluster \
@@ -91,6 +98,7 @@ kubectl config current-context
 ### 2. Install ECK Operator
 
 **Both Environments:**
+
 ```bash
 # Install ECK 3.1.0 CRDs
 kubectl create -f https://download.elastic.co/downloads/eck/3.1.0/crds.yaml
@@ -106,11 +114,13 @@ kubectl get pods -n elastic-system
 ### 3. Create Namespace
 
 **Local:**
+
 ```bash
 kubectl create namespace greenearth-local
 ```
 
 **Stage:**
+
 ```bash
 kubectl create namespace greenearth-stage
 ```
@@ -137,6 +147,7 @@ kubectl apply -f deploy/k8s/environments/$DEPLOYMENT_ENV/elasticsearch.yaml
 ```
 
 **Configuration Differences:**
+
 - **Local**: 2GB memory, 1GB JVM heap, 5GB storage, mmap disabled
 - **Stage**: 12GB memory, 6GB JVM heap, 20GB storage, mmap enabled
 
@@ -160,12 +171,14 @@ kubectl get pods -n $NAMESPACE
 ```
 
 Wait for:
+
 - **Elasticsearch HEALTH**: `green`
 - **Elasticsearch PHASE**: `Ready`
 - **Kibana HEALTH**: `green`
 - **Kibana PHASE**: `Ready`
 
 **Timing:**
+
 - Local: ~2-3 minutes
 - Stage: ~5-10 minutes (first deployment)
 
@@ -194,11 +207,13 @@ kubectl apply -f deploy/k8s/environments/$DEPLOYMENT_ENV/es-service-user-setup-j
 ```
 
 This job:
+
 - Waits for Elasticsearch to be ready
 - Creates `es_service_role` with index template and posts index permissions
 - Creates the service user (using credentials from `es-service-user-secret`) with the role
 
 **Monitor the job**:
+
 ```bash
 kubectl get jobs -n $NAMESPACE
 kubectl logs -l job-name=es-service-user-setup -n $NAMESPACE
@@ -211,11 +226,13 @@ kubectl apply -f deploy/k8s/environments/$DEPLOYMENT_ENV/bootstrap-job.yaml
 ```
 
 This job uses the `es-service-user` credentials to:
+
 - Apply index templates
 - Create initial indexes
 - Configure initial index aliases
 
 **Monitor the job**:
+
 ```bash
 kubectl get jobs -n $NAMESPACE
 kubectl logs -l job-name=elasticsearch-bootstrap -n $NAMESPACE
@@ -226,40 +243,46 @@ kubectl logs -l job-name=elasticsearch-bootstrap -n $NAMESPACE
 ### Access Kibana Web UI
 
 **Local:**
+
 ```bash
 # Port-forward to access Kibana
 kubectl port-forward service/greenearth-kibana-local-kb-http 5601 -n $NAMESPACE
 ```
 
-Browse to: **https://localhost:5601**
+Browse to: **<https://localhost:5601>**
 
 **Stage:**
+
 ```bash
 # Port-forward to access Kibana
 kubectl port-forward service/greenearth-kibana-stage-kb-http 5601 -n $NAMESPACE
 ```
 
-Browse to: **https://localhost:5601**
+Browse to: **<https://localhost:5601>**
 
 **Note**: You'll get a certificate warning (self-signed cert) - this is expected.
 
 **Get the elastic superuser password:**
 
 Local:
+
 ```bash
 kubectl get secret greenearth-es-local-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
 ```
 
 Stage:
+
 ```bash
 kubectl get secret greenearth-es-stage-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
 ```
 
 **Login with:**
+
 - **Username**: `elastic`
 - **Password**: (from command above)
 
 Kibana provides:
+
 - **Dev Tools Console**: Interactive API testing at `/app/dev_tools#/console`
 - **Index Management**: View and manage indices at `/app/management/data/index_management`
 - **Stack Management**: Configure settings at `/app/management`
@@ -270,11 +293,13 @@ Kibana provides:
 **Port-forward Elasticsearch** (replace `NAMESPACE`):
 
 Local:
+
 ```bash
 kubectl port-forward service/greenearth-es-local-es-http 9200 -n $NAMESPACE
 ```
 
 Stage:
+
 ```bash
 kubectl port-forward service/greenearth-es-stage-es-http 9200 -n $NAMESPACE
 ```
@@ -282,6 +307,7 @@ kubectl port-forward service/greenearth-es-stage-es-http 9200 -n $NAMESPACE
 **Get credentials:**
 
 Local:
+
 ```bash
 # Elastic superuser (full access)
 kubectl get secret greenearth-es-local-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
@@ -291,6 +317,7 @@ kubectl get secret es-service-user-secret -o go-template='{{.data.password | bas
 ```
 
 Stage:
+
 ```bash
 # Elastic superuser (full access)
 kubectl get secret greenearth-es-stage-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
@@ -300,6 +327,7 @@ kubectl get secret es-service-user-secret -o go-template='{{.data.password | bas
 ```
 
 **Test API:**
+
 ```bash
 # Using elastic user
 curl -k -u "elastic:PASSWORD" https://localhost:9200/
@@ -316,6 +344,7 @@ curl -k -u "es-service-user:PASSWORD" https://localhost:9200/_alias/posts
 ```
 
 The ingest service (see ../ingest/README.md) will need an ES API key which can be generated like so:
+
 ```sh
 curl -k -X POST "https://localhost:9200/_security/api_key" \
   -u "elastic:PASSWORD" \
@@ -338,6 +367,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
 ```
 
 **Expected responses:**
+
 - **Basic connectivity**: Elasticsearch version info and tagline
 - **Cluster health**: `status: "green"`, `number_of_nodes: 1`
 - **Index template**: Shows posts_template configuration with schema
@@ -346,10 +376,11 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
 ### Health Check Verification
 
 A healthy deployment should show:
+
 - ✅ Elasticsearch cluster status: `green`
 - ✅ Elasticsearch nodes: `1`
 - ✅ Kibana status: `green`
-- ✅ Kibana accessible at https://localhost:5601
+- ✅ Kibana accessible at <https://localhost:5601>
 - ✅ Service user setup job completed: `1/1`
 - ✅ Bootstrap job completed: `1/1`
 - ✅ Posts index template applied
@@ -368,6 +399,7 @@ kubectl delete namespace $NAMESPACE
 The final production environment will be deployed on Azure Kubernetes Service (AKS). This section will be populated once the GKE stage environment is validated and Azure infrastructure is set up.
 
 **Planned Changes:**
+
 - Migrate from GKE Autopilot to AKS
 - Update deployment scripts for Azure CLI
 - Configure Azure-specific networking and security
@@ -381,18 +413,22 @@ The final production environment will be deployed on Azure Kubernetes Service (A
 
 ### Common Issues
 
-**Pod in CrashLoopBackOff**
+#### Pod in CrashLoopBackOff
+
 - Check logs: `kubectl logs POD_NAME -n $NAMESPACE`
 - Common causes: Memory limits, configuration conflicts
 
-**OOMKilled Errors**
+#### OOMKilled Errors
+
 - Reduce JVM heap size in manifest
 - Increase memory limits if resources allow
 
-**Configuration Conflicts**
+#### Configuration Conflicts
+
 - Avoid mixing `discovery.type: single-node` with ECK auto-configuration
 - Let ECK handle single-node setup automatically
 
-**Port-forward Issues**
+#### Port-forward Issues
+
 - Ensure service exists: `kubectl get svc -n $NAMESPACE`
 - Check if port 9200 is already in use locally
