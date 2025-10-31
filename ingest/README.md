@@ -1,29 +1,32 @@
 # Ingest Service
 
-Go-based data ingestion service that processes BlueSky content from Megastream SQLite databases and indexes them in Elasticsearch for the Green Earth Ingex system.
+Go-based data ingestion services that process BlueSky content from various sources and index them in Elasticsearch for the Green Earth Ingex system.
 
 ## Overview
 
-The ingest service reads JSON-formatted, hydrated BlueSky content with sentence embeddings from SQLite database files provided by Megastream, then indexes this content into Elasticsearch for search and analysis.
+The ingest service suite provides multiple commands for ingesting BlueSky data from different sources:
 
-**Future Direction**: This service will support multiple data sources including websocket streams, local SQLite files, and remote SQLite files hosted on S3.
+- **[megastream_ingest](cmd/megastream_ingest/README.md)** - Processes BlueSky posts from Megastream SQLite databases (with embeddings)
+- **[jetstream_ingest](cmd/jetstream_ingest/README.md)** - Real-time ingestion of BlueSky "Likes" from the Jetstream WebSocket API
+
+Each command is optimized for its specific data source and use case.
 
 ## Features
 
-- **SQLite Data Processing**: Reads enriched BlueSky posts from Megastream SQLite databases
-- **Embedding Support**: Processes pre-computed MiniLM sentence embeddings (L6-v2 and L12-v2 models)
+- **Multiple Data Sources**: Support for Megastream SQLite databases, Jetstream WebSocket API, and more
+- **Embedding Support**: Processes pre-computed MiniLM sentence embeddings (megastream_ingest)
+- **Real-time Streaming**: WebSocket-based ingestion for live data (jetstream_ingest)
 - **Elasticsearch Integration**: Uses [go-elasticsearch](https://pkg.go.dev/github.com/elastic/go-elasticsearch/v9) for data indexing
 - **Bulk Indexing**: Efficient batch processing for high-throughput ingestion
-- **Data Mapping**: Transforms Megastream schema to Elasticsearch document structure
 - **Graceful Shutdown**: Proper SIGTERM handling and context cancellation
 - **Structured Logging**: Configurable logging with multiple levels
 
 ## Architecture
 
 ```text
-Megastream SQLite → Data Reader → Document Mapper → Elasticsearch Client → Elasticsearch
-                         ↓              ↓                      ↓
-                   Row Processing  JSON Extraction      Bulk Operations
+Data Sources:
+  - Megastream SQLite → megastream_ingest → Elasticsearch (posts + tombstones)
+  - Jetstream WebSocket → jetstream_ingest → Elasticsearch (likes)
 ```
 
 ### Project Structure
@@ -31,30 +34,43 @@ Megastream SQLite → Data Reader → Document Mapper → Elasticsearch Client �
 ```text
 ingest/
 ├── cmd/
-│   └── megastream_ingest/          # Main application entry point
-│       └── main.go                 # CLI and ingestion orchestration
+│   ├── megastream_ingest/          # Megastream SQLite ingestion
+│   │   ├── main.go                 # CLI and orchestration
+│   │   └── README.md               # Megastream-specific documentation
+│   └── jetstream_ingest/           # Jetstream WebSocket ingestion
+│       ├── main.go                 # CLI and orchestration
+│       └── README.md               # Jetstream-specific documentation
 ├── internal/
 │   ├── common/                     # Shared libraries (reusable across services)
 │   │   ├── config.go               # Environment-based configuration
 │   │   ├── elasticsearch.go        # ES client and bulk operations
 │   │   ├── interfaces.go           # Common interfaces
+│   │   ├── jetstream_message.go    # Jetstream message parsing
 │   │   ├── logger.go               # Structured logging
 │   │   ├── message.go              # MegaStream message parsing
 │   │   └── state.go                # File processing state management
-│   └── megastream_ingest/          # MegaStream-specific implementations
-│       └── spooler.go              # Local and S3 file discovery/processing
+│   ├── megastream_ingest/          # MegaStream-specific implementations
+│   │   └── spooler.go              # Local and S3 file discovery/processing
+│   └── jetstream_ingest/           # Jetstream-specific implementations
+│       └── client.go               # WebSocket client
 ├── go.mod                          # Module: github.com/greenearth/ingest
 └── test_data/                      # Sample SQLite databases for testing
 ```
 
 ### Core Components
 
-- **Spooler** (`internal/megastream_ingest/spooler.go`): Discovers and processes SQLite files from local filesystem or S3
-- **Message Parser** (`internal/common/message.go`): Transforms MegaStream SQLite rows to structured messages
-- **Elasticsearch Client** (`internal/common/elasticsearch.go`): Handles indexing with bulk operations
-- **State Manager** (`internal/common/state.go`): Tracks processed files to avoid duplicates
-- **Configuration** (`internal/common/config.go`): Environment-based config with validation
-- **Logger** (`internal/common/logger.go`): Structured logging with configurable output
+**Shared Components** (`internal/common/`):
+
+- **Message Parsers**: Transform raw data to structured messages (MegaStream, Jetstream)
+- **Elasticsearch Client**: Handles indexing with bulk operations for all document types
+- **State Manager**: Tracks processed files to avoid duplicates (megastream_ingest)
+- **Configuration**: Environment-based config with validation
+- **Logger**: Structured logging with configurable output
+
+**Command-Specific Components**:
+
+- **Spooler** (`internal/megastream_ingest/`): Discovers and processes SQLite files from local filesystem or S3
+- **WebSocket Client** (`internal/jetstream_ingest/`): Connects to Jetstream and processes real-time events
 
 ## Local Development
 
@@ -72,40 +88,78 @@ go mod download
 # Run tests for common libraries
 go test ./internal/common -v
 
-# Build the service
+# Build megastream_ingest
 go build -o megastream_ingest ./cmd/megastream_ingest
 
-# Run locally with local SQLite files (requires environment variables)
-./megastream_ingest --source local --mode once
+# Build jetstream_ingest
+go build -o jetstream_ingest ./cmd/jetstream_ingest
 
 # Or run directly without building
 go run ./cmd/megastream_ingest --source local --mode once
+go run ./cmd/jetstream_ingest --dry-run
 ```
+
+See individual command READMEs for detailed usage:
+
+- [megastream_ingest documentation](cmd/megastream_ingest/README.md)
+- [jetstream_ingest documentation](cmd/jetstream_ingest/README.md)
 
 ## Configuration
 
-### Command Line Flags
+Each command has its own configuration requirements. See the individual command READMEs for details:
 
-- `--source` - Source of SQLite files: `local` or `s3` (default: "local")
-- `--mode` - Ingestion mode: `once` (single run) or `spool` (continuous polling) (default: "once")
-- `--dry-run` - Run without writing to Elasticsearch (for testing)
-- `--skip-tls-verify` - Skip TLS certificate verification (local development only)
+- [megastream_ingest configuration](cmd/megastream_ingest/README.md#configuration)
+- [jetstream_ingest configuration](cmd/jetstream_ingest/README.md#configuration)
 
-### Environment Variables
+### Common Configuration
 
-**Required:**
+**All commands require:**
 
 - `ELASTICSEARCH_URL` - Elasticsearch cluster endpoint
-- `ELASTICSEARCH_API_KEY` - Elasticsearch API key with permissions described below
+- `ELASTICSEARCH_API_KEY` - Elasticsearch API key with appropriate index permissions
+- `LOGGING_ENABLED` - Enable/disable logging (default: `true`)
 
-```json
-"indices": [
-      {
-      "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1"],
-      "privileges": ["create_doc", "create", "delete", "index", "write", "all"]
+### Getting an Elasticsearch API Key
+
+For local development with Kibana:
+
+1. Access Kibana at <https://localhost:5601> (via port-forward)
+2. Navigate to **Stack Management → Security → API Keys**
+3. Click **Create API key**
+4. Configure with appropriate index permissions (see command-specific docs)
+5. Copy the encoded API key
+
+Or via command line:
+
+```bash
+# Port-forward to Elasticsearch
+kubectl port-forward service/greenearth-es-local-es-http 9200 -n greenearth-local &
+
+# Get elastic password
+ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-local-es-elastic-user -n greenearth-local -o go-template='{{.data.elastic | base64decode}}')
+
+# Create API key (adjust index names as needed)
+curl -k -X POST "https://localhost:9200/_security/api_key" \
+  -u "elastic:$ELASTIC_PASSWORD" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "ingest-service-key",
+    "expiration": "90d",
+    "role_descriptors": {
+      "ingest_role": {
+        "cluster": ["manage_index_templates", "monitor"],
+        "indices": [
+          {
+            "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1", "likes", "likes_v1"],
+            "privileges": ["create_doc", "create", "delete", "index", "write", "all"]
+          }
+        ]
       }
-]
+    }
+  }'
 ```
+
+Use the `encoded` value from the response.
 
 **For Local Source (`--source local`):**
 
@@ -148,6 +202,7 @@ export ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
 ./megastream_ingest --source s3 --mode spool
 ```
 
+
 ## Testing
 
 ### Unit Tests
@@ -155,38 +210,15 @@ export ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
 Run tests for common libraries:
 
 ```bash
-# Test configuration
-go test ./internal/common -run TestConfig -v
-
-# Test logger
-go test ./internal/common -run TestLogger -v
-
-# Test state manager
-go test ./internal/common -run TestState -v
-
-# Test Elasticsearch operations
-go test ./internal/common -run TestElasticsearch -v
-
-# Run all tests
-go test ./internal/common/... -v
+go test ./internal/common -v
 ```
 
 ### Integration Testing
 
-Test with sample data:
+See individual command READMEs for command-specific integration testing:
 
-```bash
-# Set up test environment
-export LOCAL_SQLITE_DB_PATH="./test_data"
-export ELASTICSEARCH_URL="https://localhost:9200"
-export ELASTICSEARCH_API_KEY="your-api-key"
-
-# Run in dry-run mode (no ES writes)
-go run ./cmd/megastream_ingest --source local --mode once --dry-run
-
-# Run against local ES cluster
-go run ./cmd/megastream_ingest --source local --mode once --skip-tls-verify
-```
+- [megastream_ingest testing](cmd/megastream_ingest/README.md#testing)
+- [jetstream_ingest testing](cmd/jetstream_ingest/README.md#building)
 
 ## Deployment
 
@@ -198,26 +230,14 @@ Run against local Elasticsearch cluster (see [../index/README.md](../index/READM
 # Start port-forward to local Elasticsearch
 kubectl port-forward service/greenearth-es-local-es-http 9200 -n greenearth-local
 
-# Build and run
-go build -o ingest ./cmd/megastream_ingest
+# Run megastream_ingest
 ./megastream_ingest --source local --mode once --skip-tls-verify
+
+# Or run jetstream_ingest
+./jetstream_ingest --skip-tls-verify
 ```
 
-### Continuous Ingestion (Spool Mode)
-
-For continuous monitoring and processing of new files:
-
-```bash
-export SPOOL_INTERVAL_SEC="300"  # Check every 5 minutes
-
-# Local source
-./megastream_ingest --source local --mode spool
-
-# S3 source
-./megastream_ingest --source s3 --mode spool
-```
-
-The spooler maintains a state file (`.processed_files.json`) to track which files have been processed and avoid duplicates.
+See individual command READMEs for detailed deployment instructions.
 
 ### Production Deployment
 
@@ -227,15 +247,6 @@ The spooler maintains a state file (`.processed_files.json`) to track which file
 - **Monitoring**: (TODO) Add health checks and metrics endpoints
 
 ## Development
-
-### Adding New Data Sources
-
-To add a new data source (e.g., WebSocket, Kafka):
-
-1. Implement the `Spooler` interface in a new package under `internal/`
-2. Add configuration options in `internal/common/config.go`
-3. Update `cmd/megastream_ingest/main.go` to initialize the new spooler
-4. Follow the existing pattern from `megastream_ingest/spooler.go`
 
 ### Code Organization
 
@@ -252,6 +263,43 @@ All internal imports use the full module path from `go.mod`:
 import (
     "github.com/greenearth/ingest/internal/common"
     "github.com/greenearth/ingest/internal/megastream_ingest"
+    "github.com/greenearth/ingest/internal/jetstream_ingest"
 )
 ```
 
+## Elasticsearch Indexes
+
+The ingest services write to the following Elasticsearch indexes:
+
+### Posts (`posts` alias → `posts_v1`)
+
+BlueSky posts with full content and embeddings (from megastream_ingest):
+
+- `at_uri` - AT Protocol URI
+- `author_did` - Author's DID
+- `content` - Post text
+- `created_at` - Creation timestamp
+- `thread_root_post`, `thread_parent_post`, `quote_post` - Relationship URIs
+- `embeddings` - Sentence embeddings (MiniLM-L6-v2, MiniLM-L12-v2)
+- `indexed_at` - Indexing timestamp
+
+### Post Tombstones (`post_tombstones` alias → `post_tombstones_v1`)
+
+Deleted post records (from megastream_ingest):
+
+- `at_uri` - AT Protocol URI of deleted post
+- `author_did` - Author's DID
+- `deleted_at` - Deletion timestamp
+- `indexed_at` - Indexing timestamp
+
+### Likes (`likes` alias → `likes_v1`)
+
+BlueSky like events (from jetstream_ingest):
+
+- `uri` - AT Protocol URI of the like
+- `subject_uri` - URI of the post being liked
+- `author_did` - DID of user who liked
+- `created_at` - Like creation timestamp
+- `indexed_at` - Indexing timestamp
+
+See [../index/README.md](../index/README.md) for Elasticsearch infrastructure setup and index template details.

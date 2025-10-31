@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: likes-alias
+  namespace: greenearth-local
+data:
+  likes-alias.json: |
+    {
+      "actions": [
+        {
+          "add": {
+            "index": "likes_v1",
+            "alias": "likes"
+          }
+        }
+      ]
+    }

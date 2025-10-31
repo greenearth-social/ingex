@@ -47,6 +47,14 @@ spec:
 
           echo "Post tombstones index template applied successfully!"
 
+          # Apply likes index template
+          curl -k -X PUT "https://greenearth-es-local-es-http:9200/_index_template/likes_template" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d @/templates/likes-index-template.json
+
+          echo "Likes index template applied successfully!"
+
           # Create initial posts index to establish alias
           curl -k -X PUT "https://greenearth-es-local-es-http:9200/posts_v1" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
@@ -54,6 +62,11 @@ spec:
 
           # Create initial post_tombstones index to establish alias
           curl -k -X PUT "https://greenearth-es-local-es-http:9200/post_tombstones_v1" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json"
+
+          # Create initial likes index to establish alias
+          curl -k -X PUT "https://greenearth-es-local-es-http:9200/likes_v1" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json"
 
@@ -69,6 +82,12 @@ spec:
             -H "Content-Type: application/json" \
             -d @/aliases/post-tombstones-alias.json
 
+          # Apply likes alias
+          curl -k -X POST "https://greenearth-es-local-es-http:9200/_aliases" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d @/aliases/likes-alias.json
+
           echo "Bootstrap completed successfully!"
         volumeMounts:
         - name: templates
@@ -83,6 +102,8 @@ spec:
               name: posts-index-template
           - configMap:
               name: post-tombstones-index-template
+          - configMap:
+              name: likes-index-template
       - name: aliases
         projected:
           sources:
@@ -90,3 +111,5 @@ spec:
               name: posts-alias
           - configMap:
               name: post-tombstones-alias
+          - configMap:
+              name: likes-alias

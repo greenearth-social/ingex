@@ -11,8 +11,9 @@ type Config struct {
 	// SQLite configuration
 	SQLiteDBPath string
 
-	// WebSocket configuration (for future use)
+	// WebSocket configuration
 	TurboStreamURL string
+	JetstreamURL   string
 
 	// Elasticsearch configuration
 	ElasticsearchURL    string
@@ -28,7 +29,7 @@ type Config struct {
 	S3SQLiteDBBucket  string
 	S3SQLiteDBPrefix  string
 	SpoolIntervalSec  int
-	SpoolStateFile    string
+	StateFile         string
 	AWSRegion         string
 	AWSS3AccessKey    string
 	AWSS3SecretKey    string
@@ -42,6 +43,7 @@ func LoadConfig() *Config {
 	return &Config{
 		SQLiteDBPath:         getEnv("SQLITE_DB_PATH", ""),
 		TurboStreamURL:       getEnv("TURBOSTREAM_URL", ""),
+		JetstreamURL:         getEnv("JETSTREAM_URL", "wss://jetstream2.us-east.bsky.network/subscribe"),
 		WebSocketWorkers:     getEnvInt("WEBSOCKET_WORKERS", 3),
 		ElasticsearchURL:     getEnv("ELASTICSEARCH_URL", ""),
 		ElasticsearchAPIKey:  getEnv("ELASTICSEARCH_API_KEY", ""),
@@ -51,7 +53,7 @@ func LoadConfig() *Config {
 		S3SQLiteDBBucket:     getEnv("S3_SQLITE_DB_BUCKET", ""),
 		S3SQLiteDBPrefix:     getEnv("S3_SQLITE_DB_PREFIX", ""),
 		SpoolIntervalSec:     getEnvInt("SPOOL_INTERVAL_SEC", 60),
-		SpoolStateFile:       getEnv("SPOOL_STATE_FILE", ".processed_files.json"),
+		StateFile:            getEnv("STATE_FILE", ".ingest_state.json"),
 		AWSRegion:            getEnv("AWS_REGION", "us-east-1"),
 		AWSS3AccessKey:       getEnv("AWS_S3_ACCESS_KEY", ""),
 		AWSS3SecretKey:       getEnv("AWS_S3_SECRET_KEY", ""),

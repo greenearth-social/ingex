@@ -22,10 +22,16 @@ type FileStateEntry struct {
 	Error     string     `json:"error,omitempty"`
 }
 
+type CursorState struct {
+	LastTimeUs int64     `json:"last_time_us"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 type StateManager struct {
 	stateFilePath string
 	mu            sync.RWMutex
 	state         map[string]FileStateEntry
+	cursor        *CursorState
 	logger        *IngestLogger
 }
 
@@ -62,16 +68,25 @@ func (sm *StateManager) LoadState() error {
 		return nil
 	}
 
-	var entries []FileStateEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return fmt.Errorf("failed to unmarshal state file: %w", err)
+	// Try to parse the full state structure including cursor
+	var state struct {
+		Files  []FileStateEntry `json:"files"`
+		Cursor *CursorState     `json:"cursor,omitempty"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("failed to parse state file: %w", err)
 	}
 
-	for _, entry := range entries {
+	for _, entry := range state.Files {
 		sm.state[entry.Filename] = entry
 	}
+	sm.cursor = state.Cursor
 
-	sm.logger.Info("Loaded state with %d entries", len(sm.state))
+	if sm.cursor != nil {
+		sm.logger.Info("Loaded state with %d entries and cursor (last_time_us: %d)", len(sm.state), sm.cursor.LastTimeUs)
+	} else {
+		sm.logger.Info("Loaded state with %d entries", len(sm.state))
+	}
 	return nil
 }
 
@@ -155,13 +170,44 @@ func (sm *StateManager) saveStateUnsafe() error {
 		entries = append(entries, entry)
 	}
 
-	data, err := json.MarshalIndent(entries, "", "  ")
+	// Save both files and cursor in new format
+	fullState := struct {
+		Files  []FileStateEntry `json:"files"`
+		Cursor *CursorState     `json:"cursor,omitempty"`
+	}{
+		Files:  entries,
+		Cursor: sm.cursor,
+	}
+
+	data, err := json.MarshalIndent(fullState, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
 	if err := os.WriteFile(sm.stateFilePath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
+	}
+
+	return nil
+}
+
+func (sm *StateManager) GetCursor() *CursorState {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.cursor
+}
+
+func (sm *StateManager) UpdateCursor(timeUs int64) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	sm.cursor = &CursorState{
+		LastTimeUs: timeUs,
+		UpdatedAt:  time.Now().UTC(),
+	}
+
+	if err := sm.saveStateUnsafe(); err != nil {
+		return err
 	}
 
 	return nil
