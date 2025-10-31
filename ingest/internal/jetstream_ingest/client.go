@@ -12,6 +12,7 @@ import (
 // Client represents a Jetstream WebSocket client
 type Client struct {
 	url       string
+	cursor    *int64 // Optional cursor for rewinding to specific timestamp
 	conn      *websocket.Conn
 	msgChan   chan string
 	logger    *common.IngestLogger
@@ -22,20 +23,33 @@ type Client struct {
 func NewClient(url string, logger *common.IngestLogger) *Client {
 	return &Client{
 		url:       url,
-		msgChan:   make(chan string, 1000), // Buffer for 1000 messages
+		msgChan:   make(chan string, 10000), // Buffer for 10000 messages
 		logger:    logger,
 		reconnect: true,
 	}
 }
 
+// SetCursor sets the cursor for rewinding to a specific timestamp
+func (c *Client) SetCursor(timeUs int64) {
+	c.cursor = &timeUs
+}
+
 // Connect establishes a WebSocket connection to Jetstream
 func (c *Client) Connect(ctx context.Context) error {
-	c.logger.Info("Connecting to Jetstream at %s", c.url)
+	url := c.url
+
+	// Add cursor parameter if set
+	if c.cursor != nil {
+		url = fmt.Sprintf("%s?cursor=%d", c.url, *c.cursor)
+		c.logger.Info("Connecting to Jetstream at %s with cursor (rewinding to timestamp %d)", c.url, *c.cursor)
+	} else {
+		c.logger.Info("Connecting to Jetstream at %s", c.url)
+	}
 
 	dialer := websocket.DefaultDialer
 	dialer.HandshakeTimeout = 30 * time.Second
 
-	conn, _, err := dialer.DialContext(ctx, c.url, nil)
+	conn, _, err := dialer.DialContext(ctx, url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to Jetstream: %w", err)
 	}
@@ -114,11 +128,17 @@ func (c *Client) readLoop(ctx context.Context) {
 				return
 			}
 
-			// Send message to channel (non-blocking)
+			// Send message to channel with blocking and timeout
+			// This applies backpressure when the consumer is slower than the producer
 			select {
 			case c.msgChan <- string(message):
-			default:
-				c.logger.Error("Message channel full, dropping message")
+				// Message sent successfully
+			case <-time.After(5 * time.Second):
+				// If we can't send within 5 seconds, log and drop
+				c.logger.Error("Message channel full for 5 seconds, dropping message")
+			case <-ctx.Done():
+				// Context cancelled while trying to send
+				return
 			}
 		}
 	}
