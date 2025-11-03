@@ -31,7 +31,6 @@ func TestLoadConfig_Defaults(t *testing.T) {
 
 func TestLoadConfig_FromEnvironment(t *testing.T) {
 	// Set environment variables
-	os.Setenv("TURBOSTREAM_URL", "wss://test.example.com")
 	os.Setenv("ELASTICSEARCH_URL", "http://test.example.com:9200")
 	os.Setenv("WEBSOCKET_WORKERS", "10")
 	os.Setenv("ELASTICSEARCH_WORKERS", "15")
@@ -42,10 +41,6 @@ func TestLoadConfig_FromEnvironment(t *testing.T) {
 	defer clearEnvVars()
 
 	config := LoadConfig()
-
-	if config.TurboStreamURL != "wss://test.example.com" {
-		t.Errorf("Expected TurboStreamURL from env, got %s", config.TurboStreamURL)
-	}
 
 	if config.ElasticsearchURL != "http://test.example.com:9200" {
 		t.Errorf("Expected ElasticsearchURL from env, got %s", config.ElasticsearchURL)
@@ -99,7 +94,6 @@ func TestLoadConfig_InvalidValues(t *testing.T) {
 
 func clearEnvVars() {
 	envVars := []string{
-		"TURBOSTREAM_URL",
 		"ELASTICSEARCH_URL",
 		"WEBSOCKET_WORKERS",
 		"ELASTICSEARCH_WORKERS",
