@@ -3,7 +3,6 @@ package common
 import (
 	"encoding/json"
 	"fmt"
-	"time"
 )
 
 // JetstreamMessage defines the interface for processing messages from the Bluesky Jetstream
@@ -79,9 +78,9 @@ func (m *jetstreamMessage) parseRawEvent(rawJSON string, logger *IngestLogger) {
 		// Extract created_at timestamp
 		if createdAt, ok := event.Commit.Record["createdAt"].(string); ok {
 			m.createdAt = createdAt
-		} else if m.timeUs > 0 {
-			// Fallback to time_us if createdAt not present
-			m.createdAt = time.Unix(0, m.timeUs*1000).UTC().Format(time.RFC3339)
+		} else {
+			logger.Error("Failed to extract createdAt from Jetstream JSON (at_uri: %s)", m.uri)
+			return
 		}
 	}
 }
