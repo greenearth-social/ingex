@@ -56,7 +56,7 @@ Configuration is done through environment variables and command line flags.
 
 - `LOGGING_ENABLED` - Enable/disable logging (default: `true`)
 - `SPOOL_INTERVAL_SEC` - Polling interval in seconds for spool mode (default: `60`)
-- `SPOOL_STATE_FILE` - Path to state file for tracking processed files (default: `.processed_files.json`)
+- `SPOOL_STATE_FILE` - Path to state file for tracking processed files (default: `.ingest_state.json`)
 
 ## Usage
 
@@ -125,7 +125,7 @@ Posts are batched and indexed in groups of 100 to optimize Elasticsearch perform
 
 ### Duplicate Prevention
 
-In spool mode, the service maintains a state file (`.processed_files.json`) to track which SQLite files have been processed, preventing duplicate ingestion.
+In spool mode, the service maintains a state file (`.ingest_state.json`) to track which SQLite files have been processed, preventing duplicate ingestion.
 
 ### Delete Handling
 
