@@ -35,7 +35,7 @@ type TombstoneDoc struct {
 
 // LikeDoc represents the document structure for indexing likes
 type LikeDoc struct {
-	URI        string `json:"uri"`
+	AtURI      string `json:"at_uri"`
 	SubjectURI string `json:"subject_uri"`
 	AuthorDID  string `json:"author_did"`
 	CreatedAt  string `json:"created_at"`
@@ -381,7 +381,7 @@ func CreateTombstoneDoc(msg MegaStreamMessage) TombstoneDoc {
 // CreateLikeDoc creates a LikeDoc from a JetstreamMessage
 func CreateLikeDoc(msg JetstreamMessage) LikeDoc {
 	return LikeDoc{
-		URI:        msg.GetURI(),
+		AtURI:      msg.GetAtURI(),
 		SubjectURI: msg.GetSubjectURI(),
 		AuthorDID:  msg.GetAuthorDID(),
 		CreatedAt:  msg.GetCreatedAt(),
@@ -404,15 +404,15 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 	validDocCount := 0
 
 	for _, doc := range docs {
-		if doc.URI == "" {
-			logger.Error("Skipping like with empty URI (author_did: %s)", doc.AuthorDID)
+		if doc.AtURI == "" {
+			logger.Error("Skipping like with empty at_uri (author_did: %s)", doc.AuthorDID)
 			continue
 		}
 
 		meta := map[string]interface{}{
 			"index": map[string]interface{}{
 				"_index": index,
-				"_id":    doc.URI,
+				"_id":    doc.AtURI,
 			},
 		}
 
@@ -436,7 +436,7 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 	}
 
 	if validDocCount == 0 {
-		logger.Error("No valid likes to index (all had empty URI)")
+		logger.Error("No valid likes to index (all had empty at_uri)")
 		return fmt.Errorf("no valid likes in batch")
 	}
 

@@ -154,14 +154,14 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				continue
 			}
 
-			if msg.GetURI() == "" {
-				logger.Error("Skipping like with empty URI (author_did: %s)", msg.GetAuthorDID())
+			if msg.GetAtURI() == "" {
+				logger.Error("Skipping like with empty at_uri (author_did: %s)", msg.GetAuthorDID())
 				skippedCount++
 				continue
 			}
 
 			if msg.GetSubjectURI() == "" {
-				logger.Error("Skipping like with empty subject URI (uri: %s, author_did: %s)", msg.GetURI(), msg.GetAuthorDID())
+				logger.Error("Skipping like with empty subject_uri (at_uri: %s, author_did: %s)", msg.GetAtURI(), msg.GetAuthorDID())
 				skippedCount++
 				continue
 			}

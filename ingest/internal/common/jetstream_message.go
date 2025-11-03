@@ -8,7 +8,7 @@ import (
 
 // JetstreamMessage defines the interface for processing messages from the Bluesky Jetstream
 type JetstreamMessage interface {
-	GetURI() string
+	GetAtURI() string
 	GetSubjectURI() string
 	GetAuthorDID() string
 	GetCreatedAt() string
@@ -88,7 +88,7 @@ func (m *jetstreamMessage) parseRawEvent(rawJSON string, logger *IngestLogger) {
 
 // Interface method implementations
 
-func (m *jetstreamMessage) GetURI() string {
+func (m *jetstreamMessage) GetAtURI() string {
 	return m.uri
 }
 

@@ -14,7 +14,7 @@ data:
         },
         "mappings": {
           "properties": {
-            "uri": {
+            "at_uri": {
               "type": "keyword",
               "index": true
             },
