@@ -375,6 +375,9 @@ func (ss *S3Spooler) processFiles(ctx context.Context, keys []string) {
 				continue
 			}
 
+			// TODO: Move state update to after Elasticsearch indexing is confirmed.
+			// mechanism from main thread back to spooler (e.g., via separate ack channel).
+			// https://github.com/greenearth-social/ingex/issues/44
 			if err := ss.stateManager.UpdateCursor(fileTimeUs); err != nil {
 				ss.logger.Error("Failed to update cursor for file %s: %v", filename, err)
 			} else {
