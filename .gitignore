@@ -41,3 +41,6 @@ claude.md
 # MegaStream Test Data
 ingest/test_data/graze
 ingest/test_data/parquet
+
+# ES Test Queries
+index/test_queries
