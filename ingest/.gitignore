@@ -1,0 +1,6 @@
+# binaries
+jetstream_ingest
+megastream_ingest
+
+# state file
+.ingest_state.json

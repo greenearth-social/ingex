@@ -90,7 +90,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	}
 
 	// Initialize state manager
-	stateManager, err := common.NewStateManager(config.SpoolStateFile, logger)
+	stateManager, err := common.NewStateManager(config.StateFile, logger)
 	if err != nil {
 		logger.Error("Failed to initialize state manager: %v", err)
 		os.Exit(1)
