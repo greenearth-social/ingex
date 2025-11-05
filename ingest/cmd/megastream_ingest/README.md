@@ -23,6 +23,7 @@ Configuration is done through environment variables and command line flags.
 - `--mode` - Ingestion mode: `once` (single run) or `spool` (continuous polling) (default: `once`)
 - `--dry-run` - Run without writing to Elasticsearch (for testing)
 - `--skip-tls-verify` - Skip TLS certificate verification (local development only)
+- `--no-rewind` - Do not rewind to the last processed timestamp on startup (drops intervening data)
 
 ### Environment Variables
 
@@ -56,7 +57,7 @@ Configuration is done through environment variables and command line flags.
 
 - `LOGGING_ENABLED` - Enable/disable logging (default: `true`)
 - `SPOOL_INTERVAL_SEC` - Polling interval in seconds for spool mode (default: `60`)
-- `SPOOL_STATE_FILE` - Path to state file for tracking processed files (default: `.ingest_state.json`)
+- `MEGASTREAM_STATE_FILE` - Path to state file for cursor tracking (default: `.megastream_state.json`)
 
 ## Usage
 
@@ -77,6 +78,9 @@ Configuration is done through environment variables and command line flags.
 
 # Skip TLS verification (local development only)
 ./megastream_ingest --source local --mode once --skip-tls-verify
+
+# Start from current time, ignoring any saved cursor
+./megastream_ingest --source local --mode spool --no-rewind
 ```
 
 ## Elasticsearch Indexes
@@ -123,9 +127,15 @@ Deleted posts are indexed to the `post_tombstones` index:
 
 Posts are batched and indexed in groups of 100 to optimize Elasticsearch performance.
 
-### Duplicate Prevention
+### Cursor-Based Resumption
 
-In spool mode, the service maintains a state file (`.ingest_state.json`) to track which SQLite files have been processed, preventing duplicate ingestion.
+The service maintains a state file (`.megastream_state.json`) that tracks the last processed timestamp. On startup:
+
+- **With rewind enabled (default)**: Processes files from the last saved timestamp onward, preventing data loss during restarts
+- **With `--no-rewind`**: Processes only files timestamped from "now" onward, skipping any intervening data
+- **No cursor saved**: Processes only files timestamped from "now" onward
+
+Files are named in the format `mega_jetstream_YYYYMMDD_hhmmss.db.zip`, and the timestamp is extracted from the filename to determine which files to process.
 
 ### Delete Handling
 
