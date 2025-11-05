@@ -20,6 +20,7 @@ func main() {
 	skipTLSVerify := flag.Bool("skip-tls-verify", false, "Skip TLS certificate verification (use for local development only)")
 	source := flag.String("source", "local", "Source of SQLite files: 'local' or 's3'")
 	mode := flag.String("mode", "once", "Ingestion mode: 'once' or 'spool'")
+	noRewind := flag.Bool("no-rewind", false, "Do not rewind to last processed timestamp on startup (drops intervening data)")
 	flag.Parse()
 
 	// Load configuration
@@ -29,6 +30,9 @@ func main() {
 	logger.Info("Green Earth Ingex - BlueSky Ingest Service")
 	if *dryRun {
 		logger.Info("Running in DRY-RUN mode - no writes to Elasticsearch")
+	}
+	if *noRewind {
+		logger.Info("Rewind disabled - starting from current time")
 	}
 
 	// Create context with cancellation for graceful shutdown
@@ -45,10 +49,10 @@ func main() {
 	}()
 
 	logger.Info("Starting SQLite ingestion (source: %s, mode: %s)", *source, *mode)
-	runIngestion(ctx, config, logger, *source, *mode, *dryRun, *skipTLSVerify)
+	runIngestion(ctx, config, logger, *source, *mode, *dryRun, *skipTLSVerify, *noRewind)
 }
 
-func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, source, mode string, dryRun, skipTLSVerify bool) {
+func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, source, mode string, dryRun, skipTLSVerify, noRewind bool) {
 	// Validate source parameter
 	if source != "local" && source != "s3" {
 		logger.Error("Invalid source: %s (must be 'local' or 's3')", source)
@@ -96,6 +100,13 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		os.Exit(1)
 	}
 
+	// Apply cursor if rewind is enabled and we have a saved cursor
+	if !noRewind {
+		if cursor := stateManager.GetCursor(); cursor != nil {
+			logger.Info("Rewinding to last processed timestamp: %d", cursor.LastTimeUs)
+		}
+	}
+
 	// Initialize Elasticsearch client
 	esConfig := common.ElasticsearchConfig{
 		URL:           config.ElasticsearchURL,
@@ -114,9 +125,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	interval := time.Duration(config.SpoolIntervalSec) * time.Second
 
 	if source == "local" {
-		spooler = megastream_ingest.NewLocalSpooler(config.LocalSQLiteDBPath, mode, interval, stateManager, logger)
+		spooler = megastream_ingest.NewLocalSpooler(config.LocalSQLiteDBPath, mode, interval, stateManager, logger, noRewind)
 	} else {
-		spooler, err = megastream_ingest.NewS3Spooler(config.S3SQLiteDBBucket, config.S3SQLiteDBPrefix, config.AWSRegion, config.AWSS3AccessKey, config.AWSS3SecretKey, mode, interval, stateManager, logger)
+		spooler, err = megastream_ingest.NewS3Spooler(config.S3SQLiteDBBucket, config.S3SQLiteDBPrefix, config.AWSRegion, config.AWSS3AccessKey, config.AWSS3SecretKey, mode, interval, stateManager, logger, noRewind)
 		if err != nil {
 			logger.Error("Failed to create S3 spooler: %v", err)
 			os.Exit(1)

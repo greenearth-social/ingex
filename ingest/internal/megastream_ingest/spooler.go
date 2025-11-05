@@ -41,6 +41,7 @@ type baseSpooler struct {
 	logger       *common.IngestLogger
 	mode         string
 	interval     time.Duration
+	noRewind     bool
 }
 
 type LocalSpooler struct {
@@ -57,7 +58,7 @@ type S3Spooler struct {
 	awsConfig aws.Config
 }
 
-func NewLocalSpooler(directory string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger) *LocalSpooler {
+func NewLocalSpooler(directory string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger, noRewind bool) *LocalSpooler {
 	return &LocalSpooler{
 		baseSpooler: &baseSpooler{
 			rowChan:      make(chan SQLiteRow, 1000),
@@ -65,12 +66,13 @@ func NewLocalSpooler(directory string, mode string, interval time.Duration, stat
 			logger:       logger,
 			mode:         mode,
 			interval:     interval,
+			noRewind:     noRewind,
 		},
 		directory: directory,
 	}
 }
 
-func NewS3Spooler(bucket, prefix, region, accessKey, secretKey string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger) (*S3Spooler, error) {
+func NewS3Spooler(bucket, prefix, region, accessKey, secretKey string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger, noRewind bool) (*S3Spooler, error) {
 	var cfg aws.Config
 	var err error
 
@@ -102,6 +104,7 @@ func NewS3Spooler(bucket, prefix, region, accessKey, secretKey string, mode stri
 			logger:       logger,
 			mode:         mode,
 			interval:     interval,
+			noRewind:     noRewind,
 		},
 		bucket:    bucket,
 		prefix:    prefix,
@@ -157,14 +160,19 @@ func (ls *LocalSpooler) discoverFiles() ([]string, error) {
 		return nil, fmt.Errorf("failed to read directory: %w", err)
 	}
 
-	cursor := ls.stateManager.GetCursor()
 	var cursorTimeUs int64
-	if cursor != nil {
-		cursorTimeUs = cursor.LastTimeUs
-		ls.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
-	} else {
+	if ls.noRewind {
 		cursorTimeUs = time.Now().UnixMicro()
-		ls.logger.Debug("No cursor found, filtering from current time: %d", cursorTimeUs)
+		ls.logger.Debug("No-rewind mode: filtering from current time: %d", cursorTimeUs)
+	} else {
+		cursor := ls.stateManager.GetCursor()
+		if cursor != nil {
+			cursorTimeUs = cursor.LastTimeUs
+			ls.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
+		} else {
+			cursorTimeUs = time.Now().UnixMicro()
+			ls.logger.Debug("No cursor found, filtering from current time: %d", cursorTimeUs)
+		}
 	}
 
 	var files []string
@@ -303,14 +311,19 @@ func (ss *S3Spooler) discoverFiles(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("failed to list S3 objects: %w", err)
 	}
 
-	cursor := ss.stateManager.GetCursor()
 	var cursorTimeUs int64
-	if cursor != nil {
-		cursorTimeUs = cursor.LastTimeUs
-		ss.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
-	} else {
+	if ss.noRewind {
 		cursorTimeUs = time.Now().UnixMicro()
-		ss.logger.Debug("No cursor found, filtering from current time: %d", cursorTimeUs)
+		ss.logger.Debug("No-rewind mode: filtering from current time: %d", cursorTimeUs)
+	} else {
+		cursor := ss.stateManager.GetCursor()
+		if cursor != nil {
+			cursorTimeUs = cursor.LastTimeUs
+			ss.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
+		} else {
+			cursorTimeUs = time.Now().UnixMicro()
+			ss.logger.Debug("No cursor found, filtering from current time: %d", cursorTimeUs)
+		}
 	}
 
 	var files []string
