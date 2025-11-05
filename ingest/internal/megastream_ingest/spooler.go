@@ -157,6 +157,16 @@ func (ls *LocalSpooler) discoverFiles() ([]string, error) {
 		return nil, fmt.Errorf("failed to read directory: %w", err)
 	}
 
+	cursor := ls.stateManager.GetCursor()
+	var cursorTimeUs int64
+	if cursor != nil {
+		cursorTimeUs = cursor.LastTimeUs
+		ls.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
+	} else {
+		cursorTimeUs = time.Now().UnixMicro()
+		ls.logger.Debug("No cursor found, filtering from current time: %d", cursorTimeUs)
+	}
+
 	var files []string
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -167,13 +177,14 @@ func (ls *LocalSpooler) discoverFiles() ([]string, error) {
 			continue
 		}
 
-		if ls.stateManager.IsProcessed(entry.Name()) {
-			ls.logger.Debug("Skipping already processed file: %s", entry.Name())
+		fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(entry.Name())
+		if err != nil {
+			ls.logger.Error("Skipping file with invalid filename format: %s (%v)", entry.Name(), err)
 			continue
 		}
 
-		if ls.stateManager.IsFailed(entry.Name()) {
-			ls.logger.Debug("Skipping previously failed file: %s", entry.Name())
+		if fileTimeUs <= cursorTimeUs {
+			ls.logger.Debug("Skipping file before or at cursor: %s (file_time: %d, cursor: %d)", entry.Name(), fileTimeUs, cursorTimeUs)
 			continue
 		}
 
@@ -199,13 +210,18 @@ func (ls *LocalSpooler) processFiles(ctx context.Context, files []string) {
 
 		if err := ls.processFile(ctx, filePath, filename); err != nil {
 			ls.logger.Error("Failed to process file %s: %v", filename, err)
-			ls.stateManager.MarkFailed(filename, err.Error())
 		} else {
-			// TODO: Move state update to after Elasticsearch indexing is confirmed.
-			// Currently marking as processed after rows are queued to channel, but should
-			// happen after ES confirms successful indexing. Need to implement acknowledgment
-			// mechanism from main thread back to spooler (e.g., via separate ack channel).
-			ls.stateManager.MarkProcessed(filename)
+			fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(filename)
+			if err != nil {
+				ls.logger.Error("Failed to parse filename timestamp for cursor update: %s (%v)", filename, err)
+				continue
+			}
+
+			if err := ls.stateManager.UpdateCursor(fileTimeUs); err != nil {
+				ls.logger.Error("Failed to update cursor for file %s: %v", filename, err)
+			} else {
+				ls.logger.Debug("Updated cursor to %d after processing file: %s", fileTimeUs, filename)
+			}
 		}
 	}
 }
@@ -287,6 +303,16 @@ func (ss *S3Spooler) discoverFiles(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("failed to list S3 objects: %w", err)
 	}
 
+	cursor := ss.stateManager.GetCursor()
+	var cursorTimeUs int64
+	if cursor != nil {
+		cursorTimeUs = cursor.LastTimeUs
+		ss.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
+	} else {
+		cursorTimeUs = time.Now().UnixMicro()
+		ss.logger.Debug("No cursor found, filtering from current time: %d", cursorTimeUs)
+	}
+
 	var files []string
 	for _, obj := range result.Contents {
 		key := *obj.Key
@@ -296,13 +322,14 @@ func (ss *S3Spooler) discoverFiles(ctx context.Context) ([]string, error) {
 			continue
 		}
 
-		if ss.stateManager.IsProcessed(filename) {
-			ss.logger.Debug("Skipping already processed file: %s", filename)
+		fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(filename)
+		if err != nil {
+			ss.logger.Error("Skipping file with invalid filename format: %s (%v)", filename, err)
 			continue
 		}
 
-		if ss.stateManager.IsFailed(filename) {
-			ss.logger.Debug("Skipping previously failed file: %s", filename)
+		if fileTimeUs <= cursorTimeUs {
+			ss.logger.Debug("Skipping file before or at cursor: %s (file_time: %d, cursor: %d)", filename, fileTimeUs, cursorTimeUs)
 			continue
 		}
 
@@ -328,13 +355,18 @@ func (ss *S3Spooler) processFiles(ctx context.Context, keys []string) {
 
 		if err := ss.processFile(ctx, key, filename); err != nil {
 			ss.logger.Error("Failed to process S3 file %s: %v", key, err)
-			ss.stateManager.MarkFailed(filename, err.Error())
 		} else {
-			// TODO: Move state update to after Elasticsearch indexing is confirmed.
-			// Currently marking as processed after rows are queued to channel, but should
-			// happen after ES confirms successful indexing. Need to implement acknowledgment
-			// mechanism from main thread back to spooler (e.g., via separate ack channel).
-			ss.stateManager.MarkProcessed(filename)
+			fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(filename)
+			if err != nil {
+				ss.logger.Error("Failed to parse filename timestamp for cursor update: %s (%v)", filename, err)
+				continue
+			}
+
+			if err := ss.stateManager.UpdateCursor(fileTimeUs); err != nil {
+				ss.logger.Error("Failed to update cursor for file %s: %v", filename, err)
+			} else {
+				ss.logger.Debug("Updated cursor to %d after processing file: %s", fileTimeUs, filename)
+			}
 		}
 	}
 }
