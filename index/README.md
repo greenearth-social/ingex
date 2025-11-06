@@ -9,7 +9,6 @@ index/
 ├── README.md                           # This file
 ├── deploy.sh                          # Automated deployment script
 └── deploy/                            # Deployment configurations
-    ├── terraform/                     # Terraform IaC (TODO)
     └── k8s/                          # Kubernetes manifests
         ├── base/                     # Shared Kustomize base configuration
         └── environments/
@@ -45,13 +44,6 @@ The indexing infrastructure uses **Elastic Cloud on Kubernetes (ECK)** to deploy
   - No persistent storage needed
   - Security enabled (matching Elasticsearch)
   - Resource requests: 1GB RAM, 500m CPU
-
-#### Production
-
-- **Multi-node cluster** (1 master + 2 data nodes) - TODO: upgrade cluster sizes depending on scale
-- **Higher resource allocation** for production workloads
-- **50GB storage per data node**
-- **TODO**: Proper virtual memory configuration via init containers
 
 ## Quick Start
 
@@ -117,23 +109,6 @@ export ES_SERVICE_USER_PASSWORD="your-secure-password"
 - `--dry-run`: Show what would be deployed without applying
 - `--teardown`: Delete the entire environment (prompts for confirmation)
 
-#### What the Script Does
-
-The deployment script automatically:
-
-1. Verifies prerequisites (kubectl, cluster connection, environment variables)
-2. Optionally installs ECK operator (with `--install-eck`)
-3. Creates the namespace
-4. Deploys stage-specific DaemonSet (for stage environment only)
-5. Applies all Kustomize manifests (Elasticsearch, Kibana, templates)
-6. Waits for Elasticsearch and Kibana to be ready
-7. Creates service user credentials secret
-8. Runs service user setup job
-9. Runs bootstrap job to configure templates and aliases
-10. Provides next steps for accessing the cluster
-
-The script includes automatic cleanup on failure and colored output for easy monitoring.
-
 ### Manual Deployment (Advanced)
 
 If you prefer manual deployment or need to customize the process:
@@ -162,11 +137,11 @@ kubectl create secret generic es-service-user-secret \
   --from-literal=password="$ES_SERVICE_USER_PASSWORD" \
   -n $NAMESPACE
 
-# 7. Deploy service user setup job
-kubectl apply -f deploy/k8s/environments/$ENVIRONMENT/es-service-user-setup-job-patch.yaml -n $NAMESPACE
-
-# 8. Deploy bootstrap job
-kubectl apply -f deploy/k8s/environments/$ENVIRONMENT/bootstrap-job-patch.yaml -n $NAMESPACE
+# 7. Wait for jobs to complete
+# Jobs are deployed automatically by Kustomize in step 4
+# Wait for them to complete:
+kubectl wait --for=condition=complete --timeout=180s job/es-service-user-setup -n $NAMESPACE
+kubectl wait --for=condition=complete --timeout=180s job/elasticsearch-bootstrap -n $NAMESPACE
 ```
 
 ### Kustomize Configuration
@@ -187,20 +162,9 @@ This structure eliminates configuration duplication and makes it easy to add new
 
 ### Access Kibana Web UI
 
-**Local:**
-
 ```bash
-# Port-forward to access Kibana
-kubectl port-forward service/greenearth-kibana-local-kb-http 5601 -n $NAMESPACE
-```
-
-Browse to: **<https://localhost:5601>**
-
-**Stage:**
-
-```bash
-# Port-forward to access Kibana
-kubectl port-forward service/greenearth-kibana-stage-kb-http 5601 -n $NAMESPACE
+# Port-forward to access Kibana (works for any environment)
+kubectl port-forward service/greenearth-kibana-kb-http 5601 -n $NAMESPACE
 ```
 
 Browse to: **<https://localhost:5601>**
@@ -209,16 +173,8 @@ Browse to: **<https://localhost:5601>**
 
 **Get the elastic superuser password:**
 
-Local:
-
 ```bash
-kubectl get secret greenearth-es-local-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
-```
-
-Stage:
-
-```bash
-kubectl get secret greenearth-es-stage-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
+kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
 ```
 
 **Login with:**
@@ -235,37 +191,17 @@ Kibana provides:
 
 ### Access Elasticsearch API
 
-**Port-forward Elasticsearch** (replace `NAMESPACE`):
-
-Local:
+**Port-forward Elasticsearch:**
 
 ```bash
-kubectl port-forward service/greenearth-es-local-es-http 9200 -n $NAMESPACE
-```
-
-Stage:
-
-```bash
-kubectl port-forward service/greenearth-es-stage-es-http 9200 -n $NAMESPACE
+kubectl port-forward service/greenearth-es-http 9200 -n $NAMESPACE
 ```
 
 **Get credentials:**
 
-Local:
-
 ```bash
 # Elastic superuser (full access)
-kubectl get secret greenearth-es-local-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
-
-# Service user (limited to posts indices)
-kubectl get secret es-service-user-secret -o go-template='{{.data.password | base64decode}}' -n $NAMESPACE
-```
-
-Stage:
-
-```bash
-# Elastic superuser (full access)
-kubectl get secret greenearth-es-stage-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
+kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
 
 # Service user (limited to posts indices)
 kubectl get secret es-service-user-secret -o go-template='{{.data.password | base64decode}}' -n $NAMESPACE
@@ -318,20 +254,6 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
 - **Index template**: Shows posts_template configuration with schema
 - **Alias**: Shows `posts` alias pointing to `posts_v1` index
 
-### Health Check Verification
-
-A healthy deployment should show:
-
-- ✅ Elasticsearch cluster status: `green`
-- ✅ Elasticsearch nodes: `1`
-- ✅ Kibana status: `green`
-- ✅ Kibana accessible at <https://localhost:5601>
-- ✅ Service user setup job completed: `1/1`
-- ✅ Bootstrap job completed: `1/1`
-- ✅ Posts index template applied
-- ✅ Posts alias configured: `posts` → `posts_v1`
-- ✅ API responding with version `9.0.0`
-
 ## Cleanup
 
 Using the deployment script (recommended):
@@ -348,42 +270,3 @@ Or manually:
 # Remove all resources
 kubectl delete namespace greenearth-local  # or greenearth-stage
 ```
-
-## Azure Deployment (Future)
-
-The final production environment will be deployed on Azure Kubernetes Service (AKS). This section will be populated once the GKE stage environment is validated and Azure infrastructure is set up.
-
-**Planned Changes:**
-
-- Migrate from GKE Autopilot to AKS
-- Update deployment scripts for Azure CLI
-- Configure Azure-specific networking and security
-- Adapt DaemonSet/init containers for AKS node configuration
-
-## Production Deployment
-
-(TODO - will be copied from stage/Azure once validated)
-
-## Troubleshooting
-
-### Common Issues
-
-#### Pod in CrashLoopBackOff
-
-- Check logs: `kubectl logs POD_NAME -n $NAMESPACE`
-- Common causes: Memory limits, configuration conflicts
-
-#### OOMKilled Errors
-
-- Reduce JVM heap size in manifest
-- Increase memory limits if resources allow
-
-#### Configuration Conflicts
-
-- Avoid mixing `discovery.type: single-node` with ECK auto-configuration
-- Let ECK handle single-node setup automatically
-
-#### Port-forward Issues
-
-- Ensure service exists: `kubectl get svc -n $NAMESPACE`
-- Check if port 9200 is already in use locally
