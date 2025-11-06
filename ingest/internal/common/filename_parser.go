@@ -53,3 +53,8 @@ func ParseMegastreamFilenameTimestamp(filename string) (int64, error) {
 	t := time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC)
 	return t.UnixMicro(), nil
 }
+
+func TimestampToMegastreamFilename(timeUs int64) string {
+	t := time.UnixMicro(timeUs).UTC()
+	return fmt.Sprintf("mega_jetstream_%s.db.zip", t.Format("20060102_150405"))
+}

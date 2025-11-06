@@ -16,8 +16,9 @@ func TestStateManager_LoadState(t *testing.T) {
 		t.Fatalf("Failed to create state manager: %v", err)
 	}
 
-	if sm.GetCursor() != nil {
-		t.Errorf("Expected nil cursor on new state manager, got %v", sm.GetCursor())
+	// Cursor should be initialized to current time when no state file exists
+	if sm.GetCursor() == nil {
+		t.Errorf("Expected cursor to be initialized, got nil")
 	}
 }
 
@@ -90,7 +91,8 @@ func TestStateManager_EmptyStateFile(t *testing.T) {
 		t.Fatalf("Failed to create state manager with empty file: %v", err)
 	}
 
-	if sm.GetCursor() != nil {
-		t.Errorf("Expected nil cursor with empty state file, got %v", sm.GetCursor())
+	// Cursor should be initialized to current time when state file is empty
+	if sm.GetCursor() == nil {
+		t.Errorf("Expected cursor to be initialized, got nil")
 	}
 }

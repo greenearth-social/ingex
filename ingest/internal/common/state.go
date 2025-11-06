@@ -30,6 +30,15 @@ func NewStateManager(stateFilePath string, logger *IngestLogger) (*StateManager,
 		return nil, err
 	}
 
+	// Initialize cursor to current time if no state was loaded
+	if sm.cursor == nil {
+		sm.cursor = &CursorState{
+			LastTimeUs: time.Now().UnixMicro(),
+			UpdatedAt:  time.Now().UTC(),
+		}
+		sm.logger.Info("No existing state found, initialized cursor to current time: %d", sm.cursor.LastTimeUs)
+	}
+
 	return sm, nil
 }
 

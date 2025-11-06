@@ -41,7 +41,6 @@ type baseSpooler struct {
 	logger       *common.IngestLogger
 	mode         string
 	interval     time.Duration
-	noRewind     bool
 }
 
 type LocalSpooler struct {
@@ -58,7 +57,7 @@ type S3Spooler struct {
 	awsConfig aws.Config
 }
 
-func NewLocalSpooler(directory string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger, noRewind bool) *LocalSpooler {
+func NewLocalSpooler(directory string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger) *LocalSpooler {
 	return &LocalSpooler{
 		baseSpooler: &baseSpooler{
 			rowChan:      make(chan SQLiteRow, 1000),
@@ -66,13 +65,12 @@ func NewLocalSpooler(directory string, mode string, interval time.Duration, stat
 			logger:       logger,
 			mode:         mode,
 			interval:     interval,
-			noRewind:     noRewind,
 		},
 		directory: directory,
 	}
 }
 
-func NewS3Spooler(bucket, prefix, region, accessKey, secretKey string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger, noRewind bool) (*S3Spooler, error) {
+func NewS3Spooler(bucket, prefix, region, accessKey, secretKey string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger) (*S3Spooler, error) {
 	var cfg aws.Config
 	var err error
 
@@ -104,7 +102,6 @@ func NewS3Spooler(bucket, prefix, region, accessKey, secretKey string, mode stri
 			logger:       logger,
 			mode:         mode,
 			interval:     interval,
-			noRewind:     noRewind,
 		},
 		bucket:    bucket,
 		prefix:    prefix,
@@ -160,20 +157,10 @@ func (ls *LocalSpooler) discoverFiles() ([]string, error) {
 		return nil, fmt.Errorf("failed to read directory: %w", err)
 	}
 
-	var cursorTimeUs int64
-	if ls.noRewind {
-		cursorTimeUs = time.Now().UnixMicro()
-		ls.logger.Debug("No-rewind mode: filtering from current time: %d", cursorTimeUs)
-	} else {
-		cursor := ls.stateManager.GetCursor()
-		if cursor != nil {
-			cursorTimeUs = cursor.LastTimeUs
-			ls.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
-		} else {
-			cursorTimeUs = time.Now().UnixMicro()
-			ls.logger.Debug("No cursor found, filtering from current time: %d", cursorTimeUs)
-		}
-	}
+	// Cursor is guaranteed to be set by StateManager
+	cursor := ls.stateManager.GetCursor()
+	cursorTimeUs := cursor.LastTimeUs
+	ls.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
 
 	var files []string
 	var skippedCount int
@@ -315,39 +302,57 @@ func (ss *S3Spooler) Stop() error {
 }
 
 func (ss *S3Spooler) discoverFiles(ctx context.Context) ([]string, error) {
+	// Cursor is guaranteed to be set by StateManager
+	cursor := ss.stateManager.GetCursor()
+	cursorTimeUs := cursor.LastTimeUs
+	ss.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
+
+	// Convert cursor timestamp to filename for StartAfter optimization
+	startAfterFilename := common.TimestampToMegastreamFilename(cursorTimeUs)
+	startAfterKey := ss.prefix + startAfterFilename
+
 	input := &s3.ListObjectsV2Input{
 		Bucket:       aws.String(ss.bucket),
 		Prefix:       aws.String(ss.prefix),
+		StartAfter:   aws.String(startAfterKey),
 		RequestPayer: "requester",
 	}
 
-	result, err := ss.s3Client.ListObjectsV2(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list S3 objects: %w", err)
-	}
+	// Paginate through all S3 results
+	var allObjects []string
+	pageCount := 0
+	totalObjects := 0
 
-	var cursorTimeUs int64
-	if ss.noRewind {
-		cursorTimeUs = time.Now().UnixMicro()
-		ss.logger.Debug("No-rewind mode: filtering from current time: %d", cursorTimeUs)
-	} else {
-		cursor := ss.stateManager.GetCursor()
-		if cursor != nil {
-			cursorTimeUs = cursor.LastTimeUs
-			ss.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
-		} else {
-			cursorTimeUs = time.Now().UnixMicro()
-			ss.logger.Debug("No cursor found, filtering from current time: %d", cursorTimeUs)
+	for {
+		result, err := ss.s3Client.ListObjectsV2(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list S3 objects: %w", err)
 		}
+
+		pageCount++
+		totalObjects += len(result.Contents)
+
+		for _, obj := range result.Contents {
+			allObjects = append(allObjects, *obj.Key)
+		}
+
+		if !*result.IsTruncated {
+			break
+		}
+
+		input.ContinuationToken = result.NextContinuationToken
+		input.StartAfter = nil // Only use StartAfter on first request
 	}
 
+	ss.logger.Info("Retrieved %d objects from S3 across %d page(s)", totalObjects, pageCount)
+
+	// Filter files based on timestamp
 	var files []string
 	var skippedCount int
 	var oldestSkipped, newestSkipped string
 	var oldestSkippedTime, newestSkippedTime int64
 
-	for _, obj := range result.Contents {
-		key := *obj.Key
+	for _, key := range allObjects {
 		filename := filepath.Base(key)
 
 		if !strings.HasSuffix(filename, ".db.zip") {

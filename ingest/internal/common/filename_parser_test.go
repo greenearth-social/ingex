@@ -94,3 +94,79 @@ func TestParseMegastreamFilenameTimestamp_Invalid(t *testing.T) {
 		})
 	}
 }
+
+func TestTimestampToMegastreamFilename(t *testing.T) {
+	tests := []struct {
+		name     string
+		timeUs   int64
+		expected string
+	}{
+		{
+			name:     "basic timestamp",
+			timeUs:   time.Date(2025, 1, 9, 12, 0, 0, 0, time.UTC).UnixMicro(),
+			expected: "mega_jetstream_20250109_120000.db.zip",
+		},
+		{
+			name:     "midnight timestamp",
+			timeUs:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).UnixMicro(),
+			expected: "mega_jetstream_20250101_000000.db.zip",
+		},
+		{
+			name:     "end of day timestamp",
+			timeUs:   time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC).UnixMicro(),
+			expected: "mega_jetstream_20251231_235959.db.zip",
+		},
+		{
+			name:     "mid-year timestamp",
+			timeUs:   time.Date(2025, 6, 5, 15, 30, 45, 0, time.UTC).UnixMicro(),
+			expected: "mega_jetstream_20250605_153045.db.zip",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TimestampToMegastreamFilename(tt.timeUs)
+			if got != tt.expected {
+				t.Errorf("TimestampToMegastreamFilename() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTimestampRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+	}{
+		{
+			name:     "basic filename",
+			filename: "mega_jetstream_20250109_120000.db.zip",
+		},
+		{
+			name:     "midnight timestamp",
+			filename: "mega_jetstream_20250101_000000.db.zip",
+		},
+		{
+			name:     "end of day timestamp",
+			filename: "mega_jetstream_20251231_235959.db.zip",
+		},
+		{
+			name:     "mid-year timestamp",
+			filename: "mega_jetstream_20250605_153045.db.zip",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			timeUs, err := ParseMegastreamFilenameTimestamp(tt.filename)
+			if err != nil {
+				t.Fatalf("ParseMegastreamFilenameTimestamp() error = %v", err)
+			}
+
+			reconstructed := TimestampToMegastreamFilename(timeUs)
+			if reconstructed != tt.filename {
+				t.Errorf("Round-trip failed: original %q, reconstructed %q", tt.filename, reconstructed)
+			}
+		})
+	}
+}
