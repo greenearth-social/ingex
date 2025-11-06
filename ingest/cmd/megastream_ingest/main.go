@@ -20,6 +20,7 @@ func main() {
 	skipTLSVerify := flag.Bool("skip-tls-verify", false, "Skip TLS certificate verification (use for local development only)")
 	source := flag.String("source", "local", "Source of SQLite files: 'local' or 's3'")
 	mode := flag.String("mode", "once", "Ingestion mode: 'once' or 'spool'")
+	noRewind := flag.Bool("no-rewind", false, "Do not rewind to last processed timestamp on startup (drops intervening data)")
 	flag.Parse()
 
 	// Load configuration
@@ -29,6 +30,9 @@ func main() {
 	logger.Info("Green Earth Ingex - BlueSky Ingest Service")
 	if *dryRun {
 		logger.Info("Running in DRY-RUN mode - no writes to Elasticsearch")
+	}
+	if *noRewind {
+		logger.Info("Rewind disabled - starting from current time")
 	}
 
 	// Create context with cancellation for graceful shutdown
@@ -45,10 +49,10 @@ func main() {
 	}()
 
 	logger.Info("Starting SQLite ingestion (source: %s, mode: %s)", *source, *mode)
-	runIngestion(ctx, config, logger, *source, *mode, *dryRun, *skipTLSVerify)
+	runIngestion(ctx, config, logger, *source, *mode, *dryRun, *skipTLSVerify, *noRewind)
 }
 
-func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, source, mode string, dryRun, skipTLSVerify bool) {
+func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, source, mode string, dryRun, skipTLSVerify, noRewind bool) {
 	// Validate source parameter
 	if source != "local" && source != "s3" {
 		logger.Error("Invalid source: %s (must be 'local' or 's3')", source)
@@ -90,10 +94,25 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	}
 
 	// Initialize state manager
-	stateManager, err := common.NewStateManager(config.StateFile, logger)
+	stateManager, err := common.NewStateManager(config.MegastreamStateFile, logger)
 	if err != nil {
 		logger.Error("Failed to initialize state manager: %v", err)
 		os.Exit(1)
+	}
+
+	// If no-rewind is enabled, update cursor to current time (service start time)
+	if noRewind {
+		currentTime := time.Now().UnixMicro()
+		if err := stateManager.UpdateCursor(currentTime); err != nil {
+			logger.Error("Failed to update cursor for no-rewind mode: %v", err)
+			os.Exit(1)
+		}
+		logger.Info("No-rewind mode: set cursor to service start time: %d", currentTime)
+	} else {
+		cursor := stateManager.GetCursor()
+		if cursor != nil {
+			logger.Info("Rewinding to last processed timestamp: %d", cursor.LastTimeUs)
+		}
 	}
 
 	// Initialize Elasticsearch client
@@ -164,7 +183,8 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				deleteBatch = append(deleteBatch, msg.GetAtURI())
 
 				if len(tombstoneBatch) >= batchSize {
-					if err := common.BulkIndexTombstones(ctx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
+					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+					if err := common.BulkIndexTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
 						logger.Error("Failed to bulk index tombstones: %v", err)
 					} else {
 						if dryRun {
@@ -174,7 +194,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						}
 					}
 
-					if err := common.BulkDelete(ctx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
+					if err := common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
 						logger.Error("Failed to bulk delete posts: %v", err)
 					} else {
 						deletedCount += len(deleteBatch)
@@ -187,6 +207,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 					tombstoneBatch = tombstoneBatch[:0]
 					deleteBatch = deleteBatch[:0]
+					cancelBatchCtx()
 				}
 				continue
 			}
@@ -195,7 +216,8 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			batch = append(batch, doc)
 
 			if len(batch) >= batchSize {
-				if err := common.BulkIndex(ctx, esClient, "posts", batch, dryRun, logger); err != nil {
+				batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+				if err := common.BulkIndex(batchCtx, esClient, "posts", batch, dryRun, logger); err != nil {
 					logger.Error("Failed to bulk index batch: %v", err)
 				} else {
 					processedCount += len(batch)
@@ -206,14 +228,19 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					}
 				}
 				batch = batch[:0]
+				cancelBatchCtx()
 			}
 		}
 	}
 
 cleanup:
+	// Create a separate context for cleanup operations with a 30-second timeout
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cleanupCancel()
+
 	// Index remaining documents in batch
 	if len(batch) > 0 {
-		if err := common.BulkIndex(ctx, esClient, "posts", batch, dryRun, logger); err != nil {
+		if err := common.BulkIndex(cleanupCtx, esClient, "posts", batch, dryRun, logger); err != nil {
 			logger.Error("Failed to bulk index final batch: %v", err)
 		} else {
 			processedCount += len(batch)
@@ -227,7 +254,7 @@ cleanup:
 
 	// Index remaining tombstones and delete posts
 	if len(tombstoneBatch) > 0 {
-		if err := common.BulkIndexTombstones(ctx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
+		if err := common.BulkIndexTombstones(cleanupCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
 			logger.Error("Failed to bulk index final tombstone batch: %v", err)
 		} else {
 			if dryRun {
@@ -237,7 +264,7 @@ cleanup:
 			}
 		}
 
-		if err := common.BulkDelete(ctx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
+		if err := common.BulkDelete(cleanupCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
 			logger.Error("Failed to bulk delete final batch: %v", err)
 		} else {
 			deletedCount += len(deleteBatch)

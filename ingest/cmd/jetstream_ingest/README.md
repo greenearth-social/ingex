@@ -25,6 +25,7 @@ Configuration is done through environment variables:
 ### Optional
 
 - `LOGGING_ENABLED` - Enable detailed logging (default: `true`)
+- `JETSTREAM_STATE_FILE` - Path to state file for cursor tracking (default: `.jetstream_state.json`)
 
 ## Usage
 
