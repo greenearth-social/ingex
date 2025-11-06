@@ -2,7 +2,6 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: es-service-user-setup
-  namespace: greenearth-stage
 spec:
   template:
     spec:
@@ -14,7 +13,7 @@ spec:
         - name: ELASTIC_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: greenearth-es-stage-es-elastic-user
+              name: greenearth-es-elastic-user
               key: elastic
         - name: ES_SERVICE_USERNAME
           valueFrom:
@@ -34,7 +33,7 @@ spec:
           echo "Waiting for Elasticsearch to be ready..."
 
           # Wait for Elasticsearch to be available
-          until curl -k -s -u "elastic:$ELASTIC_PASSWORD" -o /dev/null -w "%{http_code}" https://greenearth-es-stage-es-http:9200/ | grep -q "200"; do
+          until curl -k -s -u "elastic:$ELASTIC_PASSWORD" -o /dev/null -w "%{http_code}" https://greenearth-es-http:9200/ | grep -q "200"; do
             echo "Waiting for Elasticsearch..."
             sleep 10
           done
@@ -42,14 +41,14 @@ spec:
           echo "Elasticsearch is ready! Creating es-service-user role and user..."
 
           # Create the es_service_role with specific privileges
-          curl -k -X POST "https://greenearth-es-stage-es-http:9200/_security/role/es_service_role" \
+          curl -k -X POST "https://greenearth-es-http:9200/_security/role/es_service_role" \
             -u "elastic:$ELASTIC_PASSWORD" \
             -H "Content-Type: application/json" \
             -d '{
               "cluster": ["manage_index_templates", "monitor"],
               "indices": [
                 {
-                  "names": ["posts*", "post_tombstones*"],
+                  "names": ["posts*", "post_tombstones*", "likes*"],
                   "privileges": ["create_index", "manage", "write", "read"]
                 }
               ]
@@ -59,7 +58,7 @@ spec:
           echo "Role created successfully!"
 
           # Create the service user with the role
-          curl -k -X POST "https://greenearth-es-stage-es-http:9200/_security/user/$ES_SERVICE_USERNAME" \
+          curl -k -X POST "https://greenearth-es-http:9200/_security/user/$ES_SERVICE_USERNAME" \
             -u "elastic:$ELASTIC_PASSWORD" \
             -H "Content-Type: application/json" \
             -d "{
@@ -78,13 +77,11 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: es-service-user-setup-sa
-  namespace: greenearth-stage
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: es-service-user-setup-role
-  namespace: greenearth-stage
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
@@ -94,11 +91,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: es-service-user-setup-binding
-  namespace: greenearth-stage
 subjects:
 - kind: ServiceAccount
   name: es-service-user-setup-sa
-  namespace: greenearth-stage
 roleRef:
   kind: Role
   name: es-service-user-setup-role
