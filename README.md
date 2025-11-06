@@ -5,6 +5,7 @@ A data ingestion and indexing system for BlueSky content. This project provides 
 ## System Architecture
 
 ### Data Ingestion
+
 - **Posts**
   - Processed in batch sqlite files from [Graze Megastream](https://graze.leaflet.pub/3m33mkloj222o)
 - **Like**
@@ -14,6 +15,7 @@ A data ingestion and indexing system for BlueSky content. This project provides 
 - **Documentation**: See [ingest/README.md](ingest/README.md) for development and deployment instructions
 
 ### Search & Indexing
+
 - **Search Engine**: [Elasticsearch](https://www.elastic.co/docs/solutions/search) for full-text search and analytics
 - **Infrastructure**: [Elastic Cloud on Kubernetes (ECK)](https://www.elastic.co/docs/deploy-manage/deploy/cloud-on-k8s#eck-overview) running on [Azure Kubernetes Service](https://azure.microsoft.com/en-us/products/kubernetes-service/) in production, temporarily at [Google Kubernetes Engine](https://cloud.google.com/kubernetes-engine/docs) for testing
 - **Documentation**: See [index/README.md](index/README.md) for deployment and testing instructions
@@ -26,10 +28,12 @@ A data ingestion and indexing system for BlueSky content. This project provides 
 - `/index` - All code related to the Elastic Search index and query service.
 
 ### Continuous Integration (Github Actions)
+
 - **Testing**: (TODO) Go test suites on all pull requests
 - **Quality Assurance**: (TODO) Automated linting, formatting, and security checks
 
 ### Continuous Deployment
+
 - **Infrastructure as Code**: (TODO) [Terraform](https://developer.hashicorp.com/terraform/intro/use-cases) manages all cloud resources
 - **Multi-Environment Support**: (TODO) Separate staging and production deployments with proper promotion workflows
 - **Service Orchestration**: (TODO) Coordinated deployment of ingestion and indexing services in the correct dependency order

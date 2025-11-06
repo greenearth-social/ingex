@@ -21,6 +21,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// SQLiteRow represents a row of data extracted from a SQLite database
 type SQLiteRow struct {
 	AtURI          string
 	DID            string
@@ -29,6 +30,7 @@ type SQLiteRow struct {
 	SourceFilename string
 }
 
+// Spooler defines the interface for data source processors that extract SQLiteRow data
 type Spooler interface {
 	Start(ctx context.Context) error
 	GetRowChannel() <-chan SQLiteRow
@@ -43,11 +45,13 @@ type baseSpooler struct {
 	interval     time.Duration
 }
 
+// LocalSpooler processes SQLite database files from a local directory
 type LocalSpooler struct {
 	*baseSpooler
 	directory string
 }
 
+// S3Spooler processes SQLite database files from an Amazon S3 bucket
 type S3Spooler struct {
 	*baseSpooler
 	bucket    string
@@ -57,6 +61,7 @@ type S3Spooler struct {
 	awsConfig aws.Config
 }
 
+// NewLocalSpooler creates a new LocalSpooler for processing files from a local directory
 func NewLocalSpooler(directory string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger) *LocalSpooler {
 	return &LocalSpooler{
 		baseSpooler: &baseSpooler{
@@ -70,6 +75,7 @@ func NewLocalSpooler(directory string, mode string, interval time.Duration, stat
 	}
 }
 
+// NewS3Spooler creates a new S3Spooler for processing files from an Amazon S3 bucket
 func NewS3Spooler(bucket, prefix, region, accessKey, secretKey string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger) (*S3Spooler, error) {
 	var cfg aws.Config
 	var err error
@@ -111,6 +117,7 @@ func NewS3Spooler(bucket, prefix, region, accessKey, secretKey string, mode stri
 	}, nil
 }
 
+// Start begins processing files in the local directory
 func (ls *LocalSpooler) Start(ctx context.Context) error {
 	ls.logger.Info("Starting local spooler in %s mode (directory: %s)", ls.mode, ls.directory)
 
@@ -142,10 +149,12 @@ func (ls *LocalSpooler) Start(ctx context.Context) error {
 	return nil
 }
 
+// GetRowChannel returns the channel that receives SQLiteRow data
 func (ls *LocalSpooler) GetRowChannel() <-chan SQLiteRow {
 	return ls.rowChan
 }
 
+// Stop gracefully stops the LocalSpooler
 func (ls *LocalSpooler) Stop() error {
 	ls.logger.Info("Stopping local spooler")
 	return nil
@@ -235,6 +244,7 @@ func (ls *LocalSpooler) processFile(ctx context.Context, filePath, filename stri
 	return nil
 }
 
+// Start begins processing files in the S3 bucket
 func (ss *S3Spooler) Start(ctx context.Context) error {
 	ss.logger.Info("Starting S3 spooler in %s mode (bucket: %s, prefix: %s)", ss.mode, ss.bucket, ss.prefix)
 
@@ -266,10 +276,12 @@ func (ss *S3Spooler) Start(ctx context.Context) error {
 	return nil
 }
 
+// GetRowChannel returns the channel that receives SQLiteRow data
 func (ss *S3Spooler) GetRowChannel() <-chan SQLiteRow {
 	return ss.rowChan
 }
 
+// Stop gracefully stops the S3Spooler
 func (ss *S3Spooler) Stop() error {
 	ss.logger.Info("Stopping S3 spooler")
 	return nil

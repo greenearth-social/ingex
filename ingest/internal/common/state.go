@@ -8,13 +8,17 @@ import (
 	"time"
 )
 
+// FileStatus represents the processing status of a file
 type FileStatus string
 
 const (
+	// FileStatusProcessed indicates the file was successfully processed
 	FileStatusProcessed FileStatus = "processed"
-	FileStatusFailed    FileStatus = "failed"
+	// FileStatusFailed indicates the file failed to process
+	FileStatusFailed FileStatus = "failed"
 )
 
+// FileStateEntry tracks the processing state of a single file
 type FileStateEntry struct {
 	Filename  string     `json:"filename"`
 	Status    FileStatus `json:"status"`
@@ -22,11 +26,13 @@ type FileStateEntry struct {
 	Error     string     `json:"error,omitempty"`
 }
 
+// CursorState tracks the last processed timestamp for streaming APIs
 type CursorState struct {
 	LastTimeUs int64     `json:"last_time_us"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+// StateManager manages file processing state and cursor position
 type StateManager struct {
 	stateFilePath string
 	mu            sync.RWMutex
@@ -35,6 +41,7 @@ type StateManager struct {
 	logger        *IngestLogger
 }
 
+// NewStateManager creates a new state manager with the given state file path
 func NewStateManager(stateFilePath string, logger *IngestLogger) (*StateManager, error) {
 	sm := &StateManager{
 		stateFilePath: stateFilePath,
@@ -49,6 +56,7 @@ func NewStateManager(stateFilePath string, logger *IngestLogger) (*StateManager,
 	return sm, nil
 }
 
+// LoadState loads the processing state from the state file
 func (sm *StateManager) LoadState() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -90,6 +98,7 @@ func (sm *StateManager) LoadState() error {
 	return nil
 }
 
+// SaveState persists the current state to the state file
 func (sm *StateManager) SaveState() error {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -111,6 +120,7 @@ func (sm *StateManager) SaveState() error {
 	return nil
 }
 
+// IsProcessed returns true if the file has been successfully processed
 func (sm *StateManager) IsProcessed(filename string) bool {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -119,6 +129,7 @@ func (sm *StateManager) IsProcessed(filename string) bool {
 	return exists && entry.Status == FileStatusProcessed
 }
 
+// IsFailed returns true if the file failed to process
 func (sm *StateManager) IsFailed(filename string) bool {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -127,6 +138,7 @@ func (sm *StateManager) IsFailed(filename string) bool {
 	return exists && entry.Status == FileStatusFailed
 }
 
+// MarkProcessed marks a file as successfully processed
 func (sm *StateManager) MarkProcessed(filename string) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -145,6 +157,7 @@ func (sm *StateManager) MarkProcessed(filename string) error {
 	return nil
 }
 
+// MarkFailed marks a file as failed to process with an error message
 func (sm *StateManager) MarkFailed(filename string, errMsg string) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -191,12 +204,14 @@ func (sm *StateManager) saveStateUnsafe() error {
 	return nil
 }
 
+// GetCursor returns the current cursor state
 func (sm *StateManager) GetCursor() *CursorState {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.cursor
 }
 
+// UpdateCursor updates the cursor state with a new timestamp
 func (sm *StateManager) UpdateCursor(timeUs int64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -206,9 +221,5 @@ func (sm *StateManager) UpdateCursor(timeUs int64) error {
 		UpdatedAt:  time.Now().UTC(),
 	}
 
-	if err := sm.saveStateUnsafe(); err != nil {
-		return err
-	}
-
-	return nil
+	return sm.saveStateUnsafe()
 }
