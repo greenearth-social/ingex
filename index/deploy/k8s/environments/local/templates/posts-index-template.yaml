@@ -32,7 +32,7 @@ data:
             },
             "content": {
               "type": "text",
-              "index": true
+              "index": true,
               "analyzer": "content_analyzer",
               "fields": {
                 "raw": {
