@@ -51,6 +51,7 @@ cleanup_on_failure() {
     kubectl delete secret es-service-user-secret -n "$namespace" --ignore-not-found=true 2>/dev/null || true
     kubectl delete job elasticsearch-bootstrap -n "$namespace" --ignore-not-found=true 2>/dev/null || true
     kubectl delete job es-service-user-setup -n "$namespace" --ignore-not-found=true 2>/dev/null || true
+    kubectl delete namespace "$namespace"
 
     log_info "Cleanup completed"
 }
