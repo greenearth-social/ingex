@@ -39,16 +39,20 @@ jobs:
       working-directory: ./ingest
       run: go vet ./...
 
-    - name: Run tests
+    - name: Run tests (no coverage analysis)
       working-directory: ./ingest
-      run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+      run: go test -v -race ./...
 
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
-      with:
-        files: ./ingest/coverage.out
-        flags: go
-        fail_ci_if_error: false
+    # - name: Run tests (with coverage analysis)
+    #   working-directory: ./ingest
+    #   run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+    # - name: Upload coverage to Codecov
+    #   uses: codecov/codecov-action@v4
+    #   with:
+    #     files: ./ingest/coverage.out
+    #     flags: go
+    #     fail_ci_if_error: false
 
   lint:
     name: Lint
