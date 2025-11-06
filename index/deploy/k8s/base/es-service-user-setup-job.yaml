@@ -13,7 +13,7 @@ spec:
         - name: ELASTIC_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: greenearth-es-elastic-user
+              name: greenearth-es-es-elastic-user
               key: elastic
         - name: ES_SERVICE_USERNAME
           valueFrom:

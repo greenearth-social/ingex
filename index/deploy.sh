@@ -259,11 +259,17 @@ deploy_environment() {
         -n "$namespace" \
         --dry-run=client -o yaml | kubectl apply -f -
 
+    log_info "Deploying service user setup job..."
+    kubectl apply -f "$K8S_DIR/base/es-service-user-setup-job.yaml" -n "$namespace"
+
     log_info "Waiting for service user setup job..."
     wait_for_job "es-service-user-setup" "$namespace" 180 || {
         log_error "Service user setup job failed"
         exit 1
     }
+
+    log_info "Deploying bootstrap job..."
+    kubectl apply -f "$K8S_DIR/base/bootstrap-job.yaml" -n "$namespace"
 
     log_info "Waiting for bootstrap job..."
     wait_for_job "elasticsearch-bootstrap" "$namespace" 180 || {

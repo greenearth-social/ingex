@@ -137,10 +137,12 @@ kubectl create secret generic es-service-user-secret \
   --from-literal=password="$ES_SERVICE_USER_PASSWORD" \
   -n $NAMESPACE
 
-# 7. Wait for jobs to complete
-# Jobs are deployed automatically by Kustomize in step 4
-# Wait for them to complete:
+# 7. Deploy and wait for service user setup job
+kubectl apply -f deploy/k8s/base/es-service-user-setup-job.yaml -n $NAMESPACE
 kubectl wait --for=condition=complete --timeout=180s job/es-service-user-setup -n $NAMESPACE
+
+# 8. Deploy and wait for bootstrap job
+kubectl apply -f deploy/k8s/base/bootstrap-job.yaml -n $NAMESPACE
 kubectl wait --for=condition=complete --timeout=180s job/elasticsearch-bootstrap -n $NAMESPACE
 ```
 

@@ -4,8 +4,6 @@ kind: Kustomization
 resources:
   - elasticsearch.yaml
   - kibana.yaml
-  - es-service-user-setup-job.yaml
-  - bootstrap-job.yaml
   - templates/posts-index-template.yaml
   - templates/post-tombstones-index-template.yaml
   - templates/likes-index-template.yaml
