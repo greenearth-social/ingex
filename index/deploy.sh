@@ -75,11 +75,21 @@ wait_for_resource() {
         fi
 
         local health=$(kubectl get $resource_type $resource_name -n $namespace -o jsonpath='{.status.health}' 2>/dev/null || echo "")
-        local phase=$(kubectl get $resource_type $resource_name -n $namespace -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
 
-        if [ "$health" = "green" ] && [ "$phase" = "Ready" ]; then
-            log_success "$resource_type/$resource_name is ready"
-            return 0
+        # Check readiness based on resource type
+        if [ "$resource_type" = "kibana" ]; then
+            # Kibana only has health status, no phase field
+            if [ "$health" = "green" ]; then
+                log_success "$resource_type/$resource_name is ready"
+                return 0
+            fi
+        else
+            # Elasticsearch and other resources may have both health and phase
+            local phase=$(kubectl get $resource_type $resource_name -n $namespace -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            if [ "$health" = "green" ] && [ "$phase" = "Ready" ]; then
+                log_success "$resource_type/$resource_name is ready"
+                return 0
+            fi
         fi
 
         echo -n "."
