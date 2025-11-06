@@ -50,6 +50,9 @@ The indexing infrastructure uses **Elastic Cloud on Kubernetes (ECK)** to deploy
 Deploy to your environment with a single command:
 
 ```bash
+# Start a private shell session
+fc -p
+
 # Set the service user password
 export ES_SERVICE_USER_PASSWORD="your-secure-password"
 
