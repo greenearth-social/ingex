@@ -1,8 +1,7 @@
 apiVersion: elasticsearch.k8s.elastic.co/v1
 kind: Elasticsearch
 metadata:
-  name: greenearth-es-local
-  namespace: greenearth-local
+  name: greenearth
 spec:
   version: 9.0.0
   nodeSets:
@@ -10,7 +9,6 @@ spec:
     count: 1
     config:
       node.roles: ["master", "data", "ingest"]
-      node.store.allow_mmap: false
     podTemplate:
       spec:
         containers:

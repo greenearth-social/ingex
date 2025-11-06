@@ -8,25 +8,6 @@ import (
 	"time"
 )
 
-// FileStatus represents the processing status of a file
-type FileStatus string
-
-const (
-	// FileStatusProcessed indicates the file was successfully processed
-	FileStatusProcessed FileStatus = "processed"
-	// FileStatusFailed indicates the file failed to process
-	FileStatusFailed FileStatus = "failed"
-)
-
-// FileStateEntry tracks the processing state of a single file
-type FileStateEntry struct {
-	Filename  string     `json:"filename"`
-	Status    FileStatus `json:"status"`
-	Timestamp time.Time  `json:"timestamp"`
-	Error     string     `json:"error,omitempty"`
-}
-
-// CursorState tracks the last processed timestamp for streaming APIs
 type CursorState struct {
 	LastTimeUs int64     `json:"last_time_us"`
 	UpdatedAt  time.Time `json:"updated_at"`
@@ -36,7 +17,6 @@ type CursorState struct {
 type StateManager struct {
 	stateFilePath string
 	mu            sync.RWMutex
-	state         map[string]FileStateEntry
 	cursor        *CursorState
 	logger        *IngestLogger
 }
@@ -45,12 +25,20 @@ type StateManager struct {
 func NewStateManager(stateFilePath string, logger *IngestLogger) (*StateManager, error) {
 	sm := &StateManager{
 		stateFilePath: stateFilePath,
-		state:         make(map[string]FileStateEntry),
 		logger:        logger,
 	}
 
 	if err := sm.LoadState(); err != nil {
 		return nil, err
+	}
+
+	// Initialize cursor to current time if no state was loaded
+	if sm.cursor == nil {
+		sm.cursor = &CursorState{
+			LastTimeUs: time.Now().UnixMicro(),
+			UpdatedAt:  time.Now().UTC(),
+		}
+		sm.logger.Info("No existing state found, initialized cursor to current time: %d", sm.cursor.LastTimeUs)
 	}
 
 	return sm, nil
@@ -76,135 +64,18 @@ func (sm *StateManager) LoadState() error {
 		return nil
 	}
 
-	// Try to parse the full state structure including cursor
-	var state struct {
-		Files  []FileStateEntry `json:"files"`
-		Cursor *CursorState     `json:"cursor,omitempty"`
-	}
-	if err := json.Unmarshal(data, &state); err != nil {
+	if err := json.Unmarshal(data, &sm.cursor); err != nil {
 		return fmt.Errorf("failed to parse state file: %w", err)
 	}
 
-	for _, entry := range state.Files {
-		sm.state[entry.Filename] = entry
-	}
-	sm.cursor = state.Cursor
-
 	if sm.cursor != nil {
-		sm.logger.Info("Loaded state with %d entries and cursor (last_time_us: %d)", len(sm.state), sm.cursor.LastTimeUs)
+		sm.logger.Info("Loaded state with cursor (last_time_us: %d)", sm.cursor.LastTimeUs)
 	} else {
-		sm.logger.Info("Loaded state with %d entries", len(sm.state))
+		sm.logger.Info("Loaded empty state")
 	}
 	return nil
 }
 
-// SaveState persists the current state to the state file
-func (sm *StateManager) SaveState() error {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	entries := make([]FileStateEntry, 0, len(sm.state))
-	for _, entry := range sm.state {
-		entries = append(entries, entry)
-	}
-
-	data, err := json.MarshalIndent(entries, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal state: %w", err)
-	}
-
-	if err := os.WriteFile(sm.stateFilePath, data, 0600); err != nil {
-		return fmt.Errorf("failed to write state file: %w", err)
-	}
-
-	return nil
-}
-
-// IsProcessed returns true if the file has been successfully processed
-func (sm *StateManager) IsProcessed(filename string) bool {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	entry, exists := sm.state[filename]
-	return exists && entry.Status == FileStatusProcessed
-}
-
-// IsFailed returns true if the file failed to process
-func (sm *StateManager) IsFailed(filename string) bool {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	entry, exists := sm.state[filename]
-	return exists && entry.Status == FileStatusFailed
-}
-
-// MarkProcessed marks a file as successfully processed
-func (sm *StateManager) MarkProcessed(filename string) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	sm.state[filename] = FileStateEntry{
-		Filename:  filename,
-		Status:    FileStatusProcessed,
-		Timestamp: time.Now().UTC(),
-	}
-
-	if err := sm.saveStateUnsafe(); err != nil {
-		return err
-	}
-
-	sm.logger.Info("Marked file as processed: %s", filename)
-	return nil
-}
-
-// MarkFailed marks a file as failed to process with an error message
-func (sm *StateManager) MarkFailed(filename string, errMsg string) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	sm.state[filename] = FileStateEntry{
-		Filename:  filename,
-		Status:    FileStatusFailed,
-		Timestamp: time.Now().UTC(),
-		Error:     errMsg,
-	}
-
-	if err := sm.saveStateUnsafe(); err != nil {
-		return err
-	}
-
-	sm.logger.Error("Marked file as failed: %s - %s", filename, errMsg)
-	return nil
-}
-
-func (sm *StateManager) saveStateUnsafe() error {
-	entries := make([]FileStateEntry, 0, len(sm.state))
-	for _, entry := range sm.state {
-		entries = append(entries, entry)
-	}
-
-	// Save both files and cursor in new format
-	fullState := struct {
-		Files  []FileStateEntry `json:"files"`
-		Cursor *CursorState     `json:"cursor,omitempty"`
-	}{
-		Files:  entries,
-		Cursor: sm.cursor,
-	}
-
-	data, err := json.MarshalIndent(fullState, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal state: %w", err)
-	}
-
-	if err := os.WriteFile(sm.stateFilePath, data, 0600); err != nil {
-		return fmt.Errorf("failed to write state file: %w", err)
-	}
-
-	return nil
-}
-
-// GetCursor returns the current cursor state
 func (sm *StateManager) GetCursor() *CursorState {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -221,5 +92,14 @@ func (sm *StateManager) UpdateCursor(timeUs int64) error {
 		UpdatedAt:  time.Now().UTC(),
 	}
 
-	return sm.saveStateUnsafe()
+	data, err := json.MarshalIndent(sm.cursor, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal state: %w", err)
+	}
+
+	if err := os.WriteFile(sm.stateFilePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write state file: %w", err)
+	}
+
+	return nil
 }

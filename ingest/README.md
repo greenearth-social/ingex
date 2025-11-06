@@ -202,24 +202,6 @@ export ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
 ./megastream_ingest --source s3 --mode spool
 ```
 
-
-## Testing
-
-### Unit Tests
-
-Run tests for common libraries:
-
-```bash
-go test ./internal/common -v
-```
-
-### Integration Testing
-
-See individual command READMEs for command-specific integration testing:
-
-- [megastream_ingest testing](cmd/megastream_ingest/README.md#testing)
-- [jetstream_ingest testing](cmd/jetstream_ingest/README.md#building)
-
 ## Deployment
 
 ### Local Testing
@@ -311,6 +293,13 @@ The project uses GitHub Actions for continuous integration:
 - **Build**: Validates both binaries compile successfully
 
 See `.github/workflows/go-ci.yml` for CI configuration.
+
+### Integration Testing
+
+See individual command READMEs for command-specific integration testing:
+
+- [megastream_ingest testing](cmd/megastream_ingest/README.md#testing)
+- [jetstream_ingest testing](cmd/jetstream_ingest/README.md#building)
 
 ## Elasticsearch Indexes
 

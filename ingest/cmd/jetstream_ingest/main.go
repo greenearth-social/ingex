@@ -74,7 +74,7 @@ func main() {
 }
 
 func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, dryRun, skipTLSVerify, noRewind bool) {
-	stateManager, err := common.NewStateManager(config.StateFile, logger)
+	stateManager, err := common.NewStateManager(config.JetstreamStateFile, logger)
 	if err != nil {
 		logger.Error("Failed to initialize state manager: %v", err)
 		os.Exit(1)

@@ -1,16 +1,15 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: posts-alias
-  namespace: greenearth-stage
+  name: likes-alias
 data:
-  posts-alias.json: |
+  likes-alias.json: |
     {
       "actions": [
         {
           "add": {
-            "index": "posts_v1",
-            "alias": "posts"
+            "index": "likes_v1",
+            "alias": "likes"
           }
         }
       ]

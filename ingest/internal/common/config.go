@@ -24,14 +24,15 @@ type Config struct {
 	WorkerTimeout        time.Duration
 
 	// Spooler configuration
-	LocalSQLiteDBPath string
-	S3SQLiteDBBucket  string
-	S3SQLiteDBPrefix  string
-	SpoolIntervalSec  int
-	StateFile         string
-	AWSRegion         string
-	AWSS3AccessKey    string
-	AWSS3SecretKey    string
+	LocalSQLiteDBPath   string
+	S3SQLiteDBBucket    string
+	S3SQLiteDBPrefix    string
+	SpoolIntervalSec    int
+	JetstreamStateFile  string
+	MegastreamStateFile string
+	AWSRegion           string
+	AWSS3AccessKey      string
+	AWSS3SecretKey      string
 
 	// Logging configuration
 	LoggingEnabled bool
@@ -51,7 +52,8 @@ func LoadConfig() *Config {
 		S3SQLiteDBBucket:     getEnv("S3_SQLITE_DB_BUCKET", ""),
 		S3SQLiteDBPrefix:     getEnv("S3_SQLITE_DB_PREFIX", ""),
 		SpoolIntervalSec:     getEnvInt("SPOOL_INTERVAL_SEC", 60),
-		StateFile:            getEnv("STATE_FILE", ".ingest_state.json"),
+		JetstreamStateFile:   getEnv("JETSTREAM_STATE_FILE", ".jetstream_state.json"),
+		MegastreamStateFile:  getEnv("MEGASTREAM_STATE_FILE", ".megastream_state.json"),
 		AWSRegion:            getEnv("AWS_REGION", "us-east-1"),
 		AWSS3AccessKey:       getEnv("AWS_S3_ACCESS_KEY", ""),
 		AWSS3SecretKey:       getEnv("AWS_S3_SECRET_KEY", ""),

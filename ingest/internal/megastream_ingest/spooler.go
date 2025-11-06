@@ -166,7 +166,16 @@ func (ls *LocalSpooler) discoverFiles() ([]string, error) {
 		return nil, fmt.Errorf("failed to read directory: %w", err)
 	}
 
+	// Cursor is guaranteed to be set by StateManager
+	cursor := ls.stateManager.GetCursor()
+	cursorTimeUs := cursor.LastTimeUs
+	ls.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
+
 	var files []string
+	var skippedCount int
+	var oldestSkipped, newestSkipped string
+	var oldestSkippedTime, newestSkippedTime int64
+
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -176,13 +185,22 @@ func (ls *LocalSpooler) discoverFiles() ([]string, error) {
 			continue
 		}
 
-		if ls.stateManager.IsProcessed(entry.Name()) {
-			ls.logger.Debug("Skipping already processed file: %s", entry.Name())
+		fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(entry.Name())
+		if err != nil {
+			ls.logger.Error("Skipping file with invalid filename format: %s (%v)", entry.Name(), err)
 			continue
 		}
 
-		if ls.stateManager.IsFailed(entry.Name()) {
-			ls.logger.Debug("Skipping previously failed file: %s", entry.Name())
+		if fileTimeUs <= cursorTimeUs {
+			skippedCount++
+			if oldestSkipped == "" || fileTimeUs < oldestSkippedTime {
+				oldestSkipped = entry.Name()
+				oldestSkippedTime = fileTimeUs
+			}
+			if newestSkipped == "" || fileTimeUs > newestSkippedTime {
+				newestSkipped = entry.Name()
+				newestSkippedTime = fileTimeUs
+			}
 			continue
 		}
 
@@ -190,6 +208,9 @@ func (ls *LocalSpooler) discoverFiles() ([]string, error) {
 	}
 
 	sort.Strings(files)
+	if skippedCount > 0 {
+		ls.logger.Info("Skipped %d files before cursor (oldest: %s, newest: %s)", skippedCount, oldestSkipped, newestSkipped)
+	}
 	ls.logger.Info("Discovered %d unprocessed files", len(files))
 	return files, nil
 }
@@ -208,16 +229,17 @@ func (ls *LocalSpooler) processFiles(ctx context.Context, files []string) {
 
 		if err := ls.processFile(ctx, filePath, filename); err != nil {
 			ls.logger.Error("Failed to process file %s: %v", filename, err)
-			if markErr := ls.stateManager.MarkFailed(filename, err.Error()); markErr != nil {
-				ls.logger.Error("Failed to mark file as failed in state: %v", markErr)
-			}
 		} else {
-			// TODO: Move state update to after Elasticsearch indexing is confirmed.
-			// Currently marking as processed after rows are queued to channel, but should
-			// happen after ES confirms successful indexing. Need to implement acknowledgment
-			// mechanism from main thread back to spooler (e.g., via separate ack channel).
-			if markErr := ls.stateManager.MarkProcessed(filename); markErr != nil {
-				ls.logger.Error("Failed to mark file as processed in state: %v", markErr)
+			fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(filename)
+			if err != nil {
+				ls.logger.Error("Failed to parse filename timestamp for cursor update: %s (%v)", filename, err)
+				continue
+			}
+
+			if err := ls.stateManager.UpdateCursor(fileTimeUs); err != nil {
+				ls.logger.Error("Failed to update cursor for file %s: %v", filename, err)
+			} else {
+				ls.logger.Debug("Updated cursor to %d after processing file: %s", fileTimeUs, filename)
 			}
 		}
 	}
@@ -296,33 +318,79 @@ func (ss *S3Spooler) Stop() error {
 }
 
 func (ss *S3Spooler) discoverFiles(ctx context.Context) ([]string, error) {
+	// Cursor is guaranteed to be set by StateManager
+	cursor := ss.stateManager.GetCursor()
+	cursorTimeUs := cursor.LastTimeUs
+	ss.logger.Debug("Using cursor for file filtering: %d", cursorTimeUs)
+
+	// Convert cursor timestamp to filename for StartAfter optimization
+	startAfterFilename := common.TimestampToMegastreamFilename(cursorTimeUs)
+	startAfterKey := ss.prefix + startAfterFilename
+
 	input := &s3.ListObjectsV2Input{
 		Bucket:       aws.String(ss.bucket),
 		Prefix:       aws.String(ss.prefix),
+		StartAfter:   aws.String(startAfterKey),
 		RequestPayer: "requester",
 	}
 
-	result, err := ss.s3Client.ListObjectsV2(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list S3 objects: %w", err)
+	// Paginate through all S3 results
+	var allObjects []string
+	pageCount := 0
+	totalObjects := 0
+
+	for {
+		result, err := ss.s3Client.ListObjectsV2(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list S3 objects: %w", err)
+		}
+
+		pageCount++
+		totalObjects += len(result.Contents)
+
+		for _, obj := range result.Contents {
+			allObjects = append(allObjects, *obj.Key)
+		}
+
+		if !*result.IsTruncated {
+			break
+		}
+
+		input.ContinuationToken = result.NextContinuationToken
+		input.StartAfter = nil // Only use StartAfter on first request
 	}
 
+	ss.logger.Info("Retrieved %d objects from S3 across %d page(s)", totalObjects, pageCount)
+
+	// Filter files based on timestamp
 	var files []string
-	for _, obj := range result.Contents {
-		key := *obj.Key
+	var skippedCount int
+	var oldestSkipped, newestSkipped string
+	var oldestSkippedTime, newestSkippedTime int64
+
+	for _, key := range allObjects {
 		filename := filepath.Base(key)
 
 		if !strings.HasSuffix(filename, ".db.zip") {
 			continue
 		}
 
-		if ss.stateManager.IsProcessed(filename) {
-			ss.logger.Debug("Skipping already processed file: %s", filename)
+		fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(filename)
+		if err != nil {
+			ss.logger.Error("Skipping file with invalid filename format: %s (%v)", filename, err)
 			continue
 		}
 
-		if ss.stateManager.IsFailed(filename) {
-			ss.logger.Debug("Skipping previously failed file: %s", filename)
+		if fileTimeUs <= cursorTimeUs {
+			skippedCount++
+			if oldestSkipped == "" || fileTimeUs < oldestSkippedTime {
+				oldestSkipped = filename
+				oldestSkippedTime = fileTimeUs
+			}
+			if newestSkipped == "" || fileTimeUs > newestSkippedTime {
+				newestSkipped = filename
+				newestSkippedTime = fileTimeUs
+			}
 			continue
 		}
 
@@ -330,6 +398,9 @@ func (ss *S3Spooler) discoverFiles(ctx context.Context) ([]string, error) {
 	}
 
 	sort.Strings(files)
+	if skippedCount > 0 {
+		ss.logger.Info("Skipped %d files before cursor (oldest: %s, newest: %s)", skippedCount, oldestSkipped, newestSkipped)
+	}
 	ss.logger.Info("Discovered %d unprocessed files in S3", len(files))
 	return files, nil
 }
@@ -348,16 +419,20 @@ func (ss *S3Spooler) processFiles(ctx context.Context, keys []string) {
 
 		if err := ss.processFile(ctx, key, filename); err != nil {
 			ss.logger.Error("Failed to process S3 file %s: %v", key, err)
-			if markErr := ss.stateManager.MarkFailed(filename, err.Error()); markErr != nil {
-				ss.logger.Error("Failed to mark file as failed in state: %v", markErr)
-			}
 		} else {
+			fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(filename)
+			if err != nil {
+				ss.logger.Error("Failed to parse filename timestamp for cursor update: %s (%v)", filename, err)
+				continue
+			}
+
 			// TODO: Move state update to after Elasticsearch indexing is confirmed.
-			// Currently marking as processed after rows are queued to channel, but should
-			// happen after ES confirms successful indexing. Need to implement acknowledgment
 			// mechanism from main thread back to spooler (e.g., via separate ack channel).
-			if markErr := ss.stateManager.MarkProcessed(filename); markErr != nil {
-				ss.logger.Error("Failed to mark file as processed in state: %v", markErr)
+			// https://github.com/greenearth-social/ingex/issues/44
+			if err := ss.stateManager.UpdateCursor(fileTimeUs); err != nil {
+				ss.logger.Error("Failed to update cursor for file %s: %v", filename, err)
+			} else {
+				ss.logger.Debug("Updated cursor to %d after processing file: %s", fileTimeUs, filename)
 			}
 		}
 	}
