@@ -60,7 +60,7 @@ func NewElasticsearchClient(config ElasticsearchConfig, logger *IngestLogger) (*
 		logger.Info("TLS certificate verification disabled (local development mode)")
 		esConfig.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
+				InsecureSkipVerify: true, // nolint:gosec // G402: Required for local development with self-signed certs
 			},
 		}
 	}
@@ -74,7 +74,9 @@ func NewElasticsearchClient(config ElasticsearchConfig, logger *IngestLogger) (*
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Elasticsearch: %w", err)
 	}
-	res.Body.Close()
+	if err := res.Body.Close(); err != nil {
+		logger.Error("Failed to close response body: %v", err)
+	}
 
 	logger.Info("Connected to Elasticsearch at %s", config.URL)
 	return client, nil

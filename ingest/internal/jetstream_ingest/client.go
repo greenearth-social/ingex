@@ -54,7 +54,9 @@ func (c *Client) Connect(ctx context.Context) error {
 	conn, resp, err := dialer.DialContext(ctx, url, nil)
 	if resp != nil && resp.Body != nil {
 		// Close the body on the HTTP upgrade response
-		resp.Body.Close()
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			c.logger.Error("Failed to close HTTP response body: %v", closeErr)
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("failed to connect to Jetstream: %w", err)
@@ -90,7 +92,9 @@ func (c *Client) readLoop(ctx context.Context) {
 			c.mu.Lock()
 			c.reconnect = false
 			if c.conn != nil {
-				c.conn.Close()
+				if err := c.conn.Close(); err != nil {
+					c.logger.Error("Failed to close WebSocket connection: %v", err)
+				}
 			}
 			c.mu.Unlock()
 			return
@@ -116,7 +120,10 @@ func (c *Client) readLoop(ctx context.Context) {
 			}
 
 			// Set read deadline to allow periodic context checking
-			conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+			if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				c.logger.Error("Failed to set read deadline: %v", err)
+				continue
+			}
 
 			_, message, err := conn.ReadMessage()
 			if err != nil {

@@ -31,12 +31,12 @@ func TestLoadConfig_Defaults(t *testing.T) {
 
 func TestLoadConfig_FromEnvironment(t *testing.T) {
 	// Set environment variables
-	os.Setenv("ELASTICSEARCH_URL", "http://test.example.com:9200")
-	os.Setenv("WEBSOCKET_WORKERS", "10")
-	os.Setenv("ELASTICSEARCH_WORKERS", "15")
-	os.Setenv("WORKER_TIMEOUT", "45s")
-	os.Setenv("LOGGING_ENABLED", "false")
-	os.Setenv("PORT", "3000")
+	setEnvForTest(t, "ELASTICSEARCH_URL", "http://test.example.com:9200")
+	setEnvForTest(t, "WEBSOCKET_WORKERS", "10")
+	setEnvForTest(t, "ELASTICSEARCH_WORKERS", "15")
+	setEnvForTest(t, "WORKER_TIMEOUT", "45s")
+	setEnvForTest(t, "LOGGING_ENABLED", "false")
+	setEnvForTest(t, "PORT", "3000")
 
 	defer clearEnvVars()
 
@@ -65,10 +65,10 @@ func TestLoadConfig_FromEnvironment(t *testing.T) {
 
 func TestLoadConfig_InvalidValues(t *testing.T) {
 	// Set invalid environment variables that should fall back to defaults
-	os.Setenv("WEBSOCKET_WORKERS", "invalid")
-	os.Setenv("ELASTICSEARCH_WORKERS", "invalid")
-	os.Setenv("WORKER_TIMEOUT", "invalid")
-	os.Setenv("LOGGING_ENABLED", "invalid")
+	setEnvForTest(t, "WEBSOCKET_WORKERS", "invalid")
+	setEnvForTest(t, "ELASTICSEARCH_WORKERS", "invalid")
+	setEnvForTest(t, "WORKER_TIMEOUT", "invalid")
+	setEnvForTest(t, "LOGGING_ENABLED", "invalid")
 
 	defer clearEnvVars()
 
@@ -103,6 +103,13 @@ func clearEnvVars() {
 	}
 
 	for _, env := range envVars {
-		os.Unsetenv(env)
+		_ = os.Unsetenv(env) // Ignore errors in test cleanup
+	}
+}
+
+func setEnvForTest(t *testing.T, key, value string) {
+	t.Helper()
+	if err := os.Setenv(key, value); err != nil {
+		t.Fatalf("Failed to set environment variable %s: %v", key, err)
 	}
 }

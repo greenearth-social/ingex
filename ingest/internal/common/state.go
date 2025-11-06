@@ -113,7 +113,7 @@ func (sm *StateManager) SaveState() error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	if err := os.WriteFile(sm.stateFilePath, data, 0644); err != nil {
+	if err := os.WriteFile(sm.stateFilePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 
@@ -197,7 +197,7 @@ func (sm *StateManager) saveStateUnsafe() error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	if err := os.WriteFile(sm.stateFilePath, data, 0644); err != nil {
+	if err := os.WriteFile(sm.stateFilePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 

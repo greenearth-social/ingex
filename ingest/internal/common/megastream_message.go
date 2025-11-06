@@ -172,7 +172,15 @@ func decodeBase85RFC1924(encoded string) ([]byte, error) {
 			if digit == -1 {
 				return nil, fmt.Errorf("illegal base85 data at input byte %d", i+j)
 			}
-			value = value*85 + uint32(digit)
+			// Safely convert and check for overflow
+			if digit < 0 || digit > 84 {
+				return nil, fmt.Errorf("invalid base85 digit value: %d", digit)
+			}
+			digitValue := uint32(digit)
+			if value > (math.MaxUint32-digitValue)/85 {
+				return nil, fmt.Errorf("base85 decode overflow at input byte %d", i+j)
+			}
+			value = value*85 + digitValue
 		}
 
 		output = append(output, byte(value>>24))

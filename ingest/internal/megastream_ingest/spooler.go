@@ -208,13 +208,17 @@ func (ls *LocalSpooler) processFiles(ctx context.Context, files []string) {
 
 		if err := ls.processFile(ctx, filePath, filename); err != nil {
 			ls.logger.Error("Failed to process file %s: %v", filename, err)
-			ls.stateManager.MarkFailed(filename, err.Error())
+			if markErr := ls.stateManager.MarkFailed(filename, err.Error()); markErr != nil {
+				ls.logger.Error("Failed to mark file as failed in state: %v", markErr)
+			}
 		} else {
 			// TODO: Move state update to after Elasticsearch indexing is confirmed.
 			// Currently marking as processed after rows are queued to channel, but should
 			// happen after ES confirms successful indexing. Need to implement acknowledgment
 			// mechanism from main thread back to spooler (e.g., via separate ack channel).
-			ls.stateManager.MarkProcessed(filename)
+			if markErr := ls.stateManager.MarkProcessed(filename); markErr != nil {
+				ls.logger.Error("Failed to mark file as processed in state: %v", markErr)
+			}
 		}
 	}
 }
@@ -340,13 +344,17 @@ func (ss *S3Spooler) processFiles(ctx context.Context, keys []string) {
 
 		if err := ss.processFile(ctx, key, filename); err != nil {
 			ss.logger.Error("Failed to process S3 file %s: %v", key, err)
-			ss.stateManager.MarkFailed(filename, err.Error())
+			if markErr := ss.stateManager.MarkFailed(filename, err.Error()); markErr != nil {
+				ss.logger.Error("Failed to mark file as failed in state: %v", markErr)
+			}
 		} else {
 			// TODO: Move state update to after Elasticsearch indexing is confirmed.
 			// Currently marking as processed after rows are queued to channel, but should
 			// happen after ES confirms successful indexing. Need to implement acknowledgment
 			// mechanism from main thread back to spooler (e.g., via separate ack channel).
-			ss.stateManager.MarkProcessed(filename)
+			if markErr := ss.stateManager.MarkProcessed(filename); markErr != nil {
+				ss.logger.Error("Failed to mark file as processed in state: %v", markErr)
+			}
 		}
 	}
 }
@@ -388,7 +396,7 @@ func (ss *S3Spooler) downloadFile(ctx context.Context, key, destPath string) err
 	}
 	defer result.Body.Close()
 
-	outFile, err := os.Create(destPath)
+	outFile, err := os.Create(destPath) // nolint:gosec // G304: File path is from earlier disk read, not user input
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
@@ -423,15 +431,22 @@ func unzipFile(zipPath, destDir string) (string, error) {
 				return "", fmt.Errorf("failed to open file in zip: %w", err)
 			}
 
-			outFile, err := os.Create(fpath)
+			outFile, err := os.Create(fpath) // nolint:gosec // G304: File path is from zipfile
 			if err != nil {
-				rc.Close()
+				if closeErr := rc.Close(); closeErr != nil {
+					return "", fmt.Errorf("failed to close reader and create output file: %v, %w", closeErr, err)
+				}
 				return "", fmt.Errorf("failed to create output file: %w", err)
 			}
 
-			_, err = io.Copy(outFile, rc)
-			outFile.Close()
-			rc.Close()
+			_, err = io.Copy(outFile, rc) // nolint:gosec // G110: We trust the source of the zip file
+			if closeErr := outFile.Close(); closeErr != nil {
+				_ = rc.Close() // Best effort close, ignore error as we're already handling an error
+				return "", fmt.Errorf("failed to close output file: %w", closeErr)
+			}
+			if closeErr := rc.Close(); closeErr != nil {
+				return "", fmt.Errorf("failed to close reader: %w", closeErr)
+			}
 
 			if err != nil {
 				return "", fmt.Errorf("failed to extract file: %w", err)

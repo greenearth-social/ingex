@@ -13,11 +13,11 @@ linters:
     - bodyclose     # Check HTTP response body is closed
     - noctx         # Find sending HTTP request without context.Context
     - revive        # Fast, configurable, extensible, flexible, and beautiful linter for Go
+    - gosec         # Security problems
 
   disable:
     # Temporarily disabled linters
     - errcheck      # Check for unchecked errors
-    - gosec         # Security problems
 
   settings:
     errcheck:
