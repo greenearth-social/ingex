@@ -115,15 +115,16 @@ wait_for_job() {
             return 1
         fi
 
-        local succeeded=$(kubectl get job $job_name -n $namespace -o jsonpath='{.status.succeeded}' 2>/dev/null || echo "0")
-        local failed=$(kubectl get job $job_name -n $namespace -o jsonpath='{.status.failed}' 2>/dev/null || echo "0")
+        # Check job status using conditions (more reliable than succeeded/failed counters)
+        local condition=$(kubectl get job $job_name -n $namespace -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || echo "")
+        local failed_condition=$(kubectl get job $job_name -n $namespace -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || echo "")
 
-        if [ "$succeeded" = "1" ]; then
+        if [ "$condition" = "True" ]; then
             log_success "job/$job_name completed successfully"
             return 0
         fi
 
-        if [ "$failed" != "0" ]; then
+        if [ "$failed_condition" = "True" ]; then
             log_error "job/$job_name failed"
             kubectl logs -l job-name=$job_name -n $namespace --tail=50 2>/dev/null || true
             return 1
