@@ -49,7 +49,11 @@ func (c *Client) Connect(ctx context.Context) error {
 	dialer := websocket.DefaultDialer
 	dialer.HandshakeTimeout = 30 * time.Second
 
-	conn, _, err := dialer.DialContext(ctx, url, nil)
+	conn, resp, err := dialer.DialContext(ctx, url, nil)
+	if resp != nil && resp.Body != nil {
+		// Close the body on the HTTP upgrade response
+		resp.Body.Close()
+	}
 	if err != nil {
 		return fmt.Errorf("failed to connect to Jetstream: %w", err)
 	}

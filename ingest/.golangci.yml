@@ -1,0 +1,46 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - govet         # Reports suspicious constructs
+    - ineffassign   # Detect ineffectual assignments
+    - staticcheck   # Go static analysis (includes gosimple and unused)
+    - misspell      # Find commonly misspelled English words
+    - bodyclose     # Check HTTP response body is closed
+    - noctx         # Find sending HTTP request without context.Context
+
+  disable:
+    # Temporarily disabled linters
+    - revive        # Fast, configurable, extensible, flexible, and beautiful linter for Go
+    - errcheck      # Check for unchecked errors
+    - gosec         # Security problems
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+
+    govet:
+      enable:
+        - nilness
+        - unusedresult
+      disable:
+        - shadow
+
+    revive:
+      rules:
+        - name: exported
+        - name: error-return
+        - name: error-naming
+        - name: if-return
+        - name: var-naming
+
+  exclusions:
+    rules:
+    # Exclude some linters from running on tests files
+    - path: _test\.go
+      linters:
+        - gosec
