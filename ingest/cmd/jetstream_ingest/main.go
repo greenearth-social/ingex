@@ -108,7 +108,11 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		logger.Error("Failed to start Jetstream client: %v", err)
 		os.Exit(1)
 	}
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			logger.Error("Failed to close Jetstream client: %v", err)
+		}
+	}()
 
 	// Process messages from Jetstream with parallel workers
 	msgChan := client.GetMessageChannel()

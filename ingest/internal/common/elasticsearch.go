@@ -140,7 +140,11 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 	if err != nil {
 		return fmt.Errorf("bulk request failed: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
 
 	if res.IsError() {
 		return fmt.Errorf("bulk request returned error: %s", res.String())
@@ -227,7 +231,11 @@ func BulkIndexTombstones(ctx context.Context, client *elasticsearch.Client, inde
 	if err != nil {
 		return fmt.Errorf("bulk tombstone request failed: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
 
 	if res.IsError() {
 		return fmt.Errorf("bulk tombstone request returned error: %s", res.String())
@@ -306,7 +314,11 @@ func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string,
 	if err != nil {
 		return fmt.Errorf("bulk delete request failed: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
 
 	if res.IsError() {
 		return fmt.Errorf("bulk delete request returned error: %s", res.String())
@@ -449,7 +461,11 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 	if err != nil {
 		return fmt.Errorf("bulk like request failed: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
 
 	if res.IsError() {
 		return fmt.Errorf("bulk like request returned error: %s", res.String())

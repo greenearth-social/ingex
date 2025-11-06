@@ -207,7 +207,9 @@ func decodeEmbedding(encoded string) ([]float32, error) {
 	if err != nil {
 		return nil, fmt.Errorf("zlib decompression failed: %w", err)
 	}
-	defer reader.Close()
+	defer func() {
+		_ = reader.Close() // Ignore error in cleanup
+	}()
 
 	decompressed, err := io.ReadAll(reader)
 	if err != nil {

@@ -228,7 +228,11 @@ func (ls *LocalSpooler) processFile(ctx context.Context, filePath, filename stri
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			ls.logger.Error("Failed to clean up temp directory: %v", err)
+		}
+	}()
 
 	dbPath, err := unzipFile(filePath, tmpDir)
 	if err != nil {
@@ -364,7 +368,11 @@ func (ss *S3Spooler) processFile(ctx context.Context, key, filename string) erro
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			ss.logger.Error("Failed to clean up temp directory: %v", err)
+		}
+	}()
 
 	zipPath := filepath.Join(tmpDir, filename)
 	if err := ss.downloadFile(ctx, key, zipPath); err != nil {
@@ -394,13 +402,21 @@ func (ss *S3Spooler) downloadFile(ctx context.Context, key, destPath string) err
 	if err != nil {
 		return fmt.Errorf("failed to get S3 object: %w", err)
 	}
-	defer result.Body.Close()
+	defer func() {
+		if err := result.Body.Close(); err != nil {
+			ss.logger.Error("Failed to close S3 response body: %v", err)
+		}
+	}()
 
 	outFile, err := os.Create(destPath) // nolint:gosec // G304: File path is from earlier disk read, not user input
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
-	defer outFile.Close()
+	defer func() {
+		if err := outFile.Close(); err != nil {
+			ss.logger.Error("Failed to close output file: %v", err)
+		}
+	}()
 
 	if _, err := io.Copy(outFile, result.Body); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
@@ -415,7 +431,9 @@ func unzipFile(zipPath, destDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to open zip file: %w", err)
 	}
-	defer r.Close()
+	defer func() {
+		_ = r.Close() // Ignore error in cleanup
+	}()
 
 	if len(r.File) == 0 {
 		return "", fmt.Errorf("zip file is empty")
@@ -469,7 +487,11 @@ func processDatabase(ctx context.Context, dbPath, filename string, rowChan chan<
 	if err != nil {
 		return fmt.Errorf("failed to open SQLite database: %w", err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			logger.Error("Failed to close database: %v", err)
+		}
+	}()
 
 	rows, err := db.QueryContext(ctx, `
 		SELECT at_uri, did, raw_post, inferences
@@ -478,7 +500,11 @@ func processDatabase(ctx context.Context, dbPath, filename string, rowChan chan<
 	if err != nil {
 		return fmt.Errorf("failed to query enriched_posts: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("Failed to close rows: %v", err)
+		}
+	}()
 
 	rowCount := 0
 	for rows.Next() {
