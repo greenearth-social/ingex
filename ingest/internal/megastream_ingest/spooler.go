@@ -176,6 +176,10 @@ func (ls *LocalSpooler) discoverFiles() ([]string, error) {
 	}
 
 	var files []string
+	var skippedCount int
+	var oldestSkipped, newestSkipped string
+	var oldestSkippedTime, newestSkippedTime int64
+
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -192,7 +196,15 @@ func (ls *LocalSpooler) discoverFiles() ([]string, error) {
 		}
 
 		if fileTimeUs <= cursorTimeUs {
-			ls.logger.Debug("Skipping file before or at cursor: %s (file_time: %d, cursor: %d)", entry.Name(), fileTimeUs, cursorTimeUs)
+			skippedCount++
+			if oldestSkipped == "" || fileTimeUs < oldestSkippedTime {
+				oldestSkipped = entry.Name()
+				oldestSkippedTime = fileTimeUs
+			}
+			if newestSkipped == "" || fileTimeUs > newestSkippedTime {
+				newestSkipped = entry.Name()
+				newestSkippedTime = fileTimeUs
+			}
 			continue
 		}
 
@@ -200,6 +212,9 @@ func (ls *LocalSpooler) discoverFiles() ([]string, error) {
 	}
 
 	sort.Strings(files)
+	if skippedCount > 0 {
+		ls.logger.Info("Skipped %d files before cursor (oldest: %s, newest: %s)", skippedCount, oldestSkipped, newestSkipped)
+	}
 	ls.logger.Info("Discovered %d unprocessed files", len(files))
 	return files, nil
 }
@@ -327,6 +342,10 @@ func (ss *S3Spooler) discoverFiles(ctx context.Context) ([]string, error) {
 	}
 
 	var files []string
+	var skippedCount int
+	var oldestSkipped, newestSkipped string
+	var oldestSkippedTime, newestSkippedTime int64
+
 	for _, obj := range result.Contents {
 		key := *obj.Key
 		filename := filepath.Base(key)
@@ -342,7 +361,15 @@ func (ss *S3Spooler) discoverFiles(ctx context.Context) ([]string, error) {
 		}
 
 		if fileTimeUs <= cursorTimeUs {
-			ss.logger.Debug("Skipping file before or at cursor: %s (file_time: %d, cursor: %d)", filename, fileTimeUs, cursorTimeUs)
+			skippedCount++
+			if oldestSkipped == "" || fileTimeUs < oldestSkippedTime {
+				oldestSkipped = filename
+				oldestSkippedTime = fileTimeUs
+			}
+			if newestSkipped == "" || fileTimeUs > newestSkippedTime {
+				newestSkipped = filename
+				newestSkippedTime = fileTimeUs
+			}
 			continue
 		}
 
@@ -350,6 +377,9 @@ func (ss *S3Spooler) discoverFiles(ctx context.Context) ([]string, error) {
 	}
 
 	sort.Strings(files)
+	if skippedCount > 0 {
+		ss.logger.Info("Skipped %d files before cursor (oldest: %s, newest: %s)", skippedCount, oldestSkipped, newestSkipped)
+	}
 	ss.logger.Info("Discovered %d unprocessed files in S3", len(files))
 	return files, nil
 }
