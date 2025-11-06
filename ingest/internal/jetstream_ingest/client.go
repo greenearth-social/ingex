@@ -3,6 +3,7 @@ package jetstream_ingest
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -17,6 +18,7 @@ type Client struct {
 	msgChan   chan string
 	logger    *common.IngestLogger
 	reconnect bool
+	mu        sync.RWMutex // Protects conn and reconnect fields
 }
 
 // NewClient creates a new Jetstream WebSocket client
@@ -49,12 +51,18 @@ func (c *Client) Connect(ctx context.Context) error {
 	dialer := websocket.DefaultDialer
 	dialer.HandshakeTimeout = 30 * time.Second
 
-	conn, _, err := dialer.DialContext(ctx, url, nil)
+	conn, resp, err := dialer.DialContext(ctx, url, nil)
+	if resp != nil && resp.Body != nil {
+		// Close the body on the HTTP upgrade response
+		resp.Body.Close()
+	}
 	if err != nil {
 		return fmt.Errorf("failed to connect to Jetstream: %w", err)
 	}
 
+	c.mu.Lock()
 	c.conn = conn
+	c.mu.Unlock()
 	c.logger.Info("Successfully connected to Jetstream")
 
 	return nil
@@ -79,14 +87,21 @@ func (c *Client) readLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			c.logger.Info("Context cancelled, closing WebSocket connection")
+			c.mu.Lock()
 			c.reconnect = false
 			if c.conn != nil {
 				c.conn.Close()
 			}
+			c.mu.Unlock()
 			return
 		default:
-			if c.conn == nil {
-				if !c.reconnect {
+			c.mu.RLock()
+			conn := c.conn
+			shouldReconnect := c.reconnect
+			c.mu.RUnlock()
+
+			if conn == nil {
+				if !shouldReconnect {
 					return
 				}
 				c.logger.Info("Attempting to reconnect...")
@@ -95,17 +110,23 @@ func (c *Client) readLoop(ctx context.Context) {
 					time.Sleep(5 * time.Second)
 					continue
 				}
+				c.mu.RLock()
+				conn = c.conn
+				c.mu.RUnlock()
 			}
 
 			// Set read deadline to allow periodic context checking
-			c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+			conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
-			_, message, err := c.conn.ReadMessage()
+			_, message, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 					c.logger.Info("WebSocket connection closed normally")
+					c.mu.Lock()
 					c.conn = nil
-					if c.reconnect {
+					shouldReconnect := c.reconnect
+					c.mu.Unlock()
+					if shouldReconnect {
 						c.logger.Info("Reconnecting in 5 seconds...")
 						time.Sleep(5 * time.Second)
 						continue
@@ -119,8 +140,11 @@ func (c *Client) readLoop(ctx context.Context) {
 				}
 
 				c.logger.Error("Error reading from WebSocket: %v", err)
+				c.mu.Lock()
 				c.conn = nil
-				if c.reconnect {
+				shouldReconnect := c.reconnect
+				c.mu.Unlock()
+				if shouldReconnect {
 					c.logger.Info("Reconnecting in 5 seconds...")
 					time.Sleep(5 * time.Second)
 					continue
@@ -151,6 +175,9 @@ func (c *Client) GetMessageChannel() <-chan string {
 
 // Close closes the WebSocket connection
 func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	c.reconnect = false
 	if c.conn != nil {
 		return c.conn.Close()

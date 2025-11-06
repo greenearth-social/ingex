@@ -202,24 +202,6 @@ export ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
 ./megastream_ingest --source s3 --mode spool
 ```
 
-
-## Testing
-
-### Unit Tests
-
-Run tests for common libraries:
-
-```bash
-go test ./internal/common -v
-```
-
-### Integration Testing
-
-See individual command READMEs for command-specific integration testing:
-
-- [megastream_ingest testing](cmd/megastream_ingest/README.md#testing)
-- [jetstream_ingest testing](cmd/jetstream_ingest/README.md#building)
-
 ## Deployment
 
 ### Local Testing
@@ -266,6 +248,58 @@ import (
     "github.com/greenearth/ingest/internal/jetstream_ingest"
 )
 ```
+
+### Testing and Linting
+
+Install golangci-lint:
+
+```bash
+# macOS
+brew install golangci-lint
+
+# Linux
+curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin
+
+# Or using go install (slower, not recommended by package authors)
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+```
+
+Run locally:
+
+```bash
+cd ingest
+
+# Run all tests with race detector
+go test -v -race ./...
+
+# Run linter
+golangci-lint run
+
+# Run tests with coverage
+go test -v -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out
+```
+
+**VS Code Setup**: Open the VScode settings, find the golang linter, and select `golangci-lint-v2` from the dropdown.
+
+This enables real-time linting in the editor using the project's `.golangci.yml` configuration.
+
+### CI
+
+The project uses GitHub Actions for continuous integration:
+
+- **Tests**: Runs on push/PR with race detector and coverage
+- **Linting**: golangci-lint with static analysis
+- **Build**: Validates both binaries compile successfully
+
+See `.github/workflows/go-ci.yml` for CI configuration.
+
+### Integration Testing
+
+See individual command READMEs for command-specific integration testing:
+
+- [megastream_ingest testing](cmd/megastream_ingest/README.md#testing)
+- [jetstream_ingest testing](cmd/jetstream_ingest/README.md#building)
 
 ## Elasticsearch Indexes
 

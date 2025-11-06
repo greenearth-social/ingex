@@ -1,0 +1,97 @@
+name: Go CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'ingest/**'
+      - '.github/workflows/go-ci.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'ingest/**'
+      - '.github/workflows/go-ci.yml'
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.1'
+        cache-dependency-path: ingest/go.sum
+
+    - name: Download dependencies
+      working-directory: ./ingest
+      run: go mod download
+
+    - name: Verify dependencies
+      working-directory: ./ingest
+      run: go mod verify
+
+    - name: Run go vet
+      working-directory: ./ingest
+      run: go vet ./...
+
+    - name: Run tests (no coverage analysis)
+      working-directory: ./ingest
+      run: go test -v -race ./...
+
+    # - name: Run tests (with coverage analysis)
+    #   working-directory: ./ingest
+    #   run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+    # - name: Upload coverage to Codecov
+    #   uses: codecov/codecov-action@v4
+    #   with:
+    #     files: ./ingest/coverage.out
+    #     flags: go
+    #     fail_ci_if_error: false
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.1'
+        cache-dependency-path: ingest/go.sum
+
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v8
+      with:
+        version: latest
+        working-directory: ./ingest
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.1'
+        cache-dependency-path: ingest/go.sum
+
+    - name: Build jetstream_ingest
+      working-directory: ./ingest
+      run: go build -v ./cmd/jetstream_ingest
+
+    - name: Build megastream_ingest
+      working-directory: ./ingest
+      run: go build -v ./cmd/megastream_ingest

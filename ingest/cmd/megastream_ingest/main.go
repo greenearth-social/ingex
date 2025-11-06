@@ -77,12 +77,13 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	}
 
 	// Validate source-specific configuration
-	if source == "local" {
+	switch source {
+	case "local":
 		if config.LocalSQLiteDBPath == "" {
 			logger.Error("LOCAL_SQLITE_DB_PATH environment variable is required for local source")
 			os.Exit(1)
 		}
-	} else if source == "s3" {
+	case "s3":
 		if config.S3SQLiteDBBucket == "" {
 			logger.Error("S3_SQLITE_DB_BUCKET environment variable is required for s3 source")
 			os.Exit(1)
