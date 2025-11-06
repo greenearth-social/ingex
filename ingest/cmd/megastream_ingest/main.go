@@ -183,7 +183,8 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				deleteBatch = append(deleteBatch, msg.GetAtURI())
 
 				if len(tombstoneBatch) >= batchSize {
-					if err := common.BulkIndexTombstones(ctx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
+					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+					if err := common.BulkIndexTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
 						logger.Error("Failed to bulk index tombstones: %v", err)
 					} else {
 						if dryRun {
@@ -193,7 +194,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						}
 					}
 
-					if err := common.BulkDelete(ctx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
+					if err := common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
 						logger.Error("Failed to bulk delete posts: %v", err)
 					} else {
 						deletedCount += len(deleteBatch)
@@ -206,6 +207,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 					tombstoneBatch = tombstoneBatch[:0]
 					deleteBatch = deleteBatch[:0]
+					cancelBatchCtx()
 				}
 				continue
 			}
@@ -214,7 +216,8 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			batch = append(batch, doc)
 
 			if len(batch) >= batchSize {
-				if err := common.BulkIndex(ctx, esClient, "posts", batch, dryRun, logger); err != nil {
+				batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+				if err := common.BulkIndex(batchCtx, esClient, "posts", batch, dryRun, logger); err != nil {
 					logger.Error("Failed to bulk index batch: %v", err)
 				} else {
 					processedCount += len(batch)
@@ -225,14 +228,19 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					}
 				}
 				batch = batch[:0]
+				cancelBatchCtx()
 			}
 		}
 	}
 
 cleanup:
+	// Create a separate context for cleanup operations with a 30-second timeout
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cleanupCancel()
+
 	// Index remaining documents in batch
 	if len(batch) > 0 {
-		if err := common.BulkIndex(ctx, esClient, "posts", batch, dryRun, logger); err != nil {
+		if err := common.BulkIndex(cleanupCtx, esClient, "posts", batch, dryRun, logger); err != nil {
 			logger.Error("Failed to bulk index final batch: %v", err)
 		} else {
 			processedCount += len(batch)
@@ -246,7 +254,7 @@ cleanup:
 
 	// Index remaining tombstones and delete posts
 	if len(tombstoneBatch) > 0 {
-		if err := common.BulkIndexTombstones(ctx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
+		if err := common.BulkIndexTombstones(cleanupCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
 			logger.Error("Failed to bulk index final tombstone batch: %v", err)
 		} else {
 			if dryRun {
@@ -256,7 +264,7 @@ cleanup:
 			}
 		}
 
-		if err := common.BulkDelete(ctx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
+		if err := common.BulkDelete(cleanupCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
 			logger.Error("Failed to bulk delete final batch: %v", err)
 		} else {
 			deletedCount += len(deleteBatch)
