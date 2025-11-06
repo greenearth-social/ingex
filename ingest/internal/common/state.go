@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// CursorState represents the current processing position and metadata for file ingestion
 type CursorState struct {
 	LastTimeUs int64     `json:"last_time_us"`
 	UpdatedAt  time.Time `json:"updated_at"`
@@ -76,6 +77,7 @@ func (sm *StateManager) LoadState() error {
 	return nil
 }
 
+// GetCursor returns the current cursor state indicating the last processed timestamp
 func (sm *StateManager) GetCursor() *CursorState {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -97,7 +99,7 @@ func (sm *StateManager) UpdateCursor(timeUs int64) error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	if err := os.WriteFile(sm.stateFilePath, data, 0644); err != nil {
+	if err := os.WriteFile(sm.stateFilePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 

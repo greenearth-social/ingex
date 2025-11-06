@@ -10,6 +10,8 @@ import (
 
 var megastreamFilenameRegex = regexp.MustCompile(`^mega_jetstream_(\d{8})_(\d{6})\.db\.zip$`)
 
+// ParseMegastreamFilenameTimestamp extracts a Unix timestamp in microseconds from a Megastream filename.
+// Expected format: mega_jetstream_YYYYMMDD_HHMMSS.db.zip
 func ParseMegastreamFilenameTimestamp(filename string) (int64, error) {
 	base := filepath.Base(filename)
 	matches := megastreamFilenameRegex.FindStringSubmatch(base)
@@ -54,6 +56,8 @@ func ParseMegastreamFilenameTimestamp(filename string) (int64, error) {
 	return t.UnixMicro(), nil
 }
 
+// TimestampToMegastreamFilename converts a Unix timestamp in microseconds to a Megastream filename format.
+// Returns a string in the format: mega_jetstream_YYYYMMDD_HHMMSS.db.zip
 func TimestampToMegastreamFilename(timeUs int64) string {
 	t := time.UnixMicro(timeUs).UTC()
 	return fmt.Sprintf("mega_jetstream_%s.db.zip", t.Format("20060102_150405"))
