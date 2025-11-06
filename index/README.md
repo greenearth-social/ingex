@@ -7,9 +7,11 @@ This directory contains all infrastructure and deployment configurations for the
 ```text
 index/
 ├── README.md                           # This file
+├── deploy.sh                          # Automated deployment script
 └── deploy/                            # Deployment configurations
     ├── terraform/                     # Terraform IaC (TODO)
     └── k8s/                          # Kubernetes manifests
+        ├── base/                     # Shared Kustomize base configuration
         └── environments/
             ├── local/                # Local development environment
             └── stage/                # Stage environment (GKE)
@@ -51,9 +53,26 @@ The indexing infrastructure uses **Elastic Cloud on Kubernetes (ECK)** to deploy
 - **50GB storage per data node**
 - **TODO**: Proper virtual memory configuration via init containers
 
+## Quick Start
+
+Deploy to your environment with a single command:
+
+```bash
+# Set the service user password
+export ES_SERVICE_USER_PASSWORD="your-secure-password"
+
+# Deploy to local environment
+./deploy.sh local
+
+# Deploy to stage environment
+./deploy.sh stage
+```
+
+The deployment script automatically handles all setup steps including Elasticsearch, Kibana, service user creation, and index template configuration.
+
 ## Deployment Guide
 
-This guide covers deploying Elasticsearch and Kibana to both local (minikube) and stage (GKE Autopilot) environments. The deployment steps are nearly identical between environments, with specific differences noted where applicable.
+The deployment infrastructure uses **Kustomize** for configuration management with a shared base and environment-specific overlays.
 
 ### Prerequisites
 
@@ -62,181 +81,107 @@ This guide covers deploying Elasticsearch and Kibana to both local (minikube) an
 - Docker
 - minikube or other local Kubernetes cluster
 - kubectl
-- openssl (for generating passwords)
+- ECK operator installed (or use `--install-eck` flag)
 
 **Stage Environment:**
 
 - Google Cloud CLI (`gcloud`) installed and authenticated
 - **Kubernetes Engine Admin** IAM role for ECK operator installation
 - kubectl installed locally
-- openssl (for generating passwords)
+- ECK operator installed (or use `--install-eck` flag)
 
 **Note**: GKE is temporary for initial testing. Future deployments will use Azure Kubernetes Service (AKS).
 
-### 1. Create or Configure Kubernetes Cluster
+### Automated Deployment
 
-**Local:**
+The simplest way to deploy is using the automated deployment script:
 
 ```bash
-# Ensure minikube is running
-minikube status
+# Set required environment variable
+export ES_SERVICE_USER_PASSWORD="your-secure-password"
+
+# Deploy to local environment
+./deploy.sh local
+
+# Deploy to stage with ECK installation
+./deploy.sh stage --install-eck
+
+# See all options
+./deploy.sh --help
 ```
 
-**Stage:**
+#### Deployment Script Options
+
+- `--install-eck`: Install ECK operator before deployment
+- `--skip-templates`: Skip template/alias ConfigMaps (for updates)
+- `--dry-run`: Show what would be deployed without applying
+- `--teardown`: Delete the entire environment (prompts for confirmation)
+
+#### What the Script Does
+
+The deployment script automatically:
+
+1. Verifies prerequisites (kubectl, cluster connection, environment variables)
+2. Optionally installs ECK operator (with `--install-eck`)
+3. Creates the namespace
+4. Deploys stage-specific DaemonSet (for stage environment only)
+5. Applies all Kustomize manifests (Elasticsearch, Kibana, templates)
+6. Waits for Elasticsearch and Kibana to be ready
+7. Creates service user credentials secret
+8. Runs service user setup job
+9. Runs bootstrap job to configure templates and aliases
+10. Provides next steps for accessing the cluster
+
+The script includes automatic cleanup on failure and colored output for easy monitoring.
+
+### Manual Deployment (Advanced)
+
+If you prefer manual deployment or need to customize the process:
 
 ```bash
-# Create GKE Autopilot cluster
-gcloud container clusters create-auto greenearth-stage-cluster \
-  --region=us-east1 \
-  --project=YOUR_PROJECT_ID
+# 1. Set environment variables
+export ENVIRONMENT=local  # or stage
+export NAMESPACE=greenearth-$ENVIRONMENT
+export ES_SERVICE_USER_PASSWORD="your-secure-password"
 
-# Verify connection
-kubectl config current-context
-# Should show: gke_PROJECT_ID_us-east1_greenearth-stage-cluster
-```
+# 2. Create namespace
+kubectl create namespace $NAMESPACE
 
-### 2. Install ECK Operator
+# 3. For stage only: Deploy DaemonSet
+kubectl apply -f deploy/k8s/environments/stage/max-map-count-daemonset.yaml
 
-**Both Environments:**
+# 4. Deploy all resources using Kustomize
+kubectl apply -k deploy/k8s/environments/$ENVIRONMENT
 
-```bash
-# Install ECK 3.1.0 CRDs
-kubectl create -f https://download.elastic.co/downloads/eck/3.1.0/crds.yaml
+# 5. Wait for resources to be ready
+kubectl get elasticsearch,kibana -n $NAMESPACE -w
 
-# Install ECK Operator
-kubectl apply -f https://download.elastic.co/downloads/eck/3.1.0/operator.yaml
-
-# Verify ECK is running
-kubectl get pods -n elastic-system
-# Wait for elastic-operator to show STATUS: Running
-```
-
-### 3. Create Namespace
-
-**Local:**
-
-```bash
-kubectl create namespace greenearth-local
-```
-
-**Stage:**
-
-```bash
-kubectl create namespace greenearth-stage
-```
-
-**IMPORTANT**: From here on, greenearth-local / greenearth-stage will be referred to as $NAMESPACE.
-The environment, local/stage, will be referred to as $DEPLOYMENT_ENV.
-
-### 4. Deploy DaemonSet for Virtual Memory (Stage Only)
-
-**Stage Only** - **IMPORTANT**: Must be deployed before Elasticsearch to set `vm.max_map_count`.
-
-```bash
-kubectl apply -f deploy/k8s/environments/$DEPLOYMENT_ENV/max-map-count-daemonset.yaml
-```
-
-Wait ~30 seconds for DaemonSet to complete.
-
-**Note**: Local environments using minikube don't typically require this step.
-
-### 5. Deploy Elasticsearch
-
-```bash
-kubectl apply -f deploy/k8s/environments/$DEPLOYMENT_ENV/elasticsearch.yaml
-```
-
-**Configuration Differences:**
-
-- **Local**: 2GB memory, 1GB JVM heap, 5GB storage, mmap disabled
-- **Stage**: 12GB memory, 6GB JVM heap, 20GB storage, mmap enabled
-
-### 6. Deploy Kibana
-
-```bash
-kubectl apply -f deploy/k8s/environments/$DEPLOYMENT_ENV/kibana.yaml
-```
-
-### 7. Wait for Elasticsearch and Kibana to be Ready
-
-```bash
-# Check Elasticsearch status
-kubectl get elasticsearch -n $NAMESPACE
-
-# Check Kibana status
-kubectl get kibana -n $NAMESPACE
-
-# Check pod status
-kubectl get pods -n $NAMESPACE
-```
-
-Wait for:
-
-- **Elasticsearch HEALTH**: `green`
-- **Elasticsearch PHASE**: `Ready`
-- **Kibana HEALTH**: `green`
-- **Kibana PHASE**: `Ready`
-
-**Timing:**
-
-- Local: ~2-3 minutes
-- Stage: ~5-10 minutes (first deployment)
-
-### 8. Deploy ConfigMaps for Index Templates
-
-```bash
-kubectl apply -f deploy/k8s/environments/$DEPLOYMENT_ENV/templates/
-```
-
-### 9. Create Service User Credentials Secret
-
-**IMPORTANT**: This secret must be created before running the service user setup job.
-
-```bash
-# Create the Kubernetes secret with both username and password (password should come from .env file)
+# 6. Create service user secret
 kubectl create secret generic es-service-user-secret \
   --from-literal=username="es-service-user" \
-  --from-literal=password="$ES_SERVICE_PASSWORD" \
+  --from-literal=password="$ES_SERVICE_USER_PASSWORD" \
   -n $NAMESPACE
+
+# 7. Deploy service user setup job
+kubectl apply -f deploy/k8s/environments/$ENVIRONMENT/es-service-user-setup-job-patch.yaml -n $NAMESPACE
+
+# 8. Deploy bootstrap job
+kubectl apply -f deploy/k8s/environments/$ENVIRONMENT/bootstrap-job-patch.yaml -n $NAMESPACE
 ```
 
-### 10. Create Service Account User
+### Kustomize Configuration
 
-```bash
-kubectl apply -f deploy/k8s/environments/$DEPLOYMENT_ENV/es-service-user-setup-job.yaml
-```
+The deployment uses Kustomize with a base + overlay structure:
 
-This job:
+- **base/**: Shared configuration for all environments
+  - Elasticsearch, Kibana, bootstrap job, service user setup
+  - Index templates and aliases (shared across environments)
+- **environments/local/**: Local-specific overrides
+  - 2GB memory, mmap disabled, 5GB storage
+- **environments/stage/**: Stage-specific overrides
+  - 12GB memory, mmap enabled, 20GB storage, DaemonSet for vm.max_map_count
 
-- Waits for Elasticsearch to be ready
-- Creates `es_service_role` with index template and posts index permissions
-- Creates the service user (using credentials from `es-service-user-secret`) with the role
-
-**Monitor the job**:
-
-```bash
-kubectl get jobs -n $NAMESPACE
-kubectl logs -l job-name=es-service-user-setup -n $NAMESPACE
-```
-
-### 11. Run Bootstrap Job
-
-```bash
-kubectl apply -f deploy/k8s/environments/$DEPLOYMENT_ENV/bootstrap-job.yaml
-```
-
-This job uses the `es-service-user` credentials to:
-
-- Apply index templates
-- Create initial indexes
-- Configure initial index aliases
-
-**Monitor the job**:
-
-```bash
-kubectl get jobs -n $NAMESPACE
-kubectl logs -l job-name=elasticsearch-bootstrap -n $NAMESPACE
-```
+This structure eliminates configuration duplication and makes it easy to add new environments.
 
 ## Accessing the Cluster
 
@@ -389,9 +334,19 @@ A healthy deployment should show:
 
 ## Cleanup
 
+Using the deployment script (recommended):
+
+```bash
+# Teardown with confirmation prompt
+./deploy.sh local --teardown
+./deploy.sh stage --teardown
+```
+
+Or manually:
+
 ```bash
 # Remove all resources
-kubectl delete namespace $NAMESPACE
+kubectl delete namespace greenearth-local  # or greenearth-stage
 ```
 
 ## Azure Deployment (Future)
