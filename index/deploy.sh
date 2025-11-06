@@ -232,12 +232,12 @@ deploy_environment() {
         exit 0
     fi
 
-    wait_for_resource "elasticsearch" "greenearth-es-$environment" "$namespace" 600 || {
+    wait_for_resource "elasticsearch" "greenearth-es" "$namespace" 600 || {
         log_error "Elasticsearch failed to become ready"
         exit 1
     }
 
-    wait_for_resource "kibana" "greenearth-kibana-$environment" "$namespace" 300 || {
+    wait_for_resource "kibana" "greenearth-kibana" "$namespace" 300 || {
         log_error "Kibana failed to become ready"
         exit 1
     }
@@ -249,18 +249,14 @@ deploy_environment() {
         -n "$namespace" \
         --dry-run=client -o yaml | kubectl apply -f -
 
-    log_info "Deploying service user setup job..."
-    kubectl apply -f "$K8S_DIR/environments/$environment/es-service-user-setup-job-patch.yaml" -n "$namespace" || true
-
-    wait_for_job "es-service-user-setup-$environment" "$namespace" 180 || {
+    log_info "Waiting for service user setup job..."
+    wait_for_job "es-service-user-setup" "$namespace" 180 || {
         log_error "Service user setup job failed"
         exit 1
     }
 
-    log_info "Deploying bootstrap job..."
-    kubectl apply -f "$K8S_DIR/environments/$environment/bootstrap-job-patch.yaml" -n "$namespace" || true
-
-    wait_for_job "elasticsearch-bootstrap-$environment" "$namespace" 180 || {
+    log_info "Waiting for bootstrap job..."
+    wait_for_job "elasticsearch-bootstrap" "$namespace" 180 || {
         log_error "Bootstrap job failed"
         exit 1
     }
@@ -268,9 +264,9 @@ deploy_environment() {
     log_success "Deployment to $environment completed successfully!"
     echo ""
     log_info "Next steps:"
-    log_info "  - Access Kibana: kubectl port-forward service/greenearth-kibana-$environment-kb-http 5601 -n $namespace"
-    log_info "  - Access Elasticsearch: kubectl port-forward service/greenearth-es-$environment-es-http 9200 -n $namespace"
-    log_info "  - Get elastic password: kubectl get secret greenearth-es-$environment-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $namespace"
+    log_info "  - Access Kibana: kubectl port-forward service/greenearth-kibana-kb-http 5601 -n $namespace"
+    log_info "  - Access Elasticsearch: kubectl port-forward service/greenearth-es-http 9200 -n $namespace"
+    log_info "  - Get elastic password: kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $namespace"
 }
 
 ENVIRONMENT=""

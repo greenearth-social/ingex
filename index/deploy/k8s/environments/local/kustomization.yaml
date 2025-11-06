@@ -6,8 +6,6 @@ namespace: greenearth-local
 resources:
   - ../../base
 
-nameSuffix: -local
-
 patches:
   - target:
       kind: Elasticsearch
@@ -16,14 +14,3 @@ patches:
       - op: replace
         path: /spec/nodeSets/0/config/node.store.allow_mmap
         value: false
-  - target:
-      kind: Kibana
-      name: greenearth-kibana
-    patch: |-
-      - op: replace
-        path: /spec/elasticsearchRef/name
-        value: greenearth-es-local
-
-patchesStrategicMerge:
-  - bootstrap-job-patch.yaml
-  - es-service-user-setup-job-patch.yaml

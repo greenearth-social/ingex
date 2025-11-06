@@ -3,8 +3,6 @@ kind: Kustomization
 
 namespace: greenearth-stage
 
-nameSuffix: -stage
-
 resources:
   - ../../base
   - max-map-count-daemonset.yaml
@@ -45,10 +43,3 @@ patches:
       - op: replace
         path: /spec/podTemplate/spec/containers/0/resources/limits/memory
         value: 2Gi
-      - op: replace
-        path: /spec/elasticsearchRef/name
-        value: greenearth-es-stage
-
-patchesStrategicMerge:
-  - bootstrap-job-patch.yaml
-  - es-service-user-setup-job-patch.yaml
