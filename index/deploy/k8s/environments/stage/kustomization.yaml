@@ -1,0 +1,54 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: greenearth-stage
+
+nameSuffix: -stage
+
+resources:
+  - ../../base
+  - max-map-count-daemonset.yaml
+
+patches:
+  - target:
+      kind: Elasticsearch
+      name: greenearth-es
+    patch: |-
+      - op: add
+        path: /spec/nodeSets/0/config/node.store.allow_mmap
+        value: true
+      - op: replace
+        path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
+        value: 12Gi
+      - op: replace
+        path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/memory
+        value: 12Gi
+      - op: replace
+        path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/cpu
+        value: "1500m"
+      - op: replace
+        path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/cpu
+        value: "1500m"
+      - op: replace
+        path: /spec/nodeSets/0/podTemplate/spec/containers/0/env/0/value
+        value: "-Xms6g -Xmx6g"
+      - op: replace
+        path: /spec/nodeSets/0/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 20Gi
+  - target:
+      kind: Kibana
+      name: greenearth-kibana
+    patch: |-
+      - op: replace
+        path: /spec/podTemplate/spec/containers/0/resources/requests/memory
+        value: 2Gi
+      - op: replace
+        path: /spec/podTemplate/spec/containers/0/resources/limits/memory
+        value: 2Gi
+      - op: replace
+        path: /spec/elasticsearchRef/name
+        value: greenearth-es-stage
+
+patchesStrategicMerge:
+  - bootstrap-job-patch.yaml
+  - es-service-user-setup-job-patch.yaml

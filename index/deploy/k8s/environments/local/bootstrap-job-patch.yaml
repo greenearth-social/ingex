@@ -2,20 +2,11 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: elasticsearch-bootstrap
-  namespace: greenearth-local
 spec:
   template:
     spec:
-      restartPolicy: OnFailure
       containers:
       - name: bootstrap
-        image: curlimages/curl:8.4.0
-        env:
-        - name: ES_SERVICE_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: es-service-user-secret
-              key: password
         command:
         - /bin/sh
         - -c
@@ -89,27 +80,3 @@ spec:
             -d @/aliases/likes-alias.json
 
           echo "Bootstrap completed successfully!"
-        volumeMounts:
-        - name: templates
-          mountPath: /templates
-        - name: aliases
-          mountPath: /aliases
-      volumes:
-      - name: templates
-        projected:
-          sources:
-          - configMap:
-              name: posts-index-template
-          - configMap:
-              name: post-tombstones-index-template
-          - configMap:
-              name: likes-index-template
-      - name: aliases
-        projected:
-          sources:
-          - configMap:
-              name: posts-alias
-          - configMap:
-              name: post-tombstones-alias
-          - configMap:
-              name: likes-alias

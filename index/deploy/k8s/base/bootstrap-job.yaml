@@ -2,7 +2,6 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: elasticsearch-bootstrap
-  namespace: greenearth-stage
 spec:
   template:
     spec:
@@ -24,7 +23,7 @@ spec:
           echo "Waiting for Elasticsearch to be ready..."
 
           # Wait for Elasticsearch to be available
-          until curl -k -s -u "es-service-user:$ES_SERVICE_PASSWORD" -o /dev/null -w "%{http_code}" https://greenearth-es-stage-es-http:9200/ | grep -q "200"; do
+          until curl -k -s -u "es-service-user:$ES_SERVICE_PASSWORD" -o /dev/null -w "%{http_code}" https://greenearth-es-http:9200/ | grep -q "200"; do
             echo "Waiting for Elasticsearch..."
             sleep 10
           done
@@ -32,7 +31,7 @@ spec:
           echo "Elasticsearch is ready! Applying index templates..."
 
           # Apply posts index template
-          curl -k -X PUT "https://greenearth-es-stage-es-http:9200/_index_template/posts_template" \
+          curl -k -X PUT "https://greenearth-es-http:9200/_index_template/posts_template" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
             -d @/templates/posts-index-template.json
@@ -40,7 +39,7 @@ spec:
           echo "Posts index template applied successfully!"
 
           # Apply post_tombstones index template
-          curl -k -X PUT "https://greenearth-es-stage-es-http:9200/_index_template/post_tombstones_template" \
+          curl -k -X PUT "https://greenearth-es-http:9200/_index_template/post_tombstones_template" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
             -d @/templates/post-tombstones-index-template.json
@@ -48,7 +47,7 @@ spec:
           echo "Post tombstones index template applied successfully!"
 
           # Apply likes index template
-          curl -k -X PUT "https://greenearth-es-stage-es-http:9200/_index_template/likes_template" \
+          curl -k -X PUT "https://greenearth-es-http:9200/_index_template/likes_template" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
             -d @/templates/likes-index-template.json
@@ -56,34 +55,34 @@ spec:
           echo "Likes index template applied successfully!"
 
           # Create initial posts index to establish alias
-          curl -k -X PUT "https://greenearth-es-stage-es-http:9200/posts_v1" \
+          curl -k -X PUT "https://greenearth-es-http:9200/posts_v1" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json"
 
           # Create initial post_tombstones index to establish alias
-          curl -k -X PUT "https://greenearth-es-stage-es-http:9200/post_tombstones_v1" \
+          curl -k -X PUT "https://greenearth-es-http:9200/post_tombstones_v1" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json"
 
           # Create initial likes index to establish alias
-          curl -k -X PUT "https://greenearth-es-stage-es-http:9200/likes_v1" \
+          curl -k -X PUT "https://greenearth-es-http:9200/likes_v1" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json"
 
           # Apply posts alias
-          curl -k -X POST "https://greenearth-es-stage-es-http:9200/_aliases" \
+          curl -k -X POST "https://greenearth-es-http:9200/_aliases" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
             -d @/aliases/posts-alias.json
 
           # Apply post_tombstones alias
-          curl -k -X POST "https://greenearth-es-stage-es-http:9200/_aliases" \
+          curl -k -X POST "https://greenearth-es-http:9200/_aliases" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
             -d @/aliases/post-tombstones-alias.json
 
           # Apply likes alias
-          curl -k -X POST "https://greenearth-es-stage-es-http:9200/_aliases" \
+          curl -k -X POST "https://greenearth-es-http:9200/_aliases" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
             -d @/aliases/likes-alias.json
