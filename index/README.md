@@ -166,7 +166,7 @@ This structure eliminates configuration duplication and makes it easy to add new
 
 ```bash
 # Port-forward to access Kibana (works for any environment)
-kubectl port-forward service/greenearth-kibana-kb-http 5601 -n $NAMESPACE
+kubectl port-forward service/greenearth-kb-http 5601 -n $NAMESPACE
 ```
 
 Browse to: **<https://localhost:5601>**

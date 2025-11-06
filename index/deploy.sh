@@ -242,12 +242,12 @@ deploy_environment() {
         exit 0
     fi
 
-    wait_for_resource "elasticsearch" "greenearth-es" "$namespace" 600 || {
+    wait_for_resource "elasticsearch" "greenearth" "$namespace" 600 || {
         log_error "Elasticsearch failed to become ready"
         exit 1
     }
 
-    wait_for_resource "kibana" "greenearth-kibana" "$namespace" 300 || {
+    wait_for_resource "kibana" "greenearth" "$namespace" 300 || {
         log_error "Kibana failed to become ready"
         exit 1
     }
@@ -280,7 +280,7 @@ deploy_environment() {
     log_success "Deployment to $environment completed successfully!"
     echo ""
     log_info "Next steps:"
-    log_info "  - Access Kibana: kubectl port-forward service/greenearth-kibana-kb-http 5601 -n $namespace"
+    log_info "  - Access Kibana: kubectl port-forward service/greenearth-kb-http 5601 -n $namespace"
     log_info "  - Access Elasticsearch: kubectl port-forward service/greenearth-es-http 9200 -n $namespace"
     log_info "  - Get elastic password: kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $namespace"
 }

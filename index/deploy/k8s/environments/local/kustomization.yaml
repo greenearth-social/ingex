@@ -9,7 +9,7 @@ resources:
 patches:
   - target:
       kind: Elasticsearch
-      name: greenearth-es
+      name: greenearth
     patch: |-
       - op: replace
         path: /spec/nodeSets/0/config/node.store.allow_mmap

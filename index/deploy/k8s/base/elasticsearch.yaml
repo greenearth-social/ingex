@@ -1,7 +1,7 @@
 apiVersion: elasticsearch.k8s.elastic.co/v1
 kind: Elasticsearch
 metadata:
-  name: greenearth-es
+  name: greenearth
 spec:
   version: 9.0.0
   nodeSets:
