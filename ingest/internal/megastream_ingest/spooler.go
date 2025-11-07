@@ -21,6 +21,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// SQLiteRow represents a row of data extracted from a SQLite database
 type SQLiteRow struct {
 	AtURI          string
 	DID            string
@@ -29,6 +30,7 @@ type SQLiteRow struct {
 	SourceFilename string
 }
 
+// Spooler defines the interface for data source processors that extract SQLiteRow data
 type Spooler interface {
 	Start(ctx context.Context) error
 	GetRowChannel() <-chan SQLiteRow
@@ -43,11 +45,13 @@ type baseSpooler struct {
 	interval     time.Duration
 }
 
+// LocalSpooler processes SQLite database files from a local directory
 type LocalSpooler struct {
 	*baseSpooler
 	directory string
 }
 
+// S3Spooler processes SQLite database files from an Amazon S3 bucket
 type S3Spooler struct {
 	*baseSpooler
 	bucket    string
@@ -57,6 +61,7 @@ type S3Spooler struct {
 	awsConfig aws.Config
 }
 
+// NewLocalSpooler creates a new LocalSpooler for processing files from a local directory
 func NewLocalSpooler(directory string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger) *LocalSpooler {
 	return &LocalSpooler{
 		baseSpooler: &baseSpooler{
@@ -70,6 +75,7 @@ func NewLocalSpooler(directory string, mode string, interval time.Duration, stat
 	}
 }
 
+// NewS3Spooler creates a new S3Spooler for processing files from an Amazon S3 bucket
 func NewS3Spooler(bucket, prefix, region, accessKey, secretKey string, mode string, interval time.Duration, stateManager *common.StateManager, logger *common.IngestLogger) (*S3Spooler, error) {
 	var cfg aws.Config
 	var err error
@@ -111,6 +117,7 @@ func NewS3Spooler(bucket, prefix, region, accessKey, secretKey string, mode stri
 	}, nil
 }
 
+// Start begins processing files in the local directory
 func (ls *LocalSpooler) Start(ctx context.Context) error {
 	ls.logger.Info("Starting local spooler in %s mode (directory: %s)", ls.mode, ls.directory)
 
@@ -142,10 +149,12 @@ func (ls *LocalSpooler) Start(ctx context.Context) error {
 	return nil
 }
 
+// GetRowChannel returns the channel that receives SQLiteRow data
 func (ls *LocalSpooler) GetRowChannel() <-chan SQLiteRow {
 	return ls.rowChan
 }
 
+// Stop gracefully stops the LocalSpooler
 func (ls *LocalSpooler) Stop() error {
 	ls.logger.Info("Stopping local spooler")
 	return nil
@@ -241,7 +250,11 @@ func (ls *LocalSpooler) processFile(ctx context.Context, filePath, filename stri
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			ls.logger.Error("Failed to clean up temp directory: %v", err)
+		}
+	}()
 
 	dbPath, err := unzipFile(filePath, tmpDir)
 	if err != nil {
@@ -261,6 +274,7 @@ func (ls *LocalSpooler) processFile(ctx context.Context, filePath, filename stri
 	return nil
 }
 
+// Start begins processing files in the S3 bucket
 func (ss *S3Spooler) Start(ctx context.Context) error {
 	ss.logger.Info("Starting S3 spooler in %s mode (bucket: %s, prefix: %s)", ss.mode, ss.bucket, ss.prefix)
 
@@ -292,10 +306,12 @@ func (ss *S3Spooler) Start(ctx context.Context) error {
 	return nil
 }
 
+// GetRowChannel returns the channel that receives SQLiteRow data
 func (ss *S3Spooler) GetRowChannel() <-chan SQLiteRow {
 	return ss.rowChan
 }
 
+// Stop gracefully stops the S3Spooler
 func (ss *S3Spooler) Stop() error {
 	ss.logger.Info("Stopping S3 spooler")
 	return nil
@@ -427,7 +443,11 @@ func (ss *S3Spooler) processFile(ctx context.Context, key, filename string) erro
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			ss.logger.Error("Failed to clean up temp directory: %v", err)
+		}
+	}()
 
 	zipPath := filepath.Join(tmpDir, filename)
 	if err := ss.downloadFile(ctx, key, zipPath); err != nil {
@@ -457,13 +477,21 @@ func (ss *S3Spooler) downloadFile(ctx context.Context, key, destPath string) err
 	if err != nil {
 		return fmt.Errorf("failed to get S3 object: %w", err)
 	}
-	defer result.Body.Close()
+	defer func() {
+		if err := result.Body.Close(); err != nil {
+			ss.logger.Error("Failed to close S3 response body: %v", err)
+		}
+	}()
 
-	outFile, err := os.Create(destPath)
+	outFile, err := os.Create(destPath) // nolint:gosec // G304: File path is from earlier disk read, not user input
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
-	defer outFile.Close()
+	defer func() {
+		if err := outFile.Close(); err != nil {
+			ss.logger.Error("Failed to close output file: %v", err)
+		}
+	}()
 
 	if _, err := io.Copy(outFile, result.Body); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
@@ -478,7 +506,9 @@ func unzipFile(zipPath, destDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to open zip file: %w", err)
 	}
-	defer r.Close()
+	defer func() {
+		_ = r.Close() // Ignore error in cleanup
+	}()
 
 	if len(r.File) == 0 {
 		return "", fmt.Errorf("zip file is empty")
@@ -494,15 +524,22 @@ func unzipFile(zipPath, destDir string) (string, error) {
 				return "", fmt.Errorf("failed to open file in zip: %w", err)
 			}
 
-			outFile, err := os.Create(fpath)
+			outFile, err := os.Create(fpath) // nolint:gosec // G304: File path is from zipfile
 			if err != nil {
-				rc.Close()
+				if closeErr := rc.Close(); closeErr != nil {
+					return "", fmt.Errorf("failed to close reader and create output file: %v, %w", closeErr, err)
+				}
 				return "", fmt.Errorf("failed to create output file: %w", err)
 			}
 
-			_, err = io.Copy(outFile, rc)
-			outFile.Close()
-			rc.Close()
+			_, err = io.Copy(outFile, rc) // nolint:gosec // G110: We trust the source of the zip file
+			if closeErr := outFile.Close(); closeErr != nil {
+				_ = rc.Close() // Best effort close, ignore error as we're already handling an error
+				return "", fmt.Errorf("failed to close output file: %w", closeErr)
+			}
+			if closeErr := rc.Close(); closeErr != nil {
+				return "", fmt.Errorf("failed to close reader: %w", closeErr)
+			}
 
 			if err != nil {
 				return "", fmt.Errorf("failed to extract file: %w", err)
@@ -525,7 +562,11 @@ func processDatabase(ctx context.Context, dbPath, filename string, rowChan chan<
 	if err != nil {
 		return fmt.Errorf("failed to open SQLite database: %w", err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			logger.Error("Failed to close database: %v", err)
+		}
+	}()
 
 	rows, err := db.QueryContext(ctx, `
 		SELECT at_uri, did, raw_post, inferences
@@ -534,7 +575,11 @@ func processDatabase(ctx context.Context, dbPath, filename string, rowChan chan<
 	if err != nil {
 		return fmt.Errorf("failed to query enriched_posts: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("Failed to close rows: %v", err)
+		}
+	}()
 
 	rowCount := 0
 	for rows.Next() {

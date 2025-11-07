@@ -8,11 +8,13 @@ import (
 	"time"
 )
 
+// CursorState represents the current processing position and metadata for file ingestion
 type CursorState struct {
 	LastTimeUs int64     `json:"last_time_us"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+// StateManager manages file processing state and cursor position
 type StateManager struct {
 	stateFilePath string
 	mu            sync.RWMutex
@@ -20,6 +22,7 @@ type StateManager struct {
 	logger        *IngestLogger
 }
 
+// NewStateManager creates a new state manager with the given state file path
 func NewStateManager(stateFilePath string, logger *IngestLogger) (*StateManager, error) {
 	sm := &StateManager{
 		stateFilePath: stateFilePath,
@@ -42,6 +45,7 @@ func NewStateManager(stateFilePath string, logger *IngestLogger) (*StateManager,
 	return sm, nil
 }
 
+// LoadState loads the processing state from the state file
 func (sm *StateManager) LoadState() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -73,12 +77,14 @@ func (sm *StateManager) LoadState() error {
 	return nil
 }
 
+// GetCursor returns the current cursor state indicating the last processed timestamp
 func (sm *StateManager) GetCursor() *CursorState {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.cursor
 }
 
+// UpdateCursor updates the cursor state with a new timestamp
 func (sm *StateManager) UpdateCursor(timeUs int64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -93,7 +99,7 @@ func (sm *StateManager) UpdateCursor(timeUs int64) error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	if err := os.WriteFile(sm.stateFilePath, data, 0644); err != nil {
+	if err := os.WriteFile(sm.stateFilePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 

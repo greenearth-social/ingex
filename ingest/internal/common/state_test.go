@@ -82,7 +82,7 @@ func TestStateManager_EmptyStateFile(t *testing.T) {
 	stateFile := filepath.Join(tmpDir, "state.json")
 	logger := NewLogger(false)
 
-	if err := os.WriteFile(stateFile, []byte(""), 0644); err != nil {
+	if err := os.WriteFile(stateFile, []byte(""), 0600); err != nil {
 		t.Fatalf("Failed to create empty state file: %v", err)
 	}
 

@@ -12,12 +12,9 @@ linters:
     - misspell      # Find commonly misspelled English words
     - bodyclose     # Check HTTP response body is closed
     - noctx         # Find sending HTTP request without context.Context
-
-  disable:
-    # Temporarily disabled linters
     - revive        # Fast, configurable, extensible, flexible, and beautiful linter for Go
-    - errcheck      # Check for unchecked errors
     - gosec         # Security problems
+    - errcheck      # Check for unchecked errors
 
   settings:
     errcheck:
@@ -44,3 +41,13 @@ linters:
     - path: _test\.go
       linters:
         - gosec
+    # Exclude package naming rules
+    - text: "var-naming: avoid meaningless package names"
+      linters:
+        - revive
+    - text: "package-comments: should have a package comment"
+      linters:
+        - revive
+    - text: "var-naming: don't use an underscore in package name"
+      linters:
+        - revive

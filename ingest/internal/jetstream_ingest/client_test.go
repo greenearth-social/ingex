@@ -26,7 +26,11 @@ func newMockWebSocketServer(t *testing.T, handler func(*websocket.Conn)) *httpte
 			t.Fatalf("Failed to upgrade connection: %v", err)
 			return
 		}
-		defer conn.Close()
+		defer func() {
+			if err := conn.Close(); err != nil {
+				t.Logf("Warning: Failed to close connection: %v", err)
+			}
+		}()
 		handler(conn)
 	}))
 
@@ -58,7 +62,9 @@ func TestClientConnect(t *testing.T) {
 		t.Fatal("Connection not established")
 	}
 
-	client.Close()
+	if err := client.Close(); err != nil {
+		t.Errorf("Failed to close client: %v", err)
+	}
 }
 
 func TestClientConnectFailure(t *testing.T) {
@@ -136,7 +142,9 @@ func TestClientReceiveMessages(t *testing.T) {
 		}
 	}
 
-	client.Close()
+	if err := client.Close(); err != nil {
+		t.Errorf("Failed to close client: %v", err)
+	}
 }
 
 func TestClientGracefulShutdown(t *testing.T) {
@@ -182,7 +190,8 @@ func TestClientGracefulShutdown(t *testing.T) {
 		t.Fatal("Channel did not close after context cancellation")
 	}
 
-	client.Close()
+	// Close may return error if already closed by context cancellation
+	_ = client.Close()
 }
 
 func TestClientClose(t *testing.T) {
@@ -258,7 +267,9 @@ func TestClientMessageChannelBufferFull(t *testing.T) {
 	// The client should handle buffer full gracefully (dropping messages)
 	// and not crash
 
-	client.Close()
+	if err := client.Close(); err != nil {
+		t.Errorf("Failed to close client: %v", err)
+	}
 }
 
 func TestGetMessageChannel(t *testing.T) {
