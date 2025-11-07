@@ -10,3 +10,30 @@ resources:
   - templates/posts-alias.yaml
   - templates/post-tombstones-alias.yaml
   - templates/likes-alias.yaml
+
+configMapGenerator:
+  - name: index-settings
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - index_shards=1
+      - index_replicas=0
+
+configurations:
+  - varreference.yaml
+
+vars:
+  - name: INDEX_SHARDS
+    objref:
+      kind: ConfigMap
+      name: index-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.index_shards
+  - name: INDEX_REPLICAS
+    objref:
+      kind: ConfigMap
+      name: index-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.index_replicas

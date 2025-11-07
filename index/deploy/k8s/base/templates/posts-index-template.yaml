@@ -8,8 +8,8 @@ data:
       "index_patterns": ["posts_v1*"],
       "template": {
         "settings": {
-          "number_of_shards": 1,
-          "number_of_replicas": 0,
+          "number_of_shards": $(INDEX_SHARDS),
+          "number_of_replicas": $(INDEX_REPLICAS),
           "analysis": {
             "analyzer": {
               "content_analyzer": {
@@ -20,6 +20,9 @@ data:
           }
         },
         "mappings": {
+          "_routing": {
+            "required": true
+          },
           "properties": {
             "at_uri": {
               "type": "keyword",

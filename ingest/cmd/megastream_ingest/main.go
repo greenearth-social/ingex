@@ -153,7 +153,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	rowChan := spooler.GetRowChannel()
 	var batch []common.ElasticsearchDoc
 	var tombstoneBatch []common.TombstoneDoc
-	var deleteBatch []string
+	var deleteBatch []common.DeleteDoc
 	const batchSize = 100
 	processedCount := 0
 	deletedCount := 0
@@ -181,7 +181,10 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			if msg.IsDelete() {
 				tombstone := common.CreateTombstoneDoc(msg)
 				tombstoneBatch = append(tombstoneBatch, tombstone)
-				deleteBatch = append(deleteBatch, msg.GetAtURI())
+				deleteBatch = append(deleteBatch, common.DeleteDoc{
+					DocID:     msg.GetAtURI(),
+					AuthorDID: msg.GetAuthorDID(),
+				})
 
 				if len(tombstoneBatch) >= batchSize {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)

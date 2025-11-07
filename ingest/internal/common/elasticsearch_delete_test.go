@@ -228,7 +228,8 @@ func TestBulkOperations_DryRun(t *testing.T) {
 	})
 
 	t.Run("bulkDelete dry-run returns no error", func(t *testing.T) {
-		err := BulkDelete(context.TODO(), nil, "posts", []string{"at://did:plc:test/app.bsky.feed.post/123"}, true, logger)
+		docs := []DeleteDoc{{DocID: "at://did:plc:test/app.bsky.feed.post/123", AuthorDID: "did:plc:test"}}
+		err := BulkDelete(context.TODO(), nil, "posts", docs, true, logger)
 		if err != nil {
 			t.Errorf("Expected no error in dry-run mode, got: %v", err)
 		}
@@ -246,7 +247,7 @@ func TestBulkOperations_EmptyBatch(t *testing.T) {
 	})
 
 	t.Run("bulkDelete empty batch returns no error", func(t *testing.T) {
-		err := BulkDelete(context.TODO(), nil, "posts", []string{}, false, logger)
+		err := BulkDelete(context.TODO(), nil, "posts", []DeleteDoc{}, false, logger)
 		if err != nil {
 			t.Errorf("Expected no error for empty batch, got: %v", err)
 		}
