@@ -240,7 +240,7 @@ install_eck_operator() {
     kubectl apply -f https://download.elastic.co/downloads/eck/3.1.0/operator.yaml
 
     log_info "Waiting for ECK operator to be ready..."
-    kubectl wait --for=condition=available --timeout=120s deployment/elastic-operator -n elastic-system
+    kubectl wait --for=condition=Ready pod -n elastic-system -l control-plane=elastic-operator --timeout=300s
 
     log_success "ECK operator installed"
 }
