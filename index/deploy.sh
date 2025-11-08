@@ -177,6 +177,18 @@ setup_kubectl_context() {
             --project="$GKE_PROJECT_ID" &> /dev/null; then
 
             if [ "$create_if_missing" = true ]; then
+                echo ""
+                log_warning "GKE cluster $GKE_CLUSTER does not exist in project $GKE_PROJECT_ID"
+                log_warning "Region: $GKE_REGION"
+                log_warning "This will create a new GKE Autopilot cluster (this may incur costs)"
+                echo ""
+                read -p "Do you want to create the cluster? Type 'yes' to confirm: " confirmation
+
+                if [ "$confirmation" != "yes" ]; then
+                    log_info "Cluster creation cancelled"
+                    exit 0
+                fi
+
                 log_info "Creating GKE Autopilot cluster: $GKE_CLUSTER"
                 gcloud container clusters create-auto "$GKE_CLUSTER" \
                     --location="$GKE_REGION" \
