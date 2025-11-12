@@ -12,15 +12,18 @@ patches:
       kind: Elasticsearch
       name: greenearth
     patch: |-
+      - op: replace
+        path: /spec/nodeSets/0/name
+        value: master-data
       - op: add
         path: /spec/nodeSets/0/config/node.store.allow_mmap
         value: true
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
-        value: 12Gi
+        value: 8Gi
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/memory
-        value: 12Gi
+        value: 8Gi
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/cpu
         value: "1500m"
@@ -29,10 +32,41 @@ patches:
         value: "1500m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/env/0/value
-        value: "-Xms6g -Xmx6g"
+        value: "-Xms4g -Xmx4g"
       - op: replace
         path: /spec/nodeSets/0/volumeClaimTemplates/0/spec/resources/requests/storage
-        value: 20Gi
+        value: 15Gi
+      - op: add
+        path: /spec/nodeSets/-
+        value:
+          name: data-only
+          count: 1
+          config:
+            node.roles: ["data"]
+            node.store.allow_mmap: true
+          podTemplate:
+            spec:
+              containers:
+              - name: elasticsearch
+                resources:
+                  requests:
+                    memory: 8Gi
+                    cpu: "1500m"
+                  limits:
+                    memory: 8Gi
+                    cpu: "1500m"
+                env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms4g -Xmx4g"
+          volumeClaimTemplates:
+          - metadata:
+              name: elasticsearch-data
+            spec:
+              accessModes:
+              - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 15Gi
   - target:
       kind: Kibana
       name: greenearth
@@ -43,3 +77,10 @@ patches:
       - op: replace
         path: /spec/podTemplate/spec/containers/0/resources/limits/memory
         value: 2Gi
+
+configMapGenerator:
+  - name: index-settings
+    behavior: replace
+    literals:
+      - index_shards=2
+      - index_replicas=1

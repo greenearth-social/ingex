@@ -42,6 +42,12 @@ type LikeDoc struct {
 	IndexedAt  string `json:"indexed_at"`
 }
 
+// DeleteDoc represents a document to be deleted with routing information
+type DeleteDoc struct {
+	DocID     string
+	AuthorDID string
+}
+
 // ElasticsearchConfig holds configuration for Elasticsearch connection
 type ElasticsearchConfig struct {
 	URL           string
@@ -104,8 +110,9 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 
 		meta := map[string]interface{}{
 			"index": map[string]interface{}{
-				"_index": index,
-				"_id":    doc.AtURI,
+				"_index":  index,
+				"_id":     doc.AtURI,
+				"routing": doc.AuthorDID,
 			},
 		}
 
@@ -195,8 +202,9 @@ func BulkIndexTombstones(ctx context.Context, client *elasticsearch.Client, inde
 
 		meta := map[string]interface{}{
 			"index": map[string]interface{}{
-				"_index": index,
-				"_id":    doc.AtURI,
+				"_index":  index,
+				"_id":     doc.AtURI,
+				"routing": doc.AuthorDID,
 			},
 		}
 
@@ -264,30 +272,31 @@ func BulkIndexTombstones(ctx context.Context, client *elasticsearch.Client, inde
 	return nil
 }
 
-// BulkDelete deletes a batch of documents from Elasticsearch by their IDs
-func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string, docIDs []string, dryRun bool, logger *IngestLogger) error {
-	if len(docIDs) == 0 {
+// BulkDelete deletes a batch of documents from Elasticsearch by their IDs with routing
+func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string, docs []DeleteDoc, dryRun bool, logger *IngestLogger) error {
+	if len(docs) == 0 {
 		return nil
 	}
 
 	if dryRun {
-		logger.Debug("Dry-run: Skipping bulk delete of %d documents from index '%s'", len(docIDs), index)
+		logger.Debug("Dry-run: Skipping bulk delete of %d documents from index '%s'", len(docs), index)
 		return nil
 	}
 
 	var buf bytes.Buffer
 	validDocCount := 0
 
-	for _, docID := range docIDs {
-		if docID == "" {
+	for _, doc := range docs {
+		if doc.DocID == "" {
 			logger.Error("Skipping delete with empty document ID")
 			continue
 		}
 
 		meta := map[string]interface{}{
 			"delete": map[string]interface{}{
-				"_index": index,
-				"_id":    docID,
+				"_index":  index,
+				"_id":     doc.DocID,
+				"routing": doc.AuthorDID,
 			},
 		}
 
@@ -425,8 +434,9 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 
 		meta := map[string]interface{}{
 			"index": map[string]interface{}{
-				"_index": index,
-				"_id":    doc.AtURI,
+				"_index":  index,
+				"_id":     doc.AtURI,
+				"routing": doc.AuthorDID,
 			},
 		}
 

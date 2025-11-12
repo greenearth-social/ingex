@@ -135,16 +135,88 @@ wait_for_job() {
     done
 }
 
+setup_kubectl_context() {
+    local environment=$1
+    local create_if_missing=$2
+
+    log_info "Setting up kubectl context for $environment environment..."
+
+    if [ "$environment" = "local" ]; then
+        if ! command -v minikube &> /dev/null; then
+            log_error "minikube is not installed"
+            exit 1
+        fi
+
+        if ! minikube status &> /dev/null; then
+            if [ "$create_if_missing" = true ]; then
+                log_info "Starting minikube..."
+                minikube start
+            else
+                log_error "minikube is not running. Start it with: minikube start"
+                exit 1
+            fi
+        fi
+
+        log_info "Setting kubectl context to minikube..."
+        kubectl config use-context minikube
+
+    elif [ "$environment" = "stage" ] || [ "$environment" = "prod" ]; then
+        if ! command -v gcloud &> /dev/null; then
+            log_error "gcloud CLI is not installed"
+            exit 1
+        fi
+
+        if [ -z "$GKE_CLUSTER" ] || [ -z "$GKE_REGION" ] || [ -z "$GKE_PROJECT_ID" ]; then
+            log_error "Required environment variables not set: GKE_CLUSTER, GKE_REGION, GKE_PROJECT_ID"
+            exit 1
+        fi
+
+        log_info "Checking if GKE cluster exists: $GKE_CLUSTER"
+        if ! gcloud container clusters describe "$GKE_CLUSTER" \
+            --location="$GKE_REGION" \
+            --project="$GKE_PROJECT_ID" &> /dev/null; then
+
+            if [ "$create_if_missing" = true ]; then
+                echo ""
+                log_warning "GKE cluster $GKE_CLUSTER does not exist in project $GKE_PROJECT_ID"
+                log_warning "Region: $GKE_REGION"
+                log_warning "This will create a new GKE Autopilot cluster (this may incur costs)"
+                echo ""
+                read -p "Do you want to create the cluster? Type 'yes' to confirm: " confirmation
+
+                if [ "$confirmation" != "yes" ]; then
+                    log_info "Cluster creation cancelled"
+                    exit 0
+                fi
+
+                log_info "Creating GKE Autopilot cluster: $GKE_CLUSTER"
+                gcloud container clusters create-auto "$GKE_CLUSTER" \
+                    --location="$GKE_REGION" \
+                    --project="$GKE_PROJECT_ID"
+                log_success "Cluster created successfully"
+            else
+                log_error "GKE cluster $GKE_CLUSTER does not exist in project $GKE_PROJECT_ID"
+                exit 1
+            fi
+        else
+            log_info "GKE cluster exists"
+        fi
+
+        log_info "Getting credentials for GKE cluster..."
+        gcloud container clusters get-credentials "$GKE_CLUSTER" \
+            --location="$GKE_REGION" \
+            --project="$GKE_PROJECT_ID"
+    fi
+
+    local current_context=$(kubectl config current-context)
+    log_success "kubectl context set to: $current_context"
+}
+
 verify_prerequisites() {
     log_info "Verifying prerequisites..."
 
     if ! command -v kubectl &> /dev/null; then
         log_error "kubectl is not installed"
-        exit 1
-    fi
-
-    if ! kubectl cluster-info &> /dev/null; then
-        log_error "Cannot connect to Kubernetes cluster"
         exit 1
     fi
 
@@ -168,7 +240,7 @@ install_eck_operator() {
     kubectl apply -f https://download.elastic.co/downloads/eck/3.1.0/operator.yaml
 
     log_info "Waiting for ECK operator to be ready..."
-    kubectl wait --for=condition=available --timeout=120s deployment/elastic-operator -n elastic-system
+    kubectl wait --for=condition=Ready pod -n elastic-system -l control-plane=elastic-operator --timeout=300s
 
     log_success "ECK operator installed"
 }
@@ -200,9 +272,12 @@ deploy_environment() {
     local namespace="greenearth-$environment"
 
     if [ "$TEARDOWN" = true ]; then
+        setup_kubectl_context "$environment" false
         teardown_environment "$namespace"
         exit 0
     fi
+
+    setup_kubectl_context "$environment" true
 
     log_info "Deploying to $environment environment (namespace: $namespace)"
 
