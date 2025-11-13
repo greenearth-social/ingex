@@ -180,7 +180,7 @@ setup_kubectl_context() {
                 echo ""
                 log_warning "GKE cluster $GKE_CLUSTER does not exist in project $GKE_PROJECT_ID"
                 log_warning "Region: $GKE_REGION"
-                log_warning "This will create a new GKE Autopilot cluster (this may incur costs)"
+                log_warning "This will create a new standard GKE cluster (this may incur costs)"
                 echo ""
                 read -p "Do you want to create the cluster? Type 'yes' to confirm: " confirmation
 
@@ -189,11 +189,59 @@ setup_kubectl_context() {
                     exit 0
                 fi
 
-                log_info "Creating GKE Autopilot cluster: $GKE_CLUSTER"
-                gcloud container clusters create-auto "$GKE_CLUSTER" \
-                    --location="$GKE_REGION" \
-                    --project="$GKE_PROJECT_ID"
-                log_success "Cluster created successfully"
+                if [ "$environment" = "stage" ]; then
+                    log_info "Creating standard GKE cluster for stage: $GKE_CLUSTER"
+                    gcloud container clusters create "$GKE_CLUSTER" \
+                        --location="$GKE_REGION" \
+                        --project="$GKE_PROJECT_ID" \
+                        --machine-type="n2-highmem-2" \
+                        --num-nodes=2 \
+                        --disk-size=50 \
+                        --disk-type=pd-standard \
+                        --enable-autorepair \
+                        --enable-autoupgrade \
+                        --release-channel=regular \
+                        --metadata=startup-script='#!/bin/bash
+sysctl -w vm.max_map_count=262144
+echo "vm.max_map_count=262144" >> /etc/sysctl.conf'
+                    log_success "Stage cluster created successfully"
+
+                elif [ "$environment" = "prod" ]; then
+                    log_info "Creating standard GKE cluster for prod: $GKE_CLUSTER"
+
+                    gcloud container clusters create "$GKE_CLUSTER" \
+                        --location="$GKE_REGION" \
+                        --project="$GKE_PROJECT_ID" \
+                        --machine-type="n2-standard-2" \
+                        --num-nodes=2 \
+                        --node-labels=workload=es-master \
+                        --disk-size=50 \
+                        --disk-type=pd-standard \
+                        --enable-autorepair \
+                        --enable-autoupgrade \
+                        --release-channel=regular \
+                        --metadata=startup-script='#!/bin/bash
+sysctl -w vm.max_map_count=262144
+echo "vm.max_map_count=262144" >> /etc/sysctl.conf'
+
+                    log_info "Creating data node pool for prod..."
+                    gcloud container node-pools create data-pool \
+                        --cluster="$GKE_CLUSTER" \
+                        --location="$GKE_REGION" \
+                        --project="$GKE_PROJECT_ID" \
+                        --machine-type="n2-highmem-2" \
+                        --num-nodes=15 \
+                        --node-labels=workload=es-data \
+                        --disk-size=100 \
+                        --disk-type=pd-standard \
+                        --enable-autorepair \
+                        --enable-autoupgrade \
+                        --metadata=startup-script='#!/bin/bash
+sysctl -w vm.max_map_count=262144
+echo "vm.max_map_count=262144" >> /etc/sysctl.conf'
+
+                    log_success "Prod cluster with node pools created successfully"
+                fi
             else
                 log_error "GKE cluster $GKE_CLUSTER does not exist in project $GKE_PROJECT_ID"
                 exit 1
@@ -292,17 +340,6 @@ deploy_environment() {
         log_info "[DRY RUN] Would create namespace $namespace"
     else
         kubectl create namespace $namespace 2>/dev/null || log_info "Namespace $namespace already exists"
-    fi
-
-    if [ "$environment" = "stage" ]; then
-        log_info "Deploying DaemonSet for vm.max_map_count (stage only)..."
-        if [ "$DRY_RUN" = true ]; then
-            log_info "[DRY RUN] Would deploy max-map-count-daemonset"
-        else
-            kubectl apply -f "$K8S_DIR/environments/stage/max-map-count-daemonset.yaml"
-            log_info "Waiting 30 seconds for DaemonSet to initialize..."
-            sleep 30
-        fi
     fi
 
     log_info "Applying Kustomize manifests..."

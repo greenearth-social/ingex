@@ -5,7 +5,6 @@ namespace: greenearth-prod
 
 resources:
   - ../../base
-  - max-map-count-daemonset.yaml
 
 patches:
   - target:
@@ -26,6 +25,17 @@ patches:
       - op: add
         path: /spec/nodeSets/0/config/node.store.allow_mmap
         value: true
+      - op: add
+        path: /spec/nodeSets/0/podTemplate/spec/affinity
+        value:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+              - matchExpressions:
+                - key: workload
+                  operator: In
+                  values:
+                  - es-master
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
         value: 4Gi
@@ -54,6 +64,15 @@ patches:
             node.store.allow_mmap: true
           podTemplate:
             spec:
+              affinity:
+                nodeAffinity:
+                  requiredDuringSchedulingIgnoredDuringExecution:
+                    nodeSelectorTerms:
+                    - matchExpressions:
+                      - key: workload
+                        operator: In
+                        values:
+                        - es-data
               containers:
               - name: elasticsearch
                 resources:
