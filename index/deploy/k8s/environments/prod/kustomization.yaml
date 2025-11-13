@@ -1,7 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: greenearth-stage
+namespace: greenearth-prod
 
 resources:
   - ../../base
@@ -13,50 +13,78 @@ patches:
     patch: |-
       - op: replace
         path: /spec/nodeSets/0/name
-        value: master-data
+        value: master
+      - op: replace
+        path: /spec/nodeSets/0/count
+        value: 2
+      - op: replace
+        path: /spec/nodeSets/0/config
+        value:
+          node.roles: ["master"]
+          node.store.allow_mmap: true
       - op: add
         path: /spec/nodeSets/0/config/node.store.allow_mmap
         value: true
+      - op: add
+        path: /spec/nodeSets/0/podTemplate/spec/affinity
+        value:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+              - matchExpressions:
+                - key: workload
+                  operator: In
+                  values:
+                  - es-master
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
-        value: 8Gi
+        value: 4Gi
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/memory
-        value: 8Gi
+        value: 4Gi
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/cpu
-        value: "1500m"
+        value: "1000m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/cpu
-        value: "1500m"
+        value: "1000m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/env/0/value
-        value: "-Xms4g -Xmx4g"
+        value: "-Xms2g -Xmx2g"
       - op: replace
         path: /spec/nodeSets/0/volumeClaimTemplates/0/spec/resources/requests/storage
         value: 15Gi
       - op: add
         path: /spec/nodeSets/-
         value:
-          name: data-only
-          count: 1
+          name: data
+          count: 15
           config:
-            node.roles: ["data"]
+            node.roles: ["data", "ingest"]
             node.store.allow_mmap: true
           podTemplate:
             spec:
+              affinity:
+                nodeAffinity:
+                  requiredDuringSchedulingIgnoredDuringExecution:
+                    nodeSelectorTerms:
+                    - matchExpressions:
+                      - key: workload
+                        operator: In
+                        values:
+                        - es-data
               containers:
               - name: elasticsearch
                 resources:
                   requests:
-                    memory: 8Gi
-                    cpu: "1500m"
+                    memory: 16Gi
+                    cpu: "2000m"
                   limits:
-                    memory: 8Gi
-                    cpu: "1500m"
+                    memory: 16Gi
+                    cpu: "2000m"
                 env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms4g -Xmx4g"
+                  value: "-Xms8g -Xmx8g"
           volumeClaimTemplates:
           - metadata:
               name: elasticsearch-data
@@ -65,7 +93,7 @@ patches:
               - ReadWriteOnce
               resources:
                 requests:
-                  storage: 15Gi
+                  storage: 500Gi
   - target:
       kind: Kibana
       name: greenearth
@@ -76,10 +104,16 @@ patches:
       - op: replace
         path: /spec/podTemplate/spec/containers/0/resources/limits/memory
         value: 2Gi
+      - op: replace
+        path: /spec/podTemplate/spec/containers/0/resources/requests/cpu
+        value: "1000m"
+      - op: replace
+        path: /spec/podTemplate/spec/containers/0/resources/limits/cpu
+        value: "1000m"
 
 configMapGenerator:
   - name: index-settings
     behavior: replace
     literals:
-      - index_shards=2
+      - index_shards=60
       - index_replicas=1
