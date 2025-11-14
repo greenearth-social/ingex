@@ -1,0 +1,42 @@
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: elasticsearch-expiry
+spec:
+  spec:
+    template:
+      metadata:
+        annotations:
+          run.googleapis.com/execution-environment: gen2
+          run.googleapis.com/cpu: "1"
+          run.googleapis.com/memory: "512Mi"
+      spec:
+        taskCount: 1
+        parallelism: 1
+        taskTimeout: 3600s
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+            - image: gcr.io/PROJECT_ID/elasticsearch-expiry
+              args: ["--retention-days", "60"]
+              env:
+              - name: ELASTICSEARCH_URL
+                valueFrom:
+                  secretKeyRef:
+                    name: elasticsearch-config
+                    key: url
+              - name: ELASTICSEARCH_API_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: elasticsearch-config
+                    key: api-key
+              - name: LOGGING_ENABLED
+                value: "true"
+              resources:
+                limits:
+                  cpu: 1000m
+                  memory: 512Mi
+                requests:
+                  cpu: 250m
+                  memory: 256Mi

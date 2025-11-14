@@ -1,0 +1,60 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: jetstream-ingest
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/cpu-throttling: "false"
+spec:
+  template:
+    metadata:
+      annotations:
+        # WARNING: State files use shared persistent disk - DO NOT scale past 1 instance
+        # Multiple instances will cause race conditions and data corruption
+        # Switch to external state storage (Firestore/Cloud Storage) before scaling
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/cpu: "1"
+        run.googleapis.com/memory: "512Mi"
+    spec:
+      containerConcurrency: 1000
+      timeoutSeconds: 3600
+      containers:
+      - image: gcr.io/PROJECT_ID/jetstream-ingest
+        env:
+        - name: JETSTREAM_URL
+          value: "wss://jetstream2.us-east.bsky.network/subscribe"
+        - name: ELASTICSEARCH_URL
+          valueFrom:
+            secretKeyRef:
+              name: elasticsearch-config
+              key: url
+        - name: ELASTICSEARCH_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: elasticsearch-config
+              key: api-key
+        - name: LOGGING_ENABLED
+          value: "true"
+        - name: JETSTREAM_STATE_FILE
+          value: "/data/jetstream_state.json"
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+          requests:
+            cpu: 500m
+            memory: 256Mi
+        volumeMounts:
+        - name: state-storage
+          mountPath: /data
+      volumes:
+      - name: state-storage
+        csi:
+          driver: pd.csi.storage.gke.io
+          volumeAttributes:
+            type: pd-standard
+            replication-type: regional-pd
