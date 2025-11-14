@@ -229,15 +229,24 @@ curl -k -u "es-service-user:PASSWORD" https://localhost:9200/_index_template/pos
 curl -k -u "es-service-user:PASSWORD" https://localhost:9200/_alias/posts
 ```
 
-The ingest service (see ../ingest/README.md) will need an ES API key which can be generated like so:
+## Generating API Keys for Ingest Services
 
-```sh
+The ingest services (see `../ingest/README.md`) require API keys for authentication. Follow these steps to create and configure them:
+
+### 1. Create API Key via Elasticsearch
+
+With Elasticsearch running and accessible via port-forward:
+
+```bash
+# Get the elastic password first
+ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE)
+
+# Create the API key (no expiration for operational simplicity)
 curl -k -X POST "https://localhost:9200/_security/api_key" \
-  -u "elastic:PASSWORD" \
+  -u "elastic:$ELASTIC_PASSWORD" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "ingest-service-key",
-    "expiration": "90d",
     "role_descriptors": {
       "ingest_role": {
         "cluster": ["manage_index_templates", "monitor"],
@@ -251,6 +260,54 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
     }
   }'
 ```
+
+**Expected Response:**
+
+```json
+{
+  "id": "abc123...",
+  "name": "ingest-service-key",
+  "api_key": "VGhpcyBpcyBub3QgYSByZWFsIGtleQ==",
+  "encoded": "YWJjMTIzOlRoaXMgaXMgbm90IGEgcmVhbCBrZXk="
+}
+```
+
+### 2. Store API Key in Google Secret Manager
+
+Use the `encoded` value from the API key response:
+
+```bash
+# Disable shell history
+fc -p
+
+# Store the encoded API key (replace with actual value from response)
+echo -n "YWJjMTIzOlRoaXMgaXMgbm90IGEgcmVhbCBrZXk=" | gcloud secrets create elasticsearch-api-key --data-file=-
+
+# Also store the Elasticsearch URL for the ingest services
+echo -n "https://your-elasticsearch-cluster:9200" | gcloud secrets create elasticsearch-url --data-file=-
+```
+
+### 3. Deploy Ingest Services
+
+Now you can deploy the ingest services which will use these secrets:
+
+```bash
+cd ../ingest
+export PROJECT_ID="your-gcp-project"
+export S3_BUCKET="your-megastream-bucket"
+export S3_PREFIX="megastream/databases/"
+
+./setup.sh
+./deploy.sh
+```
+
+### API Key Management
+
+- **Expiration**: Keys are set to never expire for operational simplicity
+- **Security**: Keys have minimal required permissions for ingest operations only
+- **Rotation**: Manual rotation can be done by creating new keys and updating Secret Manager
+- **Monitoring**: Check API key status via Kibana → Stack Management → Security → API Keys
+- **Future**: Add automated key rotation and expiration when building more advanced key management
 
 **Expected responses:**
 
