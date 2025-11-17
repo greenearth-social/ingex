@@ -200,10 +200,7 @@ setup_kubectl_context() {
                         --disk-type=pd-standard \
                         --enable-autorepair \
                         --enable-autoupgrade \
-                        --release-channel=regular \
-                        --metadata=startup-script='#!/bin/bash
-sysctl -w vm.max_map_count=262144
-echo "vm.max_map_count=262144" >> /etc/sysctl.conf'
+                        --release-channel=regular
                     log_success "Stage cluster created successfully"
 
                 elif [ "$environment" = "prod" ]; then
@@ -219,10 +216,7 @@ echo "vm.max_map_count=262144" >> /etc/sysctl.conf'
                         --disk-type=pd-standard \
                         --enable-autorepair \
                         --enable-autoupgrade \
-                        --release-channel=regular \
-                        --metadata=startup-script='#!/bin/bash
-sysctl -w vm.max_map_count=262144
-echo "vm.max_map_count=262144" >> /etc/sysctl.conf'
+                        --release-channel=regular
 
                     log_info "Creating data node pool for prod..."
                     gcloud container node-pools create data-pool \
@@ -235,10 +229,7 @@ echo "vm.max_map_count=262144" >> /etc/sysctl.conf'
                         --disk-size=100 \
                         --disk-type=pd-standard \
                         --enable-autorepair \
-                        --enable-autoupgrade \
-                        --metadata=startup-script='#!/bin/bash
-sysctl -w vm.max_map_count=262144
-echo "vm.max_map_count=262144" >> /etc/sysctl.conf'
+                        --enable-autoupgrade
 
                     log_success "Prod cluster with node pools created successfully"
                 fi
@@ -340,6 +331,17 @@ deploy_environment() {
         log_info "[DRY RUN] Would create namespace $namespace"
     else
         kubectl create namespace $namespace 2>/dev/null || log_info "Namespace $namespace already exists"
+    fi
+
+    if [ "$environment" = "stage" ] || [ "$environment" = "prod" ]; then
+        log_info "Deploying DaemonSet for vm.max_map_count..."
+        if [ "$DRY_RUN" = true ]; then
+            log_info "[DRY RUN] Would deploy max-map-count-daemonset"
+        else
+            kubectl apply -f "$K8S_DIR/environments/$environment/max-map-count-daemonset.yaml"
+            log_info "Waiting 30 seconds for DaemonSet to initialize..."
+            sleep 30
+        fi
     fi
 
     log_info "Applying Kustomize manifests..."

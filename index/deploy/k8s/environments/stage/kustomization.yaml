@@ -5,6 +5,7 @@ namespace: greenearth-stage
 
 resources:
   - ../../base
+  - max-map-count-daemonset.yaml
 
 patches:
   - target:

@@ -5,6 +5,7 @@ namespace: greenearth-prod
 
 resources:
   - ../../base
+  - max-map-count-daemonset.yaml
 
 patches:
   - target:
