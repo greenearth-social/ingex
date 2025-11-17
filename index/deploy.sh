@@ -15,6 +15,7 @@ print_usage() {
     echo "  --install-eck       Install ECK operator before deployment"
     echo "  --skip-templates    Skip template/alias ConfigMaps (for updates)"
     echo "  --dry-run           Show what would be deployed without applying"
+    echo "  --no-timeout        Wait indefinitely for resources (no timeout)"
     echo "  --teardown          Delete the entire environment (prompts for confirmation)"
     echo "  -h, --help          Show this help message"
     echo ""
@@ -24,6 +25,7 @@ print_usage() {
     echo "Examples:"
     echo "  $0 local                    # Deploy to local environment"
     echo "  $0 stage --install-eck      # Deploy to stage with ECK installation"
+    echo "  $0 prod --no-timeout        # Deploy to prod with no timeout"
     echo "  $0 local --teardown         # Delete local environment"
 }
 
@@ -63,13 +65,17 @@ wait_for_resource() {
     local timeout=${4:-300}
     local start_time=$(date +%s)
 
-    log_info "Waiting for $resource_type/$resource_name to be ready (timeout: ${timeout}s)..."
+    if [ "$NO_TIMEOUT" = true ]; then
+        log_info "Waiting for $resource_type/$resource_name to be ready (no timeout)..."
+    else
+        log_info "Waiting for $resource_type/$resource_name to be ready (timeout: ${timeout}s)..."
+    fi
 
     while true; do
         local current_time=$(date +%s)
         local elapsed=$((current_time - start_time))
 
-        if [ $elapsed -gt $timeout ]; then
+        if [ "$NO_TIMEOUT" != true ] && [ $elapsed -gt $timeout ]; then
             log_error "Timeout waiting for $resource_type/$resource_name"
             return 1
         fi
@@ -103,13 +109,17 @@ wait_for_job() {
     local timeout=${3:-300}
     local start_time=$(date +%s)
 
-    log_info "Waiting for job/$job_name to complete (timeout: ${timeout}s)..."
+    if [ "$NO_TIMEOUT" = true ]; then
+        log_info "Waiting for job/$job_name to complete (no timeout)..."
+    else
+        log_info "Waiting for job/$job_name to complete (timeout: ${timeout}s)..."
+    fi
 
     while true; do
         local current_time=$(date +%s)
         local elapsed=$((current_time - start_time))
 
-        if [ $elapsed -gt $timeout ]; then
+        if [ "$NO_TIMEOUT" != true ] && [ $elapsed -gt $timeout ]; then
             log_error "Timeout waiting for job/$job_name"
             kubectl logs -l job-name=$job_name -n $namespace --tail=50 2>/dev/null || true
             return 1
@@ -416,6 +426,7 @@ ENVIRONMENT=""
 INSTALL_ECK=false
 SKIP_TEMPLATES=false
 DRY_RUN=false
+NO_TIMEOUT=false
 TEARDOWN=false
 
 while [[ $# -gt 0 ]]; do
@@ -434,6 +445,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run)
             DRY_RUN=true
+            shift
+            ;;
+        --no-timeout)
+            NO_TIMEOUT=true
             shift
             ;;
         --teardown)
