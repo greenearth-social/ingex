@@ -78,14 +78,13 @@ The deployment infrastructure uses **Kustomize** for configuration management wi
 - kubectl
 - ECK operator installed (or use `--install-eck` flag)
 
-**Stage Environment:**
+**Stage/Prod Environments:**
 
 - Google Cloud CLI (`gcloud`) installed and authenticated
 - **Kubernetes Engine Admin** IAM role for ECK operator installation
 - kubectl installed locally
 - ECK operator installed (or use `--install-eck` flag)
-
-**Note**: GKE is temporary for initial testing. Future deployments will use Azure Kubernetes Service (AKS).
+- VPC network setup completed (see `../network/README.md`)
 
 ### Automated Deployment
 
