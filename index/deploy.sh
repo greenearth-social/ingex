@@ -204,6 +204,7 @@ setup_kubectl_context() {
                         --enable-ip-alias \
                         --enable-private-nodes \
                         --master-ipv4-cidr="172.16.0.0/28" \
+                        --no-enable-master-authorized-networks \
                         --no-enable-basic-auth \
                         --no-issue-client-certificate
                     log_success "Stage cluster created successfully"
@@ -225,6 +226,7 @@ setup_kubectl_context() {
                         --enable-ip-alias \
                         --enable-private-nodes \
                         --master-ipv4-cidr="172.16.0.16/28" \
+                        --no-enable-master-authorized-networks \
                         --no-enable-basic-auth \
                         --no-issue-client-certificate
 
