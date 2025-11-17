@@ -103,6 +103,47 @@ enable_private_google_access() {
     log_success "Private Google Access enabled"
 }
 
+setup_eck_webhook_firewall() {
+    log_info "Setting up firewall rules for ECK webhook..."
+
+    local stage_rule="allow-stage-master-to-eck-webhook"
+    local prod_rule="allow-prod-master-to-eck-webhook"
+    local stage_cidr="172.16.0.0/28"
+    local prod_cidr="172.16.0.16/28"
+
+    log_info "Checking if stage firewall rule exists: $stage_rule"
+    if gcloud compute firewall-rules describe "$stage_rule" \
+        --project="$GKE_PROJECT_ID" &> /dev/null; then
+        log_info "Stage firewall rule already exists: $stage_rule"
+    else
+        log_info "Creating stage firewall rule: $stage_rule"
+        gcloud compute firewall-rules create "$stage_rule" \
+            --project="$GKE_PROJECT_ID" \
+            --network=default \
+            --allow=tcp:9443,tcp:8443 \
+            --source-ranges="$stage_cidr" \
+            --description="Allow stage GKE control plane to reach ECK webhook"
+        log_success "Stage firewall rule created successfully"
+    fi
+
+    log_info "Checking if prod firewall rule exists: $prod_rule"
+    if gcloud compute firewall-rules describe "$prod_rule" \
+        --project="$GKE_PROJECT_ID" &> /dev/null; then
+        log_info "Prod firewall rule already exists: $prod_rule"
+    else
+        log_info "Creating prod firewall rule: $prod_rule"
+        gcloud compute firewall-rules create "$prod_rule" \
+            --project="$GKE_PROJECT_ID" \
+            --network=default \
+            --allow=tcp:9443,tcp:8443 \
+            --source-ranges="$prod_cidr" \
+            --description="Allow prod GKE control plane to reach ECK webhook"
+        log_success "Prod firewall rule created successfully"
+    fi
+
+    log_success "ECK webhook firewall rules configured"
+}
+
 main() {
     log_info "Setting up network..."
     log_info "Project: $GKE_PROJECT_ID"
@@ -113,12 +154,14 @@ main() {
     setup_cloud_router
     setup_cloud_nat
     enable_private_google_access
+    setup_eck_webhook_firewall
 
     echo ""
     log_success "Network setup complete"
     log_info "Cloud Router: greenearth-router"
     log_info "Cloud NAT: greenearth-nat"
     log_info "Private Google Access: Enabled"
+    log_info "ECK Webhook Firewall: Configured"
     echo ""
     log_info "You can now create GKE clusters with private nodes"
 }
