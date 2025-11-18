@@ -78,14 +78,14 @@ patches:
               - name: elasticsearch
                 resources:
                   requests:
-                    memory: 16Gi
-                    cpu: "2000m"
+                    memory: 12Gi
+                    cpu: "1500m"
                   limits:
-                    memory: 16Gi
-                    cpu: "2000m"
+                    memory: 12Gi
+                    cpu: "1500m"
                 env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms8g -Xmx8g"
+                  value: "-Xms5g -Xmx5g"
           volumeClaimTemplates:
           - metadata:
               name: elasticsearch-data
@@ -101,16 +101,27 @@ patches:
     patch: |-
       - op: replace
         path: /spec/podTemplate/spec/containers/0/resources/requests/memory
-        value: 2Gi
+        value: 1Gi
       - op: replace
         path: /spec/podTemplate/spec/containers/0/resources/limits/memory
-        value: 2Gi
+        value: 1Gi
       - op: replace
         path: /spec/podTemplate/spec/containers/0/resources/requests/cpu
-        value: "1000m"
+        value: "500m"
       - op: replace
         path: /spec/podTemplate/spec/containers/0/resources/limits/cpu
-        value: "1000m"
+        value: "500m"
+      - op: add
+        path: /spec/podTemplate/spec/affinity
+        value:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+              - matchExpressions:
+                - key: workload
+                  operator: In
+                  values:
+                  - es-master
 
 configMapGenerator:
   - name: index-settings
