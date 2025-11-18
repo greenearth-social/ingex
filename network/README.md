@@ -4,7 +4,7 @@
 
 ### VPC and Subnets
 
-```
+```txt
 Default VPC Network (us-east1)
 ├── Subnet: default
 │   └── Range: 10.142.0.0/20 (10.142.0.0 - 10.142.15.255)
@@ -31,6 +31,7 @@ Default VPC Network (us-east1)
 ### Private Nodes Architecture
 
 **GKE Cluster Configuration:**
+
 - **Node IPs:** Private only (from 10.142.0.0/20)
 - **Control Plane:** Public endpoint, private master CIDR
 - **Outbound Internet:** Cloud NAT (for pulling container images)
@@ -50,6 +51,7 @@ export GKE_REGION="us-east1"
 ```
 
 The script is idempotent and will:
+
 1. Create Cloud Router (if not exists)
 2. Create Cloud NAT configuration (if not exists)
 3. Enable Private Google Access on subnet
@@ -60,6 +62,7 @@ The script is idempotent and will:
 ### View Current Network Configuration
 
 **Check Cloud Router:**
+
 ```bash
 gcloud compute routers describe greenearth-router \
   --region=$GKE_REGION \
@@ -67,6 +70,7 @@ gcloud compute routers describe greenearth-router \
 ```
 
 **Check Cloud NAT Status:**
+
 ```bash
 gcloud compute routers nats describe greenearth-nat \
   --router=greenearth-router \
@@ -75,6 +79,7 @@ gcloud compute routers nats describe greenearth-nat \
 ```
 
 **List NAT IP Addresses:**
+
 ```bash
 gcloud compute routers nats list \
   --router=greenearth-router \
@@ -83,6 +88,7 @@ gcloud compute routers nats list \
 ```
 
 **View Subnet Configuration:**
+
 ```bash
 gcloud compute networks subnets describe default \
   --region=$GKE_REGION \
@@ -91,6 +97,7 @@ gcloud compute networks subnets describe default \
 ```
 
 **List Firewall Rules:**
+
 ```bash
 gcloud compute firewall-rules list \
   --project=$GKE_PROJECT_ID \
@@ -106,8 +113,6 @@ When running GKE clusters with private nodes (`--enable-private-nodes`), GKE cre
 
 However, the **Elastic Cloud on Kubernetes (ECK) operator** requires the Kubernetes API server to reach the ECK webhook validation service on ports **9443** and **8443**. Without proper firewall rules, the following symptoms occur:
 
-- ECK operator logs show endless "Ensuring no voting exclusions are set" messages
-- Elasticsearch cluster stuck in 'ApplyingChanges' state
 - Webhook validation failures preventing resource creation/updates
 
 ### Required Ports
@@ -116,8 +121,6 @@ However, the **Elastic Cloud on Kubernetes (ECK) operator** requires the Kuberne
 |------|---------|-------------|
 | 9443 | ECK ValidatingWebhook primary port | Kubernetes API server |
 | 8443 | ECK ValidatingWebhook fallback port | Kubernetes API server |
-
-**Note:** Port 9200 (Elasticsearch API) is NOT needed in firewall rules because the ECK operator runs as a pod within the cluster and uses the internal ClusterIP service for Elasticsearch communication.
 
 ### Firewall Rules Created
 
@@ -140,6 +143,7 @@ The `setup.sh` script creates two firewall rules:
 If you need to create the firewall rules manually for troubleshooting:
 
 **For Stage Environment:**
+
 ```bash
 gcloud compute firewall-rules create allow-stage-master-to-eck-webhook \
   --project=$GKE_PROJECT_ID \
@@ -150,6 +154,7 @@ gcloud compute firewall-rules create allow-stage-master-to-eck-webhook \
 ```
 
 **For Prod Environment:**
+
 ```bash
 gcloud compute firewall-rules create allow-prod-master-to-eck-webhook \
   --project=$GKE_PROJECT_ID \
