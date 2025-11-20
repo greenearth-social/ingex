@@ -49,7 +49,7 @@ spec:
         - name: LOGGING_ENABLED
           value: "true"
         - name: SPOOL_INTERVAL_SEC
-          value: "300"  # 5 minutes
+          value: "60"  # 1 minute
         - name: MEGASTREAM_STATE_FILE
           value: "/data/megastream_state.json"
         ports:
