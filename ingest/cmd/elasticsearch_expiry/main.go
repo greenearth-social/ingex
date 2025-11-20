@@ -65,6 +65,8 @@ func main() {
 }
 
 func runExpiry(ctx context.Context, config *common.Config, logger *common.IngestLogger, dryRun, skipTLSVerify bool, retentionDays int) error {
+	// Default graceful timeout for delete operations during shutdown
+	const graceTimeout = 30 * time.Second
 	// Initialize Elasticsearch client
 	esConfig := common.ElasticsearchConfig{
 		URL:           config.ElasticsearchURL,
@@ -106,9 +108,10 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 		},
 	}
 
-	// Process each collection
+	// Process each collection with graceful shutdown handling
 	totalDeleted := 0
 	for _, collection := range collections {
+		// Check if shutdown was requested before processing each collection
 		select {
 		case <-ctx.Done():
 			logger.Info("Shutdown requested, stopping expiry process")
@@ -116,9 +119,28 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 		default:
 		}
 
+		// Create a separate context for delete operations with graceful timeout
+		deleteCtx, deleteCancel := context.WithCancel(context.Background())
+
+		// Monitor for shutdown signal and provide graceful timeout for in-flight operations
+		go func() {
+			<-ctx.Done()
+			logger.Info("Shutdown requested, allowing %v for collection %s to complete...", graceTimeout, collection.IndexAlias)
+
+			// Give in-flight operations time to complete gracefully
+			timer := time.NewTimer(graceTimeout)
+			defer timer.Stop()
+
+			<-timer.C
+			logger.Info("Grace timeout expired for collection %s, cancelling operations", collection.IndexAlias)
+			deleteCancel()
+		}()
+
 		logger.Info("Processing collection: %s (date field: %s)", collection.IndexAlias, collection.DateField)
 
-		deletedCount, err := expiryService.ExpireCollection(ctx, collection)
+		deletedCount, err := expiryService.ExpireCollection(deleteCtx, collection)
+		deleteCancel() // Clean up the context
+
 		if err != nil {
 			return fmt.Errorf("failed to expire collection %s: %w", collection.IndexAlias, err)
 		}

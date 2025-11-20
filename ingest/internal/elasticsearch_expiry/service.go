@@ -121,8 +121,6 @@ func (s *Service) deleteExpiredDocuments(ctx context.Context, collection Collect
 				},
 			},
 		},
-		// Add scroll timeout to prevent long-running operations
-		"scroll_timeout": "5m",
 		// Add conflicts handling - proceed even if there are version conflicts
 		"conflicts": "proceed",
 	}
@@ -141,6 +139,7 @@ func (s *Service) deleteExpiredDocuments(ctx context.Context, collection Collect
 		s.client.DeleteByQuery.WithContext(ctx),
 		s.client.DeleteByQuery.WithWaitForCompletion(true), // Wait for operation to complete
 		s.client.DeleteByQuery.WithRefresh(true),           // Refresh indices after deletion
+		s.client.DeleteByQuery.WithTimeout(5*time.Minute),  // Set timeout for the operation
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to execute delete by query: %w", err)
