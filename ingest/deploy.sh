@@ -13,6 +13,12 @@ PROJECT_ID="${PROJECT_ID:-greenearth-471522}"
 REGION="${REGION:-us-east1}"
 ENVIRONMENT="${ENVIRONMENT:-prod}"  # TODO: change default when we have more environments
 
+# Non-secret configuration
+ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-https://elasticsearch.greenearth.social:9200}"
+# TODO: actual s3 bucket name
+S3_SQLITE_DB_BUCKET="${S3_SQLITE_DB_BUCKET:-greenearth-megastream-data}"
+S3_SQLITE_DB_PREFIX="${S3_SQLITE_DB_PREFIX:-megastream/databases/}"
+
 # Service configuration
 JETSTREAM_MIN_INSTANCES="${JETSTREAM_MIN_INSTANCES:-1}"
 JETSTREAM_MAX_INSTANCES="${JETSTREAM_MAX_INSTANCES:-1}"
@@ -68,7 +74,7 @@ deploy_jetstream_service() {
         --set-env-vars="JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
         --set-env-vars="LOGGING_ENABLED=true" \
         --set-env-vars="JETSTREAM_STATE_FILE=/data/jetstream_state.json" \
-        --set-secrets="ELASTICSEARCH_URL=elasticsearch-url:latest" \
+        --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --min-instances="$JETSTREAM_MIN_INSTANCES" \
         --max-instances="$JETSTREAM_MAX_INSTANCES" \
@@ -95,10 +101,10 @@ deploy_megastream_service() {
         --set-env-vars="SPOOL_INTERVAL_SEC=300" \
         --set-env-vars="AWS_REGION=us-east-1" \
         --set-env-vars="MEGASTREAM_STATE_FILE=/data/megastream_state.json" \
-        --set-secrets="ELASTICSEARCH_URL=elasticsearch-url:latest" \
+        --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
+        --set-env-vars="S3_SQLITE_DB_BUCKET=$S3_SQLITE_DB_BUCKET" \
+        --set-env-vars="S3_SQLITE_DB_PREFIX=$S3_SQLITE_DB_PREFIX" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
-        --set-secrets="S3_SQLITE_DB_BUCKET=s3-bucket:latest" \
-        --set-secrets="S3_SQLITE_DB_PREFIX=s3-prefix:latest" \
         --min-instances="$MEGASTREAM_MIN_INSTANCES" \
         --max-instances="$MEGASTREAM_MAX_INSTANCES" \
         --cpu=1 \
@@ -121,7 +127,7 @@ deploy_expiry_job() {
         --source=. \
         --region="$REGION" \
         --service-account="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com" \
-        --set-secrets="ELASTICSEARCH_URL=elasticsearch-url:latest" \
+        --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --set-env-vars="LOGGING_ENABLED=true" \
         --cpu=1 \
@@ -231,6 +237,9 @@ while [[ $# -gt 0 ]]; do
             echo "  PROJECT_ID                  GCP project ID"
             echo "  REGION                      GCP region"
             echo "  ENVIRONMENT                 Environment name"
+            echo "  ELASTICSEARCH_URL           Elasticsearch URL (default: https://elasticsearch.greenearth.social:9200)"
+            echo "  S3_SQLITE_DB_BUCKET         S3 bucket name (default: greenearth-megastream-data)"
+            echo "  S3_SQLITE_DB_PREFIX         S3 prefix (default: megastream/databases/)"
             echo
             exit 0
             ;;

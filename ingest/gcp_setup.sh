@@ -11,12 +11,13 @@ PROJECT_ID="${PROJECT_ID:-greenearth-471522}"
 REGION="${REGION:-us-east1}"
 ENVIRONMENT="${ENVIRONMENT:-prod}"  # TODO: change default when we have more environments
 
-# Elasticsearch configuration - update these values
-ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-https://your-elasticsearch-cluster:9200}"
+# Elasticsearch configuration - only API key is secret, URL is public
+ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-https://elasticsearch.greenearth.social:9200}"
 ELASTICSEARCH_API_KEY="${ELASTICSEARCH_API_KEY:-your-api-key}"
 
 # S3 configuration for Megastream data
-S3_BUCKET="${S3_BUCKET:-your-megastream-bucket}"
+# TODO: actual s3 bucket name
+S3_BUCKET="${S3_BUCKET:-greenearth-megastream-data}"
 S3_PREFIX="${S3_PREFIX:-megastream/databases/}"
 
 # Colors for output
@@ -66,17 +67,15 @@ validate_config() {
         exit 1
     fi
 
-    if [ "$ELASTICSEARCH_URL" = "https://your-elasticsearch-cluster:9200" ]; then
-        log_error "Please set ELASTICSEARCH_URL environment variable or update the script"
-        exit 1
-    fi
-
     if [ "$ELASTICSEARCH_API_KEY" = "your-api-key" ]; then
-        log_error "Please set ELASTICSEARCH_API_KEY environment variable or update the script"
+        log_error "Please set ELASTICSEARCH_API_KEY environment variable - this is the only required secret"
+        log_error "Other configuration (Elasticsearch URL, S3 bucket/prefix) now have defaults in the scripts"
         exit 1
     fi
 
     log_info "Configuration validation complete."
+    log_info "Using Elasticsearch URL: $ELASTICSEARCH_URL"
+    log_info "Using S3 bucket: $S3_BUCKET with prefix: $S3_PREFIX"
 }
 
 setup_gcp_project() {
@@ -153,27 +152,17 @@ create_service_account() {
 create_secrets() {
     log_info "Creating secrets in Secret Manager..."
 
-    # Elasticsearch configuration
-    if ! gcloud secrets describe elasticsearch-config > /dev/null 2>&1; then
-        echo -n "$ELASTICSEARCH_URL" | gcloud secrets create elasticsearch-url --data-file=-
+    # Only store actual secrets - Elasticsearch API key
+    if ! gcloud secrets describe elasticsearch-api-key > /dev/null 2>&1; then
         echo -n "$ELASTICSEARCH_API_KEY" | gcloud secrets create elasticsearch-api-key --data-file=-
-        log_info "Elasticsearch secrets created."
+        log_info "Elasticsearch API key secret created."
     else
-        log_info "Elasticsearch secrets already exist. Updating..."
-        echo -n "$ELASTICSEARCH_URL" | gcloud secrets versions add elasticsearch-url --data-file=-
+        log_info "Elasticsearch API key secret already exists. Updating..."
         echo -n "$ELASTICSEARCH_API_KEY" | gcloud secrets versions add elasticsearch-api-key --data-file=-
+        log_info "Elasticsearch API key secret updated."
     fi
 
-    # S3 configuration
-    if ! gcloud secrets describe s3-bucket > /dev/null 2>&1; then
-        echo -n "$S3_BUCKET" | gcloud secrets create s3-bucket --data-file=-
-        echo -n "$S3_PREFIX" | gcloud secrets create s3-prefix --data-file=-
-        log_info "S3 configuration secrets created."
-    else
-        log_info "S3 configuration secrets already exist. Updating..."
-        echo -n "$S3_BUCKET" | gcloud secrets versions add s3-bucket --data-file=-
-        echo -n "$S3_PREFIX" | gcloud secrets versions add s3-prefix --data-file=-
-    fi
+    log_info "Note: Non-secret configuration (Elasticsearch URL, S3 bucket, S3 prefix) is now stored in the deployment scripts."
 }
 
 create_persistent_storage() {
@@ -283,17 +272,21 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo
             echo "Options:"
-            echo "  --project-id ID           GCP project ID"
-            echo "  --region REGION          GCP region (default: us-east1)"
-            echo "  --environment ENV        Environment name (default: prod)"
-            echo "  --elasticsearch-url URL  Elasticsearch cluster URL"
-            echo "  --elasticsearch-api-key KEY  Elasticsearch API key"
-            echo "  --s3-bucket BUCKET       S3 bucket for Megastream data"
-            echo "  --s3-prefix PREFIX       S3 prefix for Megastream data"
-            echo "  --help                   Show this help message"
+            echo "  --project-id ID              GCP project ID"
+            echo "  --region REGION              GCP region (default: us-east1)"
+            echo "  --environment ENV            Environment name (default: prod)"
+            echo "  --elasticsearch-url URL      Elasticsearch cluster URL (default: https://elasticsearch.greenearth.social:9200)"
+            echo "  --elasticsearch-api-key KEY  Elasticsearch API key (REQUIRED - no default)"
+            echo "  --s3-bucket BUCKET           S3 bucket for Megastream data (default: greenearth-megastream-data)"
+            echo "  --s3-prefix PREFIX           S3 prefix for Megastream data (default: megastream/databases/)"
+            echo "  --help                       Show this help message"
             echo
-            echo "You can also set these values via environment variables:"
-            echo "  PROJECT_ID, REGION, ENVIRONMENT, ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY, S3_BUCKET, S3_PREFIX"
+            echo "Required environment variables:"
+            echo "  ELASTICSEARCH_API_KEY    Elasticsearch API key (only actual secret)"
+            echo
+            echo "Optional environment variables (have defaults):"
+            echo "  PROJECT_ID, REGION, ENVIRONMENT, ELASTICSEARCH_URL, S3_BUCKET, S3_PREFIX"
+            echo
             exit 0
             ;;
         *)
