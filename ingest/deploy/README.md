@@ -34,6 +34,7 @@ export S3_PREFIX="megastream/databases/"
 ```
 
 This will:
+
 - Enable required GCP APIs
 - Create Artifact Registry for container images
 - Set up service accounts with proper permissions
@@ -49,6 +50,7 @@ Deploy all services to Cloud Run:
 ```
 
 This will:
+
 - Build container images using Cloud Build
 - Deploy jetstream-ingest and megastream-ingest as services
 - Deploy elasticsearch-expiry as a scheduled job
@@ -195,21 +197,24 @@ export ENVIRONMENT="staging"
 ### Common Issues
 
 **Build failures:**
-- Ensure Docker is installed or use Cloud Build
+
 - Check Artifact Registry permissions
 - Verify project APIs are enabled
 
 **Permission errors:**
+
 - Confirm service account has proper IAM roles
 - Check Secret Manager access permissions
 - Verify Elasticsearch API key permissions
 
 **Service startup issues:**
+
 - Check Cloud Run logs for error messages
 - Verify all required secrets are accessible
 - Confirm Elasticsearch cluster is reachable
 
 **Data ingestion problems:**
+
 - Monitor service logs for processing errors
 - Check Elasticsearch cluster health and capacity
 - Verify S3 bucket access and file availability
@@ -230,35 +235,9 @@ gcloud scheduler jobs list --location=us-central1
 gcloud run services describe SERVICE_NAME --region=us-central1 --format=yaml
 ```
 
-## Production Considerations
-
-### Security
-- Use least-privilege service accounts
-- Rotate API keys regularly
-- Enable VPC connector for private Elasticsearch access
-- Use Google Secret Manager for all sensitive data
-
-### Reliability
-- Monitor service health and logs
-- Set up alerting for failures
-- Consider multi-region deployment for high availability
-- Implement proper error handling and retries
-
-### Performance
-- Monitor resource usage and adjust CPU/memory as needed
-- Optimize batch sizes for Elasticsearch operations
-- Consider scaling limits based on data volume
-- Use appropriate instance counts for your workload
-
-### Cost Optimization
-- Use minimum instances settings appropriate for your load
-- Monitor Cloud Run costs and optimize resource allocation
-- Consider using Cloud Scheduler's retry policies efficiently
-- Right-size instance resources based on actual usage
-
 ## Files Structure
 
-```
+```txt
 ingest/
 ├── setup.sh                    # One-time environment setup
 ├── deploy.sh                   # Main deployment script
@@ -267,11 +246,5 @@ ingest/
 │       ├── jetstream-ingest.yaml           # Service configuration
 │       ├── megastream-ingest.yaml          # Service configuration
 │       ├── elasticsearch-expiry-job.yaml   # Job configuration
-│       ├── cloudbuild-*.yaml              # Build configurations
-│       └── Dockerfile.*                   # Container definitions
 └── README.md                   # This file
 ```
-
-Generated during deployment:
-- `cloudbuild-*.yaml` - Cloud Build configurations
-- `Dockerfile.*` - Container build files
