@@ -289,17 +289,7 @@ echo -n "https://your-elasticsearch-cluster:9200" | gcloud secrets create elasti
 
 ### 3. Deploy Ingest Services
 
-Now you can deploy the ingest services which will use these secrets:
-
-```bash
-cd ../ingest
-export PROJECT_ID="your-gcp-project"
-export S3_BUCKET="your-megastream-bucket"
-export S3_PREFIX="megastream/databases/"
-
-./setup.sh
-./deploy.sh
-```
+See the docs at [/ingest/deploy/README.md](../ingest/deploy/README.md)
 
 ### API Key Management
 

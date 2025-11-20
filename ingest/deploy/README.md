@@ -17,6 +17,9 @@ The deployment consists of three main components:
 Run the setup script to configure your GCP environment:
 
 ```bash
+# disable history
+fc -p
+
 cd ingest/
 
 # Set your configuration
@@ -27,7 +30,7 @@ export S3_BUCKET="your-megastream-bucket"
 export S3_PREFIX="megastream/databases/"
 
 # Run setup
-./setup.sh
+./gcp_setup.sh
 ```
 
 This will:
@@ -76,10 +79,10 @@ Both scripts support command line options:
 
 ```bash
 # Setup script
-./setup.sh --project-id PROJECT --elasticsearch-url URL --elasticsearch-api-key KEY
+./gcp_setup.sh --project-id PROJECT --elasticsearch-url URL --elasticsearch-api-key KEY
 
 # Deploy script
-./deploy.sh --project-id PROJECT --region REGION --skip-build
+./gcp_deploy.sh --project-id PROJECT --region REGION --skip-build
 ```
 
 Use `--help` for full option lists.
@@ -184,7 +187,7 @@ go run cmd/elasticsearch_expiry/main.go --dry-run --retention-days=30
 
 # Deploy to different environment
 export ENVIRONMENT="staging"
-./setup.sh && ./deploy.sh
+./gcp_setup.sh && ./deploy.sh
 ```
 
 ## Troubleshooting
