@@ -46,7 +46,19 @@ The API key needs the following permissions:
 }
 ```
 
-### Creating an API Key via Kibana
+### Getting an Existing API Key
+
+If you already have an API key created for other ingest services, you can retrieve it from your Kubernetes cluster:
+
+```bash
+# Get the API key from the ingest service secret (if it exists)
+kubectl get secret ingest-service-key -n greenearth-local -o go-template='{{.data.api_key | base64decode}}'
+
+# Or check for other API key secrets
+kubectl get secrets -n greenearth-local | grep api-key
+```
+
+### Creating a New API Key via Kibana
 
 1. Access Kibana at your cluster URL
 2. Navigate to **Stack Management → Security → API Keys**
@@ -55,16 +67,16 @@ The API key needs the following permissions:
 5. Configure with the permissions above
 6. Copy the encoded API key
 
-### Creating an API Key via CLI
+### Creating a New API Key via CLI
 
 ```bash
 # Port-forward to Elasticsearch (if using local cluster)
-kubectl port-forward service/greenearth-es-local-es-http 9200 -n greenearth-local &
+kubectl port-forward service/greenearth-es-http 9200 -n greenearth-local &
 
 # Get elastic password
-ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-local-es-elastic-user -n greenearth-local -o go-template='{{.data.elastic | base64decode}}')
+ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n greenearth-local -o go-template='{{.data.elastic | base64decode}}')
 
-# Create API key
+# Create API key (same as used by other ingest commands)
 curl -k -X POST "https://localhost:9200/_security/api_key" \
   -u "elastic:$ELASTIC_PASSWORD" \
   -H "Content-Type: application/json" \
@@ -101,9 +113,6 @@ export LOGGING_ENABLED="true"
 
 # Run with custom retention (30 days instead of default 60)
 ./bin/elasticsearch_expiry --dry-run --retention-days 30
-
-# Limit processing to avoid long-running operations
-./bin/elasticsearch_expiry --dry-run --max-batches 10
 ```
 
 ### Production Usage
