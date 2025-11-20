@@ -18,7 +18,7 @@ spec:
           spec:
             restartPolicy: Never
             containers:
-            - image: gcr.io/PROJECT_ID/elasticsearch-expiry
+            - image: gcr.io/greenearth-471522/elasticsearch-expiry
               args: ["--retention-days", "60"]
               env:
               - name: ELASTICSEARCH_URL

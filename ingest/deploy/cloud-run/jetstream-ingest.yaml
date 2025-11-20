@@ -21,7 +21,7 @@ spec:
       containerConcurrency: 1000
       timeoutSeconds: 3600
       containers:
-      - image: gcr.io/PROJECT_ID/jetstream-ingest
+      - image: gcr.io/greenearth-471522/jetstream-ingest
         env:
         - name: JETSTREAM_URL
           value: "wss://jetstream2.us-east.bsky.network/subscribe"

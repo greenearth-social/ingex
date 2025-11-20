@@ -21,7 +21,7 @@ spec:
       containerConcurrency: 1000
       timeoutSeconds: 3600
       containers:
-      - image: gcr.io/PROJECT_ID/megastream-ingest
+      - image: gcr.io/greenearth-471522/megastream-ingest
         args: ["--source", "s3", "--mode", "spool"]
         env:
         - name: ELASTICSEARCH_URL
