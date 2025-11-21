@@ -89,7 +89,7 @@ setup_gcp_project() {
     gcloud services enable \
         cloudbuild.googleapis.com \
         run.googleapis.com \
-        scheduler.googleapis.com \
+        cloudscheduler.googleapis.com \
         secretmanager.googleapis.com \
         storage.googleapis.com \
         artifactregistry.googleapis.com

@@ -65,12 +65,11 @@ validate_config() {
 deploy_jetstream_service() {
     log_info "Deploying jetstream-ingest service from source..."
 
-    cd cmd/jetstream_ingest
-
     gcloud run deploy jetstream-ingest \
         --source=. \
         --region="$REGION" \
         --service-account="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com" \
+        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest" \
         --set-env-vars="JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
         --set-env-vars="LOGGING_ENABLED=true" \
         --set-env-vars="JETSTREAM_STATE_FILE=/data/jetstream_state.json" \
@@ -84,19 +83,16 @@ deploy_jetstream_service() {
         --concurrency=1000 \
         --no-cpu-throttling \
         --allow-unauthenticated
-
-    cd ../..
 }
 
 deploy_megastream_service() {
     log_info "Deploying megastream-ingest service from source..."
 
-    cd cmd/megastream_ingest
-
     gcloud run deploy megastream-ingest \
         --source=. \
         --region="$REGION" \
         --service-account="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com" \
+        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest" \
         --set-env-vars="LOGGING_ENABLED=true" \
         --set-env-vars="SPOOL_INTERVAL_SEC=300" \
         --set-env-vars="AWS_REGION=us-east-1" \
@@ -114,19 +110,16 @@ deploy_megastream_service() {
         --no-cpu-throttling \
         --allow-unauthenticated \
         --args="--source,s3,--mode,spool"
-
-    cd ../..
 }
 
 deploy_expiry_job() {
     log_info "Deploying elasticsearch-expiry job from source..."
 
-    cd cmd/elasticsearch_expiry
-
     gcloud run jobs deploy elasticsearch-expiry \
         --source=. \
         --region="$REGION" \
         --service-account="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com" \
+        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/elasticsearch_expiry" \
         --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --set-env-vars="LOGGING_ENABLED=true" \
@@ -134,8 +127,6 @@ deploy_expiry_job() {
         --memory=512Mi \
         --task-timeout=3600 \
         --args="--retention-days,60"
-
-    cd ../..
 }
 
 deploy_all_services() {
