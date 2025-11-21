@@ -25,9 +25,9 @@ DATA_DISK_SETUP_SCRIPT='
 # Setup data disk (idempotent)
 if ! grep -q "/mnt/data" /etc/fstab; then
   echo "Formatting and mounting data disk..."
-  mkfs.ext4 -F /dev/disk/by-id/google-DATA_DISK_NAME_PLACEHOLDER
+  mkfs.ext4 -F /dev/disk/by-id/google-persistent-disk-1
   mkdir -p /mnt/data
-  echo "/dev/disk/by-id/google-DATA_DISK_NAME_PLACEHOLDER /mnt/data ext4 defaults 0 2" >> /etc/fstab
+  echo "/dev/disk/by-id/google-persistent-disk-1 /mnt/data ext4 defaults 0 2" >> /etc/fstab
   mount /mnt/data
   echo "Data disk mounted at /mnt/data"
 else
@@ -191,10 +191,7 @@ create_vm() {
     echo "" >> "${temp_script}"
     echo "${OPS_AGENT_SCRIPT}" >> "${temp_script}"
     echo "" >> "${temp_script}"
-
-    # Add data disk setup with actual disk name
-    local data_disk_script="${DATA_DISK_SETUP_SCRIPT//DATA_DISK_NAME_PLACEHOLDER/${DATA_DISK_NAME}}"
-    echo "${data_disk_script}" >> "${temp_script}"
+    echo "${DATA_DISK_SETUP_SCRIPT}" >> "${temp_script}"
 
     if [[ "${install_drivers}" == "true" ]]; then
         echo "" >> "${temp_script}"
