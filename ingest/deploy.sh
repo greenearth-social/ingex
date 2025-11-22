@@ -11,10 +11,10 @@ set -e
 # Configuration
 PROJECT_ID="${PROJECT_ID:-greenearth-471522}"
 REGION="${REGION:-us-east1}"
-ENVIRONMENT="${ENVIRONMENT:-prod}"  # TODO: change default when we have more environments
+ENVIRONMENT="${ENVIRONMENT:-stage}"  # TODO: change default when we have more environments
 
 # Non-secret configuration
-ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-https://elasticsearch.greenearth.social:9200}"
+ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-https://greenearth-es-http.greenearth-stage.svc.cluster.local:9200}"
 # TODO: actual s3 bucket name
 S3_SQLITE_DB_BUCKET="${S3_SQLITE_DB_BUCKET:-greenearth-megastream-data}"
 S3_SQLITE_DB_PREFIX="${S3_SQLITE_DB_PREFIX:-megastream/databases/}"
@@ -219,7 +219,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --project-id ID              GCP project ID"
             echo "  --region REGION             GCP region (default: us-east1)"
-            echo "  --environment ENV           Environment name (default: prod)"
+            echo "  --environment ENV           Environment name (default: stage)"
             echo "  --jetstream-instances N     Set min/max instances for jetstream service"
             echo "  --megastream-instances N    Set min/max instances for megastream service"
             echo "  --help                      Show this help message"
@@ -228,7 +228,7 @@ while [[ $# -gt 0 ]]; do
             echo "  PROJECT_ID                  GCP project ID"
             echo "  REGION                      GCP region"
             echo "  ENVIRONMENT                 Environment name"
-            echo "  ELASTICSEARCH_URL           Elasticsearch URL (default: https://elasticsearch.greenearth.social:9200)"
+            echo "  ELASTICSEARCH_URL           Elasticsearch URL (default: https://greenearth-es-http.greenearth-stage.svc.cluster.local:9200)"
             echo "  S3_SQLITE_DB_BUCKET         S3 bucket name (default: greenearth-megastream-data)"
             echo "  S3_SQLITE_DB_PREFIX         S3 prefix (default: megastream/databases/)"
             echo

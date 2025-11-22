@@ -31,3 +31,16 @@ A data ingestion and indexing system for BlueSky content. This project provides 
 
 - **Testing**: Go test suites on all PRs
 - **Quality Assurance**: Automated linting, formatting, and security checks
+
+## Working with staging and production clusters
+
+To set up kubectl to point at the remote control plane, do this:
+
+```bash
+gcloud container clusters get-credentials "greenearth-stage-cluster" --region "us-east1"
+```
+
+You may need to run `gcloud components install gke-gcloud-auth-plugin` first.
+
+To see which cluster you're pointed at, run `kubectl cluster-info`
+

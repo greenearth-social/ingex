@@ -2,17 +2,17 @@
 
 # Green Earth Ingex - GCP Environment Setup Script
 # This script sets up the GCP environment for the first time
-# Run this once per environment (dev, stage, prod)
+# Run this once per environment (dev, stage, prod])
 
 set -e
 
 # Configuration
 PROJECT_ID="${PROJECT_ID:-greenearth-471522}"
 REGION="${REGION:-us-east1}"
-ENVIRONMENT="${ENVIRONMENT:-prod}"  # TODO: change default when we have more environments
+ENVIRONMENT="${ENVIRONMENT:-stage}"  # TODO: change default when we have more environments
 
 # Elasticsearch configuration - only API key is secret, URL is public
-ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-https://elasticsearch.greenearth.social:9200}"
+ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-https://greenearth-es-http.greenearth-stage.svc.cluster.local:9200}"
 ELASTICSEARCH_API_KEY="${ELASTICSEARCH_API_KEY:-your-api-key}"
 
 # S3 configuration for Megastream data
@@ -274,8 +274,8 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --project-id ID              GCP project ID"
             echo "  --region REGION              GCP region (default: us-east1)"
-            echo "  --environment ENV            Environment name (default: prod)"
-            echo "  --elasticsearch-url URL      Elasticsearch cluster URL (default: https://elasticsearch.greenearth.social:9200)"
+            echo "  --environment ENV            Environment name (default: stage)"
+            echo "  --elasticsearch-url URL      Elasticsearch cluster URL (default: https://greenearth-es-http.greenearth-stage.svc.cluster.local:9200)"
             echo "  --elasticsearch-api-key KEY  Elasticsearch API key (REQUIRED - no default)"
             echo "  --s3-bucket BUCKET           S3 bucket for Megastream data (default: greenearth-megastream-data)"
             echo "  --s3-prefix PREFIX           S3 prefix for Megastream data (default: megastream/databases/)"
