@@ -14,7 +14,7 @@ Each command is optimized for its specific data source and use case.
 ## Features
 
 - **Multiple Data Sources**: Support for Megastream SQLite databases, Jetstream WebSocket API, and more
-- **Embedding Support**: Processes pre-computed MiniLM sentence embeddings (megastream_ingest)
+- **Embedding Support**: Processes pre-computed MiniLM sentence embeddings (megastreamingest)
 - **Real-time Streaming**: WebSocket-based ingestion for live data (jetstream_ingest)
 - **Elasticsearch Integration**: Uses [go-elasticsearch](https://pkg.go.dev/github.com/elastic/go-elasticsearch/v9) for data indexing
 - **Bulk Indexing**: Efficient batch processing for high-throughput ingestion
