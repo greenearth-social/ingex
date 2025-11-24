@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.90.0
 	github.com/elastic/go-elasticsearch/v9 v9.2.0
 	github.com/gorilla/websocket v1.5.3
-	modernc.org/sqlite v1.40.0
+	modernc.org/sqlite v1.40.1
 )
 
 require (
