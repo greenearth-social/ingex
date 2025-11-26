@@ -13,17 +13,19 @@ type JetstreamMessage interface {
 	GetCreatedAt() string
 	GetTimeUs() int64
 	IsLike() bool
+	IsLikeDelete() bool
 }
 
 // jetstreamMessage is the implementation of JetstreamMessage
 type jetstreamMessage struct {
-	uri        string
-	subjectURI string
-	authorDID  string
-	createdAt  string
-	timeUs     int64
-	isLike     bool
-	parseError error
+	uri          string
+	subjectURI   string
+	authorDID    string
+	createdAt    string
+	timeUs       int64
+	isLike       bool
+	isLikeDelete bool
+	parseError   error
 }
 
 // JetstreamEventData represents the raw Jetstream event structure
@@ -59,28 +61,33 @@ func (m *jetstreamMessage) parseRawEvent(rawJSON string, logger *IngestLogger) {
 	m.authorDID = event.Did
 	m.timeUs = event.TimeUs
 
-	// Check if this is a like event
-	if event.Kind == "commit" &&
-		event.Commit.Collection == "app.bsky.feed.like" &&
-		event.Commit.Operation == "create" {
-		m.isLike = true
-
-		// Construct the URI for this like
+	// Check if this is a like-related event
+	if event.Kind == "commit" && event.Commit.Collection == "app.bsky.feed.like" {
+		// Construct the URI for this like (works for both create and delete)
 		m.uri = fmt.Sprintf("at://%s/%s/%s", event.Did, event.Commit.Collection, event.Commit.RKey)
 
-		// Extract the subject URI (the post being liked)
-		if subject, ok := event.Commit.Record["subject"].(map[string]interface{}); ok {
-			if subjectURI, ok := subject["uri"].(string); ok {
-				m.subjectURI = subjectURI
-			}
-		}
+		if event.Commit.Operation == "create" {
+			m.isLike = true
 
-		// Extract created_at timestamp
-		if createdAt, ok := event.Commit.Record["createdAt"].(string); ok {
-			m.createdAt = createdAt
-		} else {
-			logger.Error("Failed to extract createdAt from Jetstream JSON (at_uri: %s)", m.uri)
-			return
+			// Extract the subject URI (the post being liked)
+			if subject, ok := event.Commit.Record["subject"].(map[string]interface{}); ok {
+				if subjectURI, ok := subject["uri"].(string); ok {
+					m.subjectURI = subjectURI
+				}
+			}
+
+			// Extract created_at timestamp
+			if createdAt, ok := event.Commit.Record["createdAt"].(string); ok {
+				m.createdAt = createdAt
+			} else {
+				logger.Error("Failed to extract createdAt from Jetstream JSON (at_uri: %s)", m.uri)
+				return
+			}
+		} else if event.Commit.Operation == "delete" {
+			m.isLikeDelete = true
+			// For delete events, we only have did, collection, and rkey
+			// URI is already constructed above
+			// subject_uri will be fetched from Elasticsearch
 		}
 	}
 }
@@ -109,4 +116,8 @@ func (m *jetstreamMessage) GetTimeUs() int64 {
 
 func (m *jetstreamMessage) IsLike() bool {
 	return m.isLike
+}
+
+func (m *jetstreamMessage) IsLikeDelete() bool {
+	return m.isLikeDelete
 }
