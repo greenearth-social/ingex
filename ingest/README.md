@@ -133,10 +133,10 @@ Or via command line:
 
 ```bash
 # Port-forward to Elasticsearch
-kubectl port-forward service/greenearth-es-local-es-http 9200 -n greenearth-local &
+kubectl port-forward service/greenearth-es-http 9200 -n greenearth-local
 
 # Get elastic password
-ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-local-es-elastic-user -n greenearth-local -o go-template='{{.data.elastic | base64decode}}')
+ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n greenearth-local -o go-template='{{.data.elastic | base64decode}}')
 
 # Create API key (adjust index names as needed)
 curl -k -X POST "https://localhost:9200/_security/api_key" \
@@ -150,7 +150,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "cluster": ["manage_index_templates", "monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1", "likes", "likes_v1"],
+            "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1", "likes", "likes_v1", "like_tombstones", "like_tombstones_v1"],
             "privileges": ["create_doc", "create", "delete", "index", "write", "all"]
           }
         ]
@@ -210,7 +210,7 @@ Run against local Elasticsearch cluster (see [../index/README.md](../index/READM
 
 ```bash
 # Start port-forward to local Elasticsearch
-kubectl port-forward service/greenearth-es-local-es-http 9200 -n greenearth-local
+kubectl port-forward service/greenearth-es-http 9200 -n greenearth-local
 
 # Run megastream_ingest
 ./megastream_ingest --source local --mode once --skip-tls-verify
