@@ -64,7 +64,7 @@ func TestDeleteMessageFlow(t *testing.T) {
 		t.Error("Expected delete message to be a delete")
 	}
 
-	tombstoneDoc := CreateTombstoneDoc(deleteMsg)
+	tombstoneDoc := CreatePostTombstoneDoc(deleteMsg)
 	if tombstoneDoc.AtURI != postAtURI {
 		t.Errorf("Expected tombstone AtURI %s, got %s", postAtURI, tombstoneDoc.AtURI)
 	}
@@ -89,7 +89,7 @@ func TestDeleteMessageFlow(t *testing.T) {
 	}
 }
 
-func TestCreateTombstoneDoc(t *testing.T) {
+func TestCreatePostTombstoneDoc(t *testing.T) {
 	logger := NewLogger(false)
 
 	atURI := "at://did:plc:abc/app.bsky.feed.post/xyz"
@@ -109,7 +109,7 @@ func TestCreateTombstoneDoc(t *testing.T) {
 		t.Fatal("Expected message to be a delete")
 	}
 
-	tombstone := CreateTombstoneDoc(msg)
+	tombstone := CreatePostTombstoneDoc(msg)
 
 	if tombstone.AtURI != atURI {
 		t.Errorf("Expected AtURI %s, got %s", atURI, tombstone.AtURI)
@@ -142,7 +142,7 @@ func TestTombstoneDocFields(t *testing.T) {
 	deleteJSON := `{"message":{"commit":{"operation":"delete"}}}`
 	msg := NewMegaStreamMessage(atURI, did, deleteJSON, "{}", logger)
 
-	tombstone := CreateTombstoneDoc(msg)
+	tombstone := CreatePostTombstoneDoc(msg)
 
 	if !strings.HasPrefix(atURI, "at://") {
 		t.Error("Test data should have valid at_uri format")
@@ -214,14 +214,14 @@ func TestDeleteMessage_IsDelete(t *testing.T) {
 func TestBulkOperations_DryRun(t *testing.T) {
 	logger := NewLogger(false)
 
-	t.Run("bulkIndexTombstones dry-run returns no error", func(t *testing.T) {
-		tombstone := TombstoneDoc{
+	t.Run("bulkIndexPostTombstones dry-run returns no error", func(t *testing.T) {
+		tombstone := PostTombstoneDoc{
 			AtURI:     "at://did:plc:test/app.bsky.feed.post/123",
 			AuthorDID: "did:plc:test",
 			DeletedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 
-		err := BulkIndexTombstones(context.TODO(), nil, "post_tombstones", []TombstoneDoc{tombstone}, true, logger)
+		err := BulkIndexPostTombstones(context.TODO(), nil, "post_tombstones", []PostTombstoneDoc{tombstone}, true, logger)
 		if err != nil {
 			t.Errorf("Expected no error in dry-run mode, got: %v", err)
 		}
@@ -239,8 +239,8 @@ func TestBulkOperations_DryRun(t *testing.T) {
 func TestBulkOperations_EmptyBatch(t *testing.T) {
 	logger := NewLogger(false)
 
-	t.Run("bulkIndexTombstones empty batch returns no error", func(t *testing.T) {
-		err := BulkIndexTombstones(context.TODO(), nil, "post_tombstones", []TombstoneDoc{}, false, logger)
+	t.Run("bulkIndexPostTombstones empty batch returns no error", func(t *testing.T) {
+		err := BulkIndexPostTombstones(context.TODO(), nil, "post_tombstones", []PostTombstoneDoc{}, false, logger)
 		if err != nil {
 			t.Errorf("Expected no error for empty batch, got: %v", err)
 		}
@@ -273,7 +273,7 @@ func TestTombstoneDoc_TimeUs(t *testing.T) {
 			t.Errorf("Expected GetTimeUs() = %d, got %d", timeUs, msg.GetTimeUs())
 		}
 
-		tombstone := CreateTombstoneDoc(msg)
+		tombstone := CreatePostTombstoneDoc(msg)
 
 		expectedDeletedAt := time.Unix(0, timeUs*1000).Format(time.RFC3339)
 		if tombstone.DeletedAt != expectedDeletedAt {
@@ -308,7 +308,7 @@ func TestTombstoneDoc_TimeUs(t *testing.T) {
 			t.Errorf("Expected GetTimeUs() = 0, got %d", msg.GetTimeUs())
 		}
 
-		tombstone := CreateTombstoneDoc(msg)
+		tombstone := CreatePostTombstoneDoc(msg)
 
 		deletedAt, err := time.Parse(time.RFC3339, tombstone.DeletedAt)
 		if err != nil {
