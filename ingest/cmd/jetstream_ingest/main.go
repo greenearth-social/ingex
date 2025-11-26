@@ -236,55 +236,50 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					// Reset delete messages batch
 					deleteMessages = make([]common.JetstreamMessage, 0, batchSize)
 				}
-				continue
-			}
+			} else if msg.IsLike() {
 
-			// Only process like creation events
-			if !msg.IsLike() {
-				continue
-			}
-
-			if msg.GetAtURI() == "" {
-				logger.Error("Skipping like with empty at_uri (author_did: %s)", msg.GetAuthorDID())
-				skippedCount++
-				continue
-			}
-
-			if msg.GetSubjectURI() == "" {
-				logger.Error("Skipping like with empty subject_uri (at_uri: %s, author_did: %s)", msg.GetAtURI(), msg.GetAuthorDID())
-				skippedCount++
-				continue
-			}
-
-			doc := common.CreateLikeDoc(msg)
-			batch = append(batch, doc)
-
-			// Track the latest timestamp
-			if msg.GetTimeUs() > lastTimeUs {
-				lastTimeUs = msg.GetTimeUs()
-			}
-
-			if len(batch) >= batchSize {
-				// Send batch to workers for processing
-				job := batchJob{
-					batch:          batch,
-					tombstoneBatch: make([]common.LikeTombstoneDoc, 0),
-					deleteBatch:    make([]common.DeleteDoc, 0),
-					timeUs:         lastTimeUs,
-					batchCount:     len(batch),
-					tombstoneCount: 0,
-					skipCount:      skippedCount,
+				if msg.GetAtURI() == "" {
+					logger.Error("Skipping like with empty at_uri (author_did: %s)", msg.GetAuthorDID())
+					skippedCount++
+					continue
 				}
 
-				select {
-				case batchChan <- job:
-					processedCount += len(batch)
-				case <-ctx.Done():
-					goto cleanup
+				if msg.GetSubjectURI() == "" {
+					logger.Error("Skipping like with empty subject_uri (at_uri: %s, author_did: %s)", msg.GetAtURI(), msg.GetAuthorDID())
+					skippedCount++
+					continue
 				}
 
-				// Create new batch slice
-				batch = make([]common.LikeDoc, 0, batchSize)
+				doc := common.CreateLikeDoc(msg)
+				batch = append(batch, doc)
+
+				// Track the latest timestamp
+				if msg.GetTimeUs() > lastTimeUs {
+					lastTimeUs = msg.GetTimeUs()
+				}
+
+				if len(batch) >= batchSize {
+					// Send batch to workers for processing
+					job := batchJob{
+						batch:          batch,
+						tombstoneBatch: make([]common.LikeTombstoneDoc, 0),
+						deleteBatch:    make([]common.DeleteDoc, 0),
+						timeUs:         lastTimeUs,
+						batchCount:     len(batch),
+						tombstoneCount: 0,
+						skipCount:      skippedCount,
+					}
+
+					select {
+					case batchChan <- job:
+						processedCount += len(batch)
+					case <-ctx.Done():
+						goto cleanup
+					}
+
+					// Create new batch slice
+					batch = make([]common.LikeDoc, 0, batchSize)
+				}
 			}
 		}
 	}
