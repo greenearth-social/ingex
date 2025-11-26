@@ -66,7 +66,8 @@ func (m *jetstreamMessage) parseRawEvent(rawJSON string, logger *IngestLogger) {
 		// Construct the URI for this like (works for both create and delete)
 		m.uri = fmt.Sprintf("at://%s/%s/%s", event.Did, event.Commit.Collection, event.Commit.RKey)
 
-		if event.Commit.Operation == "create" {
+		switch event.Commit.Operation {
+		case "create":
 			m.isLike = true
 
 			// Extract the subject URI (the post being liked)
@@ -83,7 +84,7 @@ func (m *jetstreamMessage) parseRawEvent(rawJSON string, logger *IngestLogger) {
 				logger.Error("Failed to extract createdAt from Jetstream JSON (at_uri: %s)", m.uri)
 				return
 			}
-		} else if event.Commit.Operation == "delete" {
+		case "delete":
 			m.isLikeDelete = true
 			// For delete events, we only have did, collection, and rkey
 			// URI is already constructed above
