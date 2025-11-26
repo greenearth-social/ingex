@@ -152,7 +152,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	// Process rows from spooler
 	rowChan := spooler.GetRowChannel()
 	var batch []common.ElasticsearchDoc
-	var tombstoneBatch []common.TombstoneDoc
+	var tombstoneBatch []common.PostTombstoneDoc
 	var deleteBatch []common.DeleteDoc
 	const batchSize = 100
 	processedCount := 0
@@ -179,7 +179,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			msg := common.NewMegaStreamMessage(row.AtURI, row.DID, row.RawPost, row.Inferences, logger)
 
 			if msg.IsDelete() {
-				tombstone := common.CreateTombstoneDoc(msg)
+				tombstone := common.CreatePostTombstoneDoc(msg)
 				tombstoneBatch = append(tombstoneBatch, tombstone)
 				deleteBatch = append(deleteBatch, common.DeleteDoc{
 					DocID:     msg.GetAtURI(),
@@ -188,7 +188,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 				if len(tombstoneBatch) >= batchSize {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					if err := common.BulkIndexTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
+					if err := common.BulkIndexPostTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
 						logger.Error("Failed to bulk index tombstones: %v", err)
 					} else {
 						if dryRun {
@@ -258,7 +258,7 @@ cleanup:
 
 	// Index remaining tombstones and delete posts
 	if len(tombstoneBatch) > 0 {
-		if err := common.BulkIndexTombstones(cleanupCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
+		if err := common.BulkIndexPostTombstones(cleanupCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
 			logger.Error("Failed to bulk index final tombstone batch: %v", err)
 		} else {
 			if dryRun {

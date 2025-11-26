@@ -25,8 +25,8 @@ type ElasticsearchDoc struct {
 	IndexedAt        string               `json:"indexed_at"`
 }
 
-// TombstoneDoc represents the document structure for post deletion tombstones
-type TombstoneDoc struct {
+// PostTombstoneDoc represents the document structure for post deletion tombstones
+type PostTombstoneDoc struct {
 	AtURI     string `json:"at_uri"`
 	AuthorDID string `json:"author_did"`
 	DeletedAt string `json:"deleted_at"`
@@ -180,8 +180,8 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 	return nil
 }
 
-// BulkIndexTombstones indexes a batch of tombstone documents to Elasticsearch
-func BulkIndexTombstones(ctx context.Context, client *elasticsearch.Client, index string, docs []TombstoneDoc, dryRun bool, logger *IngestLogger) error {
+// BulkIndexPostTombstones indexes a batch of post tombstone documents to Elasticsearch
+func BulkIndexPostTombstones(ctx context.Context, client *elasticsearch.Client, index string, docs []PostTombstoneDoc, dryRun bool, logger *IngestLogger) error {
 	if len(docs) == 0 {
 		return nil
 	}
@@ -384,8 +384,8 @@ func CreateElasticsearchDoc(msg MegaStreamMessage) ElasticsearchDoc {
 	}
 }
 
-// CreateTombstoneDoc creates a TombstoneDoc from a MegaStreamMessage
-func CreateTombstoneDoc(msg MegaStreamMessage) TombstoneDoc {
+// CreatePostTombstoneDoc creates a PostTombstoneDoc from a MegaStreamMessage
+func CreatePostTombstoneDoc(msg MegaStreamMessage) PostTombstoneDoc {
 	now := time.Now().UTC()
 	deletedAt := now
 
@@ -393,7 +393,7 @@ func CreateTombstoneDoc(msg MegaStreamMessage) TombstoneDoc {
 		deletedAt = time.Unix(0, timeUs*1000)
 	}
 
-	return TombstoneDoc{
+	return PostTombstoneDoc{
 		AtURI:     msg.GetAtURI(),
 		AuthorDID: msg.GetAuthorDID(),
 		DeletedAt: deletedAt.Format(time.RFC3339),
