@@ -48,7 +48,7 @@ spec:
               "cluster": ["manage_index_templates", "monitor"],
               "indices": [
                 {
-                  "names": ["posts*", "post_tombstones*", "likes*"],
+                  "names": ["posts*", "post_tombstones*", "likes*", "like_tombstones*"],
                   "privileges": ["create_index", "manage", "write", "read"]
                 }
               ]
