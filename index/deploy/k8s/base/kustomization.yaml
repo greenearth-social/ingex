@@ -7,9 +7,11 @@ resources:
   - templates/posts-index-template.yaml
   - templates/post-tombstones-index-template.yaml
   - templates/likes-index-template.yaml
+  - templates/like-tombstones-index-template.yaml
   - templates/posts-alias.yaml
   - templates/post-tombstones-alias.yaml
   - templates/likes-alias.yaml
+  - templates/like-tombstones-alias.yaml
 
 configMapGenerator:
   - name: index-settings
