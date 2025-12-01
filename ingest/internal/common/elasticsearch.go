@@ -543,8 +543,8 @@ func BulkGetLikes(ctx context.Context, client *elasticsearch.Client, index strin
 		return make(map[string]LikeDoc), nil
 	}
 
-	// Build mget request
-	var buf bytes.Buffer
+	// Build mget request with proper docs array structure
+	docs := make([]map[string]interface{}, 0, len(likeIDs))
 	for _, id := range likeIDs {
 		if id.AtURI == "" {
 			continue
@@ -560,18 +560,22 @@ func BulkGetLikes(ctx context.Context, client *elasticsearch.Client, index strin
 			doc["routing"] = id.AuthorDID
 		}
 
-		docJSON, err := json.Marshal(doc)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal mget doc: %w", err)
-		}
+		docs = append(docs, doc)
+	}
 
-		buf.Write(docJSON)
-		buf.WriteByte('\n')
+	// Wrap docs in the required structure
+	requestBody := map[string]interface{}{
+		"docs": docs,
+	}
+
+	bodyJSON, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal mget request: %w", err)
 	}
 
 	// Execute mget request
 	res, err := client.Mget(
-		bytes.NewReader(buf.Bytes()),
+		bytes.NewReader(bodyJSON),
 		client.Mget.WithContext(ctx),
 	)
 	if err != nil {
