@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/elastic/go-elasticsearch/v9"
 	"github.com/greenearth/ingest/internal/common"
 	"github.com/greenearth/ingest/internal/megastream_ingest"
 )
@@ -178,7 +180,62 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 			msg := common.NewMegaStreamMessage(row.AtURI, row.DID, row.RawPost, row.Inferences, logger)
 
-			if msg.IsDelete() {
+			// Handle different event types with if-else chain
+			if msg.IsAccountDeletion() && msg.GetAccountStatus() == "deleted" {
+				// CRITICAL: Flush all pending batches before account deletion
+				// This prevents post creation/deletion events from being processed
+				// after the account deletion (which would be out of order)
+
+				// Flush post creation batch
+				if len(batch) > 0 {
+					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+					if err := common.BulkIndex(batchCtx, esClient, "posts", batch, dryRun, logger); err != nil {
+						logger.Error("Failed to bulk index batch before account deletion: %v", err)
+					} else {
+						processedCount += len(batch)
+						if dryRun {
+							logger.Info("Dry-run: Would index batch before account deletion: %d documents", len(batch))
+						} else {
+							logger.Info("Indexed batch before account deletion: %d documents", len(batch))
+						}
+					}
+					batch = batch[:0]
+					cancelBatchCtx()
+				}
+
+				// Flush post deletion batch (tombstones + deletes)
+				if len(tombstoneBatch) > 0 {
+					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+					if err := common.BulkIndexPostTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
+						logger.Error("Failed to bulk index tombstones before account deletion: %v", err)
+					} else {
+						if dryRun {
+							logger.Info("Dry-run: Would index tombstones before account deletion: %d", len(tombstoneBatch))
+						} else {
+							logger.Info("Indexed tombstones before account deletion: %d", len(tombstoneBatch))
+						}
+					}
+					if err := common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
+						logger.Error("Failed to bulk delete posts before account deletion: %v", err)
+					} else {
+						deletedCount += len(deleteBatch)
+						if dryRun {
+							logger.Info("Dry-run: Would delete posts before account deletion: %d", len(deleteBatch))
+						} else {
+							logger.Info("Deleted posts before account deletion: %d", len(deleteBatch))
+						}
+					}
+					tombstoneBatch = tombstoneBatch[:0]
+					deleteBatch = deleteBatch[:0]
+					cancelBatchCtx()
+				}
+
+				// Now process account deletion
+				if err := handleAccountDeletion(ctx, msg, esClient, dryRun, logger, &deletedCount); err != nil {
+					logger.Error("Failed to handle account deletion for DID %s: %v", msg.GetAuthorDID(), err)
+				}
+			} else if msg.IsDelete() {
+				// Post deletion - add to batch
 				tombstone := common.CreatePostTombstoneDoc(msg)
 				tombstoneBatch = append(tombstoneBatch, tombstone)
 				deleteBatch = append(deleteBatch, common.DeleteDoc{
@@ -213,11 +270,11 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					deleteBatch = deleteBatch[:0]
 					cancelBatchCtx()
 				}
-				continue
+			} else {
+				// Post creation - add to batch
+				doc := common.CreateElasticsearchDoc(msg)
+				batch = append(batch, doc)
 			}
-
-			doc := common.CreateElasticsearchDoc(msg)
-			batch = append(batch, doc)
 
 			if len(batch) >= batchSize {
 				batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
@@ -281,4 +338,205 @@ cleanup:
 	}
 
 	logger.Info("Spooler ingestion complete. Processed: %d, Deleted: %d, Skipped: %d", processedCount, deletedCount, skippedCount)
+}
+
+// handleAccountDeletion handles account deletion events by querying and deleting all posts and likes
+func handleAccountDeletion(
+	ctx context.Context,
+	msg common.MegaStreamMessage,
+	esClient *elasticsearch.Client,
+	dryRun bool,
+	logger *common.IngestLogger,
+	deletedCount *int,
+) error {
+	authorDID := msg.GetAuthorDID()
+	logger.Info("Processing account deletion for DID: %s", authorDID)
+
+	// Create 1-minute timeout context for queries
+	queryCtx, queryCancel := context.WithTimeout(ctx, time.Minute)
+	defer queryCancel()
+
+	// Query all posts
+	posts, err := common.QueryPostsByAuthorDID(queryCtx, esClient, "posts", authorDID, logger)
+	if err != nil {
+		return fmt.Errorf("failed to query posts for account deletion (DID: %s): %w", authorDID, err)
+	}
+	logger.Info("Found %d posts for account deletion (DID: %s)", len(posts), authorDID)
+
+	// Query all likes
+	likes, err := common.QueryLikesByAuthorDID(queryCtx, esClient, "likes", authorDID, logger)
+	if err != nil {
+		return fmt.Errorf("failed to query likes for account deletion (DID: %s): %w", authorDID, err)
+	}
+	logger.Info("Found %d likes for account deletion (DID: %s)", len(likes), authorDID)
+
+	// Process post deletions
+	if err := processAccountPostDeletions(ctx, posts, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
+		return fmt.Errorf("failed to process post deletions for account (DID: %s): %w", authorDID, err)
+	}
+	*deletedCount += len(posts)
+
+	// Process like deletions
+	if err := processAccountLikeDeletions(ctx, likes, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
+		return fmt.Errorf("failed to process like deletions for account (DID: %s): %w", authorDID, err)
+	}
+	*deletedCount += len(likes)
+
+	logger.Info("Completed account deletion for DID: %s (posts: %d, likes: %d)", authorDID, len(posts), len(likes))
+	return nil
+}
+
+// processAccountPostDeletions processes post deletions in batches for account deletion
+func processAccountPostDeletions(
+	ctx context.Context,
+	postAtURIs []string,
+	esClient *elasticsearch.Client,
+	authorDID string,
+	timeUs int64,
+	dryRun bool,
+	logger *common.IngestLogger,
+) error {
+	const batchSize = 100
+
+	now := time.Now().UTC()
+	deletedAt := now
+	if timeUs > 0 {
+		deletedAt = time.Unix(0, timeUs*1000)
+	}
+
+	var tombstoneBatch []common.PostTombstoneDoc
+	var deleteBatch []common.DeleteDoc
+
+	for _, atURI := range postAtURIs {
+		tombstoneBatch = append(tombstoneBatch, common.PostTombstoneDoc{
+			AtURI:     atURI,
+			AuthorDID: authorDID,
+			DeletedAt: deletedAt.Format(time.RFC3339),
+			IndexedAt: now.Format(time.RFC3339),
+		})
+
+		deleteBatch = append(deleteBatch, common.DeleteDoc{
+			DocID:     atURI,
+			AuthorDID: authorDID,
+		})
+
+		// Flush batch when full
+		if len(tombstoneBatch) >= batchSize {
+			if err := flushPostDeletionBatch(ctx, esClient, tombstoneBatch, deleteBatch, dryRun, logger); err != nil {
+				return err
+			}
+			tombstoneBatch = tombstoneBatch[:0]
+			deleteBatch = deleteBatch[:0]
+		}
+	}
+
+	// Flush remaining
+	if len(tombstoneBatch) > 0 {
+		return flushPostDeletionBatch(ctx, esClient, tombstoneBatch, deleteBatch, dryRun, logger)
+	}
+
+	return nil
+}
+
+// processAccountLikeDeletions processes like deletions in batches for account deletion
+func processAccountLikeDeletions(
+	ctx context.Context,
+	likes map[string]string,
+	esClient *elasticsearch.Client,
+	authorDID string,
+	timeUs int64,
+	dryRun bool,
+	logger *common.IngestLogger,
+) error {
+	const batchSize = 100
+
+	now := time.Now().UTC()
+	deletedAt := now
+	if timeUs > 0 {
+		deletedAt = time.Unix(0, timeUs*1000)
+	}
+
+	var tombstoneBatch []common.LikeTombstoneDoc
+	var deleteBatch []common.DeleteDoc
+
+	for atURI, subjectURI := range likes {
+		tombstoneBatch = append(tombstoneBatch, common.LikeTombstoneDoc{
+			AtURI:      atURI,
+			AuthorDID:  authorDID,
+			SubjectURI: subjectURI,
+			DeletedAt:  deletedAt.Format(time.RFC3339),
+			IndexedAt:  now.Format(time.RFC3339),
+		})
+
+		deleteBatch = append(deleteBatch, common.DeleteDoc{
+			DocID:     atURI,
+			AuthorDID: authorDID,
+		})
+
+		// Flush batch when full
+		if len(tombstoneBatch) >= batchSize {
+			if err := flushLikeDeletionBatch(ctx, esClient, tombstoneBatch, deleteBatch, dryRun, logger); err != nil {
+				return err
+			}
+			tombstoneBatch = tombstoneBatch[:0]
+			deleteBatch = deleteBatch[:0]
+		}
+	}
+
+	// Flush remaining
+	if len(tombstoneBatch) > 0 {
+		return flushLikeDeletionBatch(ctx, esClient, tombstoneBatch, deleteBatch, dryRun, logger)
+	}
+
+	return nil
+}
+
+// flushPostDeletionBatch indexes post tombstones and deletes posts
+func flushPostDeletionBatch(
+	ctx context.Context,
+	esClient *elasticsearch.Client,
+	tombstoneBatch []common.PostTombstoneDoc,
+	deleteBatch []common.DeleteDoc,
+	dryRun bool,
+	logger *common.IngestLogger,
+) error {
+	batchCtx, cancelBatchCtx := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelBatchCtx()
+
+	// Index tombstones first
+	if err := common.BulkIndexPostTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
+		return fmt.Errorf("failed to bulk index post tombstones: %w", err)
+	}
+
+	// Then delete posts
+	if err := common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
+		return fmt.Errorf("failed to bulk delete posts: %w", err)
+	}
+
+	return nil
+}
+
+// flushLikeDeletionBatch indexes like tombstones and deletes likes
+func flushLikeDeletionBatch(
+	ctx context.Context,
+	esClient *elasticsearch.Client,
+	tombstoneBatch []common.LikeTombstoneDoc,
+	deleteBatch []common.DeleteDoc,
+	dryRun bool,
+	logger *common.IngestLogger,
+) error {
+	batchCtx, cancelBatchCtx := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelBatchCtx()
+
+	// Index tombstones first
+	if err := common.BulkIndexLikeTombstones(batchCtx, esClient, "like_tombstones", tombstoneBatch, dryRun, logger); err != nil {
+		return fmt.Errorf("failed to bulk index like tombstones: %w", err)
+	}
+
+	// Then delete likes
+	if err := common.BulkDelete(batchCtx, esClient, "likes", deleteBatch, dryRun, logger); err != nil {
+		return fmt.Errorf("failed to bulk delete likes: %w", err)
+	}
+
+	return nil
 }
