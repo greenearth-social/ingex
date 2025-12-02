@@ -165,7 +165,7 @@ deploy_megastream_service() {
         --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-env-vars="S3_SQLITE_DB_BUCKET=$S3_SQLITE_DB_BUCKET" \
         --set-env-vars="S3_SQLITE_DB_PREFIX=$S3_SQLITE_DB_PREFIX" \
-        --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
+        --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest,AWS_S3_ACCESS_KEY=aws-s3-access-key:latest,AWS_S3_SECRET_KEY=aws-s3-secret-key:latest" \
         --min-instances="$MEGASTREAM_MIN_INSTANCES" \
         --max-instances="$MEGASTREAM_MAX_INSTANCES" \
         --cpu=1 \

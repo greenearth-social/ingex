@@ -67,15 +67,21 @@ validate_config() {
         exit 1
     fi
 
-    if [ "$ELASTICSEARCH_API_KEY" = "your-api-key" ]; then
-        log_error "Please set ELASTICSEARCH_API_KEY environment variable - this is the only required secret"
-        log_error "Other configuration (Elasticsearch URL, S3 bucket/prefix) now have defaults in the scripts"
-        exit 1
-    fi
-
     log_info "Configuration validation complete."
     log_info "Using Elasticsearch URL: $ELASTICSEARCH_URL"
     log_info "Using S3 bucket: $S3_BUCKET with prefix: $S3_PREFIX"
+
+    if [ -n "$ELASTICSEARCH_API_KEY" ] && [ "$ELASTICSEARCH_API_KEY" != "your-api-key" ]; then
+        log_info "Elasticsearch API key provided - will be stored/updated in Secret Manager"
+    else
+        log_warn "Elasticsearch API key not provided - skipping secret creation (assuming it already exists)"
+    fi
+
+    if [ -n "$AWS_S3_ACCESS_KEY" ] && [ -n "$AWS_S3_SECRET_KEY" ]; then
+        log_info "AWS S3 credentials provided - will be stored in Secret Manager"
+    else
+        log_warn "AWS S3 credentials not provided - skipping secret creation"
+    fi
 }
 
 setup_gcp_project() {
@@ -159,14 +165,78 @@ create_service_account() {
 create_secrets() {
     log_info "Creating secrets in Secret Manager..."
 
-    # Only store actual secrets - Elasticsearch API key
-    if ! gcloud secrets describe elasticsearch-api-key > /dev/null 2>&1; then
-        echo -n "$ELASTICSEARCH_API_KEY" | gcloud secrets create elasticsearch-api-key --data-file=-
-        log_info "Elasticsearch API key secret created."
+    SA_EMAIL="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com"
+
+    # Elasticsearch API key
+    if [ -n "$ELASTICSEARCH_API_KEY" ] && [ "$ELASTICSEARCH_API_KEY" != "your-api-key" ]; then
+        if ! gcloud secrets describe elasticsearch-api-key > /dev/null 2>&1; then
+            echo -n "$ELASTICSEARCH_API_KEY" | gcloud secrets create elasticsearch-api-key --data-file=-
+            log_info "Elasticsearch API key secret created."
+        else
+            log_info "Elasticsearch API key secret already exists. Updating..."
+            echo -n "$ELASTICSEARCH_API_KEY" | gcloud secrets versions add elasticsearch-api-key --data-file=-
+            log_info "Elasticsearch API key secret updated."
+        fi
+
+        # Grant service account access to elasticsearch-api-key
+        gcloud secrets add-iam-policy-binding elasticsearch-api-key \
+            --member="serviceAccount:$SA_EMAIL" \
+            --role="roles/secretmanager.secretAccessor" \
+            --condition=None
     else
-        log_info "Elasticsearch API key secret already exists. Updating..."
-        echo -n "$ELASTICSEARCH_API_KEY" | gcloud secrets versions add elasticsearch-api-key --data-file=-
-        log_info "Elasticsearch API key secret updated."
+        log_warn "Elasticsearch API key not provided. Skipping secret creation."
+        log_info "Ensuring service account has access to existing secret..."
+        if gcloud secrets describe elasticsearch-api-key > /dev/null 2>&1; then
+            # Grant service account access even if we're not creating/updating the secret
+            gcloud secrets add-iam-policy-binding elasticsearch-api-key \
+                --member="serviceAccount:$SA_EMAIL" \
+                --role="roles/secretmanager.secretAccessor" \
+                --condition=None 2>/dev/null || log_info "Service account already has access to elasticsearch-api-key"
+        else
+            log_warn "Elasticsearch API key secret does not exist. You'll need to create it manually or re-run with --elasticsearch-api-key"
+        fi
+    fi
+
+    # AWS S3 Access Key
+    if [ -n "$AWS_S3_ACCESS_KEY" ]; then
+        if ! gcloud secrets describe aws-s3-access-key > /dev/null 2>&1; then
+            echo -n "$AWS_S3_ACCESS_KEY" | gcloud secrets create aws-s3-access-key --data-file=-
+            log_info "AWS S3 access key secret created."
+        else
+            log_info "AWS S3 access key secret already exists. Updating..."
+            echo -n "$AWS_S3_ACCESS_KEY" | gcloud secrets versions add aws-s3-access-key --data-file=-
+            log_info "AWS S3 access key secret updated."
+        fi
+
+        # Grant service account access to aws-s3-access-key
+        gcloud secrets add-iam-policy-binding aws-s3-access-key \
+            --member="serviceAccount:$SA_EMAIL" \
+            --role="roles/secretmanager.secretAccessor" \
+            --condition=None
+    else
+        log_warn "AWS_S3_ACCESS_KEY not set. Skipping AWS S3 access key secret creation."
+        log_warn "Set this if you need megastream-ingest to access S3 data."
+    fi
+
+    # AWS S3 Secret Key
+    if [ -n "$AWS_S3_SECRET_KEY" ]; then
+        if ! gcloud secrets describe aws-s3-secret-key > /dev/null 2>&1; then
+            echo -n "$AWS_S3_SECRET_KEY" | gcloud secrets create aws-s3-secret-key --data-file=-
+            log_info "AWS S3 secret key secret created."
+        else
+            log_info "AWS S3 secret key secret already exists. Updating..."
+            echo -n "$AWS_S3_SECRET_KEY" | gcloud secrets versions add aws-s3-secret-key --data-file=-
+            log_info "AWS S3 secret key secret updated."
+        fi
+
+        # Grant service account access to aws-s3-secret-key
+        gcloud secrets add-iam-policy-binding aws-s3-secret-key \
+            --member="serviceAccount:$SA_EMAIL" \
+            --role="roles/secretmanager.secretAccessor" \
+            --condition=None
+    else
+        log_warn "AWS_S3_SECRET_KEY not set. Skipping AWS S3 secret key secret creation."
+        log_warn "Set this if you need megastream-ingest to access S3 data."
     fi
 
     log_info "Note: Non-secret configuration (Elasticsearch URL, S3 bucket, S3 prefix) is now stored in the deployment scripts."
@@ -354,6 +424,14 @@ while [[ $# -gt 0 ]]; do
             S3_PREFIX="$2"
             shift 2
             ;;
+        --aws-access-key)
+            AWS_S3_ACCESS_KEY="$2"
+            shift 2
+            ;;
+        --aws-secret-key)
+            AWS_S3_SECRET_KEY="$2"
+            shift 2
+            ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo
@@ -361,17 +439,21 @@ while [[ $# -gt 0 ]]; do
             echo "  --project-id ID              GCP project ID"
             echo "  --region REGION              GCP region (default: us-east1)"
             echo "  --environment ENV            Environment name (default: stage)"
-            echo "  --elasticsearch-url URL      Elasticsearch cluster URL (default: https://greenearth-es-http.greenearth-stage.svc.cluster.local:9200)"
-            echo "  --elasticsearch-api-key KEY  Elasticsearch API key (REQUIRED - no default)"
+            echo "  --elasticsearch-url URL      Elasticsearch cluster URL (default: INTERNAL_LB_PLACEHOLDER)"
+            echo "  --elasticsearch-api-key KEY  Elasticsearch API key (optional if secret already exists)"
             echo "  --s3-bucket BUCKET           S3 bucket for Megastream data (default: greenearth-megastream-data)"
             echo "  --s3-prefix PREFIX           S3 prefix for Megastream data (default: megastream/databases/)"
+            echo "  --aws-access-key KEY         AWS S3 access key (optional, for megastream S3 access)"
+            echo "  --aws-secret-key KEY         AWS S3 secret key (optional, for megastream S3 access)"
             echo "  --help                       Show this help message"
             echo
-            echo "Required environment variables:"
-            echo "  ELASTICSEARCH_API_KEY    Elasticsearch API key (only actual secret)"
+            echo "All secrets are optional if they already exist in Secret Manager."
+            echo "The script is idempotent and safe to re-run to ensure correct configuration."
             echo
-            echo "Optional environment variables (have defaults):"
-            echo "  PROJECT_ID, REGION, ENVIRONMENT, ELASTICSEARCH_URL, S3_BUCKET, S3_PREFIX"
+            echo "Environment variables:"
+            echo "  PROJECT_ID, REGION, ENVIRONMENT, ELASTICSEARCH_URL"
+            echo "  ELASTICSEARCH_API_KEY, S3_BUCKET, S3_PREFIX"
+            echo "  AWS_S3_ACCESS_KEY, AWS_S3_SECRET_KEY"
             echo
             exit 0
             ;;
