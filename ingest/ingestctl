@@ -34,15 +34,19 @@ get_service_status() {
         return
     fi
 
-    # Check if service is stopped (min instances = 0)
-    local annotations=$(gcloud run services describe "$service" \
+    # Check manual instance count (0 = stopped)
+    local instance_count=$(gcloud run services describe "$service" \
         --region="$REGION" \
-        --format="value(spec.template.metadata.annotations)" 2>/dev/null || echo "")
+        --format="value(spec.template.metadata.annotations['run.googleapis.com/scaling-mode'])" 2>/dev/null || echo "")
 
-    if echo "$annotations" | grep -q "autoscaling.knative.dev/minScale: '0'"; then
+    local manual_count=$(gcloud run services describe "$service" \
+        --region="$REGION" \
+        --format="value(spec.template.metadata.annotations['run.googleapis.com/manual-scaling'])" 2>/dev/null || echo "")
+
+    if [[ "$manual_count" == "0" ]]; then
         echo "STOPPED"
-    elif echo "$annotations" | grep -q "autoscaling.knative.dev/minScale: 0"; then
-        echo "STOPPED"
+    elif [[ -n "$manual_count" && "$manual_count" != "0" ]]; then
+        echo "RUNNING"
     else
         # Check ready condition
         local ready=$(gcloud run services describe "$service" \
@@ -70,10 +74,10 @@ start_service() {
 
     gcloud run services update "$service" \
         --region="$REGION" \
-        --min-instances=1 \
+        --scaling=1 \
         --quiet
 
-    echo -e "${GREEN}Service $service started${NC}"
+    echo -e "${GREEN}Service $service started (manual scaling: 1 instance)${NC}"
 }
 
 # Stop a service
@@ -89,10 +93,10 @@ stop_service() {
 
     gcloud run services update "$service" \
         --region="$REGION" \
-        --min-instances=0 \
+        --scaling=0 \
         --quiet
 
-    echo -e "${YELLOW}Service $service stopped (will scale to zero)${NC}"
+    echo -e "${YELLOW}Service $service stopped (manual scaling: 0 instances)${NC}"
 }
 
 # Show service status
