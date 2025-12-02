@@ -132,6 +132,44 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	// Can queue 50k docs (50 batches of 1000)
 	batchChan := make(chan batchJob, 50)
 
+	// Track pending cursor updates to throttle state writes
+	var cursorMu sync.Mutex
+	var pendingCursor int64
+	var hasPendingUpdate bool
+
+	// Start throttled state writer (writes at most once every 10 seconds)
+	if !dryRun {
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					// Flush any pending update before exiting
+					cursorMu.Lock()
+					if hasPendingUpdate {
+						if err := stateManager.UpdateCursor(pendingCursor); err != nil {
+							logger.Error("Failed to flush final cursor update: %v", err)
+						}
+					}
+					cursorMu.Unlock()
+					return
+				case <-ticker.C:
+					cursorMu.Lock()
+					if hasPendingUpdate {
+						if err := stateManager.UpdateCursor(pendingCursor); err != nil {
+							logger.Error("Failed to update cursor: %v", err)
+						} else {
+							hasPendingUpdate = false
+						}
+					}
+					cursorMu.Unlock()
+				}
+			}
+		}()
+	}
+
 	// Start worker pool for parallel Elasticsearch writes
 	const numWorkers = 3
 	workersDone := make(chan struct{})
@@ -139,7 +177,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		var wg sync.WaitGroup
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go esWorker(ctx, i, batchChan, esClient, stateManager, dryRun, logger, &wg)
+			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, dryRun, logger, &wg)
 		}
 		wg.Wait()
 		close(workersDone)
@@ -239,7 +277,7 @@ cleanup:
 }
 
 // esWorker processes batches of documents and writes them to Elasticsearch
-func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, stateManager *common.StateManager, dryRun bool, logger *common.IngestLogger, wg *sync.WaitGroup) {
+func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, dryRun bool, logger *common.IngestLogger, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for job := range batchChan {
@@ -255,11 +293,14 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 				logger.Info("Worker %d: Indexed batch: %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
 			}
 
-			// Save cursor after successful batch
+			// Record cursor for throttled update (written every 10 seconds by separate goroutine)
 			if !dryRun {
-				if err := stateManager.UpdateCursor(job.timeUs); err != nil {
-					logger.Error("Worker %d: Failed to update cursor: %v", id, err)
+				cursorMu.Lock()
+				if job.timeUs > *pendingCursor {
+					*pendingCursor = job.timeUs
+					*hasPendingUpdate = true
 				}
+				cursorMu.Unlock()
 			}
 		}
 	}
