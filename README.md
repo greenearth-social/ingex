@@ -4,6 +4,17 @@ A data ingestion and indexing system for BlueSky content. This project provides 
 
 ## System Architecture
 
+### Network Security (VPC Architecture)
+
+The system uses a **Virtual Private Cloud (VPC)** architecture for enhanced security:
+
+- **Elasticsearch**: Deployed in GKE within the VPC, accessible only via internal load balancer
+- **Cloud Run Services**: Connected to VPC via VPC Connector for secure internal communication
+- **Load Balancing**: Internal load balancer exposes Elasticsearch to Cloud Run without public access
+- **Firewall Rules**: Restrict traffic to authorized sources within the VPC
+
+For detailed architecture information, see [VPC_ARCHITECTURE.md](VPC_ARCHITECTURE.md).
+
 ### Data Ingestion
 
 - **Posts**

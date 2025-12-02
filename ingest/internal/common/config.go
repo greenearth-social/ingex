@@ -15,8 +15,9 @@ type Config struct {
 	JetstreamURL string
 
 	// Elasticsearch configuration
-	ElasticsearchURL    string
-	ElasticsearchAPIKey string
+	ElasticsearchURL           string
+	ElasticsearchAPIKey        string
+	ElasticsearchTLSSkipVerify bool
 
 	// Worker configuration (for future use)
 	WebSocketWorkers     int
@@ -41,23 +42,24 @@ type Config struct {
 // LoadConfig loads configuration from environment variables with defaults
 func LoadConfig() *Config {
 	return &Config{
-		SQLiteDBPath:         getEnv("SQLITE_DB_PATH", ""),
-		JetstreamURL:         getEnv("JETSTREAM_URL", "wss://jetstream2.us-east.bsky.network/subscribe"),
-		WebSocketWorkers:     getEnvInt("WEBSOCKET_WORKERS", 3),
-		ElasticsearchURL:     getEnv("ELASTICSEARCH_URL", ""),
-		ElasticsearchAPIKey:  getEnv("ELASTICSEARCH_API_KEY", ""),
-		ElasticsearchWorkers: getEnvInt("ELASTICSEARCH_WORKERS", 5),
-		WorkerTimeout:        getEnvDuration("WORKER_TIMEOUT", 30*time.Second),
-		LocalSQLiteDBPath:    getEnv("LOCAL_SQLITE_DB_PATH", ""),
-		S3SQLiteDBBucket:     getEnv("S3_SQLITE_DB_BUCKET", ""),
-		S3SQLiteDBPrefix:     getEnv("S3_SQLITE_DB_PREFIX", ""),
-		SpoolIntervalSec:     getEnvInt("SPOOL_INTERVAL_SEC", 60),
-		JetstreamStateFile:   getEnv("JETSTREAM_STATE_FILE", ".jetstream_state.json"),
-		MegastreamStateFile:  getEnv("MEGASTREAM_STATE_FILE", ".megastream_state.json"),
-		AWSRegion:            getEnv("AWS_REGION", "us-east-1"),
-		AWSS3AccessKey:       getEnv("AWS_S3_ACCESS_KEY", ""),
-		AWSS3SecretKey:       getEnv("AWS_S3_SECRET_KEY", ""),
-		LoggingEnabled:       getEnvBool("LOGGING_ENABLED", true),
+		SQLiteDBPath:               getEnv("SQLITE_DB_PATH", ""),
+		JetstreamURL:               getEnv("JETSTREAM_URL", "wss://jetstream2.us-east.bsky.network/subscribe"),
+		WebSocketWorkers:           getEnvInt("WEBSOCKET_WORKERS", 3),
+		ElasticsearchURL:           getEnv("ELASTICSEARCH_URL", ""),
+		ElasticsearchAPIKey:        getEnv("ELASTICSEARCH_API_KEY", ""),
+		ElasticsearchTLSSkipVerify: getEnvBool("ELASTICSEARCH_TLS_SKIP_VERIFY", false),
+		ElasticsearchWorkers:       getEnvInt("ELASTICSEARCH_WORKERS", 5),
+		WorkerTimeout:              getEnvDuration("WORKER_TIMEOUT", 30*time.Second),
+		LocalSQLiteDBPath:          getEnv("LOCAL_SQLITE_DB_PATH", ""),
+		S3SQLiteDBBucket:           getEnv("S3_SQLITE_DB_BUCKET", ""),
+		S3SQLiteDBPrefix:           getEnv("S3_SQLITE_DB_PREFIX", ""),
+		SpoolIntervalSec:           getEnvInt("SPOOL_INTERVAL_SEC", 60),
+		JetstreamStateFile:         getEnv("JETSTREAM_STATE_FILE", ".jetstream_state.json"),
+		MegastreamStateFile:        getEnv("MEGASTREAM_STATE_FILE", ".megastream_state.json"),
+		AWSRegion:                  getEnv("AWS_REGION", "us-east-1"),
+		AWSS3AccessKey:             getEnv("AWS_S3_ACCESS_KEY", ""),
+		AWSS3SecretKey:             getEnv("AWS_S3_SECRET_KEY", ""),
+		LoggingEnabled:             getEnvBool("LOGGING_ENABLED", true),
 	}
 }
 

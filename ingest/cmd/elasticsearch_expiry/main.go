@@ -71,7 +71,7 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 	esConfig := common.ElasticsearchConfig{
 		URL:           config.ElasticsearchURL,
 		APIKey:        config.ElasticsearchAPIKey,
-		SkipTLSVerify: skipTLSVerify,
+		SkipTLSVerify: skipTLSVerify || config.ElasticsearchTLSSkipVerify,
 	}
 
 	esClient, err := common.NewElasticsearchClient(esConfig, logger)

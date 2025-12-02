@@ -12,7 +12,7 @@ REGION="${REGION:-us-east1}"
 ENVIRONMENT="${ENVIRONMENT:-stage}"  # TODO: change default when we have more environments
 
 # Elasticsearch configuration - only API key is secret, URL is public
-ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-https://greenearth-es-http.greenearth-stage.svc.cluster.local:9200}"
+ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-INTERNAL_LB_PLACEHOLDER}"
 ELASTICSEARCH_API_KEY="${ELASTICSEARCH_API_KEY:-your-api-key}"
 
 # S3 configuration for Megastream data
@@ -92,7 +92,9 @@ setup_gcp_project() {
         cloudscheduler.googleapis.com \
         secretmanager.googleapis.com \
         storage.googleapis.com \
-        artifactregistry.googleapis.com
+        artifactregistry.googleapis.com \
+        vpcaccess.googleapis.com \
+        compute.googleapis.com
 
     log_info "GCP project setup complete."
 }
@@ -146,6 +148,11 @@ create_service_account() {
         --member="serviceAccount:$SA_EMAIL" \
         --role="roles/run.invoker"
 
+    # Permission to use VPC connectors
+    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+        --member="serviceAccount:$SA_EMAIL" \
+        --role="roles/vpcaccess.user"
+
     log_info "Service account permissions configured."
 }
 
@@ -180,6 +187,83 @@ create_persistent_storage() {
 
     # Set appropriate permissions
     gsutil iam ch serviceAccount:"ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com":objectAdmin gs://"$BUCKET_NAME"
+}
+
+create_vpc_connector() {
+    log_info "Creating VPC connector for Cloud Run services..."
+
+    CONNECTOR_NAME="ingex-vpc-connector-$ENVIRONMENT"
+
+    # Check if VPC connector already exists
+    if gcloud compute networks vpc-access connectors describe "$CONNECTOR_NAME" --region="$REGION" > /dev/null 2>&1; then
+        log_info "VPC connector already exists: $CONNECTOR_NAME"
+        return
+    fi
+
+    # Create VPC connector service account if it doesn't exist
+    CONNECTOR_SA_NAME="vpc-connector-sa-$ENVIRONMENT"
+    CONNECTOR_SA_EMAIL="$CONNECTOR_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
+
+    if ! gcloud iam service-accounts describe "$CONNECTOR_SA_EMAIL" > /dev/null 2>&1; then
+        gcloud iam service-accounts create "$CONNECTOR_SA_NAME" \
+            --display-name="VPC Connector Service Account ($ENVIRONMENT)" \
+            --description="Service account for VPC connector in $ENVIRONMENT"
+        log_info "VPC connector service account created: $CONNECTOR_SA_EMAIL"
+    fi
+
+    # Create VPC connector
+    # Use a small IP range for the connector (only needs a few IPs for Cloud Run)
+    # Using 192.168.1.0/28 to avoid conflicts with existing subnets
+    gcloud compute networks vpc-access connectors create "$CONNECTOR_NAME" \
+        --network=default \
+        --region="$REGION" \
+        --range=192.168.1.0/28 \
+        --min-instances=2 \
+        --max-instances=10 \
+        --machine-type=e2-micro
+
+    log_info "VPC connector created: $CONNECTOR_NAME"
+
+    # Grant the default Cloud Run service account permission to use VPC connectors
+    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+        --member="serviceAccount:$PROJECT_ID-compute@developer.gserviceaccount.com" \
+        --role="roles/vpcaccess.user"
+
+    log_info "VPC connector permissions configured"
+}
+
+setup_firewall_rules() {
+    log_info "Setting up firewall rules for VPC access..."
+
+    # Allow Cloud Run services to access Elasticsearch through internal load balancer
+    FIREWALL_RULE_NAME="allow-cloud-run-to-elasticsearch-$ENVIRONMENT"
+
+    if ! gcloud compute firewall-rules describe "$FIREWALL_RULE_NAME" > /dev/null 2>&1; then
+        gcloud compute firewall-rules create "$FIREWALL_RULE_NAME" \
+            --network=default \
+            --allow=tcp:9200,tcp:9300 \
+            --source-ranges=192.168.1.0/28 \
+            --target-tags=gke-greenearth-$ENVIRONMENT \
+            --description="Allow Cloud Run services to access Elasticsearch internal load balancer"
+        log_info "Firewall rule created: $FIREWALL_RULE_NAME"
+    else
+        log_info "Firewall rule already exists: $FIREWALL_RULE_NAME"
+    fi
+
+    # Allow internal load balancer health checks
+    HEALTH_CHECK_RULE="allow-internal-lb-health-checks-$ENVIRONMENT"
+
+    if ! gcloud compute firewall-rules describe "$HEALTH_CHECK_RULE" > /dev/null 2>&1; then
+        gcloud compute firewall-rules create "$HEALTH_CHECK_RULE" \
+            --network=default \
+            --allow=tcp:9200 \
+            --source-ranges=130.211.0.0/22,35.191.0.0/16 \
+            --target-tags=gke-greenearth-$ENVIRONMENT \
+            --description="Allow Google Cloud load balancer health checks"
+        log_info "Health check firewall rule created: $HEALTH_CHECK_RULE"
+    else
+        log_info "Health check firewall rule already exists: $HEALTH_CHECK_RULE"
+    fi
 }
 
 setup_cloud_scheduler() {
@@ -221,6 +305,8 @@ main() {
     create_service_account
     create_secrets
     create_persistent_storage
+    create_vpc_connector
+    setup_firewall_rules
     setup_cloud_scheduler
 
     log_info "Environment setup complete!"

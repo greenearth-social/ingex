@@ -14,7 +14,7 @@ REGION="${REGION:-us-east1}"
 ENVIRONMENT="${ENVIRONMENT:-stage}"  # TODO: change default when we have more environments
 
 # Non-secret configuration
-ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-https://greenearth-es-http.greenearth-stage.svc.cluster.local:9200}"
+ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-INTERNAL_LB_PLACEHOLDER}"
 # TODO: actual s3 bucket name
 S3_SQLITE_DB_BUCKET="${S3_SQLITE_DB_BUCKET:-greenearth-megastream-data}"
 S3_SQLITE_DB_PREFIX="${S3_SQLITE_DB_PREFIX:-megastream/databases/}"
@@ -62,6 +62,65 @@ validate_config() {
     log_info "Configuration validation complete."
 }
 
+get_elasticsearch_internal_lb_ip() {
+    log_info "Getting Elasticsearch internal load balancer IP..."
+
+    # If user has explicitly set a URL, use it
+    if [ "$ELASTICSEARCH_URL" != "INTERNAL_LB_PLACEHOLDER" ]; then
+        log_info "Using user-provided Elasticsearch URL: $ELASTICSEARCH_URL"
+        return
+    fi
+
+    # Try to get the internal load balancer IP from the Kubernetes service
+    # This assumes the load balancer has been deployed and has an assigned IP
+    if command -v kubectl &> /dev/null; then
+        local lb_ip
+        lb_ip=$(kubectl get service greenearth-es-internal-lb -n "greenearth-$ENVIRONMENT" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+
+        if [ -n "$lb_ip" ] && [ "$lb_ip" != "null" ]; then
+            # Use the internal load balancer IP but note that certificate verification
+            # may fail since the cert doesn't include this IP in SANs
+            ELASTICSEARCH_URL="https://$lb_ip:9200"
+            log_info "Using internal load balancer IP: $ELASTICSEARCH_URL"
+            log_warn "Note: Certificate verification may fail for IP-based connections"
+            log_warn "Services should be configured to skip certificate verification for internal LB"
+        else
+            log_warn "Could not get internal load balancer IP"
+            log_warn "Make sure the Elasticsearch cluster is deployed with internal load balancer"
+            log_error "Please deploy Elasticsearch cluster first or set ELASTICSEARCH_URL manually"
+            exit 1
+        fi
+    else
+        log_error "kubectl not available - cannot determine Elasticsearch internal load balancer IP"
+        log_error "Please install kubectl or set ELASTICSEARCH_URL manually"
+        exit 1
+    fi
+}
+
+verify_vpc_connector() {
+    log_info "Verifying VPC connector exists..."
+
+    CONNECTOR_NAME="ingex-vpc-connector-$ENVIRONMENT"
+
+    if ! gcloud compute networks vpc-access connectors describe "$CONNECTOR_NAME" --region="$REGION" > /dev/null 2>&1; then
+        log_error "VPC connector '$CONNECTOR_NAME' does not exist"
+        log_error "Please run gcp_setup.sh first to create the VPC connector"
+        log_error "Command: cd ingest && ./gcp_setup.sh"
+        exit 1
+    fi
+
+    # Check connector status
+    local connector_status=$(gcloud compute networks vpc-access connectors describe "$CONNECTOR_NAME" --region="$REGION" --format="value(state)" 2>/dev/null || echo "UNKNOWN")
+
+    if [ "$connector_status" != "READY" ]; then
+        log_warn "VPC connector '$CONNECTOR_NAME' is not ready (status: $connector_status)"
+        log_warn "This may cause deployment to fail. Wait a few minutes and try again."
+        log_warn "You can check status with: gcloud compute networks vpc-access connectors describe $CONNECTOR_NAME --region=$REGION"
+    else
+        log_info "VPC connector '$CONNECTOR_NAME' is ready"
+    fi
+}
+
 deploy_jetstream_service() {
     log_info "Deploying jetstream-ingest service from source..."
 
@@ -69,11 +128,14 @@ deploy_jetstream_service() {
         --source=. \
         --region="$REGION" \
         --service-account="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com" \
+        --vpc-connector="ingex-vpc-connector-$ENVIRONMENT" \
+        --vpc-egress=private-ranges-only \
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest" \
         --set-env-vars="JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
         --set-env-vars="LOGGING_ENABLED=true" \
-        --set-env-vars="JETSTREAM_STATE_FILE=/data/jetstream_state.json" \
+        --set-env-vars="JETSTREAM_STATE_FILE=gs://$PROJECT_ID-ingex-state-$ENVIRONMENT/jetstream_state.json" \
         --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
+        --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --min-instances="$JETSTREAM_MIN_INSTANCES" \
         --max-instances="$JETSTREAM_MAX_INSTANCES" \
@@ -92,12 +154,15 @@ deploy_megastream_service() {
         --source=. \
         --region="$REGION" \
         --service-account="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com" \
+        --vpc-connector="ingex-vpc-connector-$ENVIRONMENT" \
+        --vpc-egress=private-ranges-only \
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest" \
         --set-env-vars="LOGGING_ENABLED=true" \
         --set-env-vars="SPOOL_INTERVAL_SEC=300" \
         --set-env-vars="AWS_REGION=us-east-1" \
-        --set-env-vars="MEGASTREAM_STATE_FILE=/data/megastream_state.json" \
+        --set-env-vars="MEGASTREAM_STATE_FILE=gs://$PROJECT_ID-ingex-state-$ENVIRONMENT/megastream_state.json" \
         --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
+        --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-env-vars="S3_SQLITE_DB_BUCKET=$S3_SQLITE_DB_BUCKET" \
         --set-env-vars="S3_SQLITE_DB_PREFIX=$S3_SQLITE_DB_PREFIX" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
@@ -119,8 +184,11 @@ deploy_expiry_job() {
         --source=. \
         --region="$REGION" \
         --service-account="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com" \
+        --vpc-connector="ingex-vpc-connector-$ENVIRONMENT" \
+        --vpc-egress=private-ranges-only \
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/elasticsearch_expiry" \
         --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
+        --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --set-env-vars="LOGGING_ENABLED=true" \
         --cpu=1 \
@@ -173,6 +241,8 @@ main() {
     echo
 
     validate_config
+    verify_vpc_connector
+    get_elasticsearch_internal_lb_ip
     deploy_all_services
     show_service_status
 
@@ -215,6 +285,7 @@ while [[ $# -gt 0 ]]; do
             echo
             echo "Prerequisites:"
             echo "  Run gcp_setup.sh first to configure the GCP environment"
+            echo "  Deploy Elasticsearch cluster (../index/deploy.sh) to get internal load balancer IP"
             echo
             echo "Options:"
             echo "  --project-id ID              GCP project ID"
