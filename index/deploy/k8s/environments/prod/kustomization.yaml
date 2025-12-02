@@ -59,7 +59,7 @@ patches:
         path: /spec/nodeSets/-
         value:
           name: data
-          count: 15
+          count: 4
           config:
             node.roles: ["data", "ingest"]
             node.store.allow_mmap: true
