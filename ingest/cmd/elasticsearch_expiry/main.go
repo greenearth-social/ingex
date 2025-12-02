@@ -46,6 +46,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Start health check server
+	healthServer, err := common.NewHealthServer(8080, 8089, logger)
+	if err != nil {
+		logger.Error("Failed to create health server: %v", err)
+		os.Exit(1)
+	}
+	go healthServer.Start(ctx)
+
 	// Handle shutdown signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -56,7 +64,7 @@ func main() {
 	}()
 
 	// Run the expiry process
-	if err := runExpiry(ctx, config, logger, *dryRun, *skipTLSVerify, *retentionDays); err != nil {
+	if err := runExpiry(ctx, config, logger, healthServer, *dryRun, *skipTLSVerify, *retentionDays); err != nil {
 		logger.Error("Expiry process failed: %v", err)
 		os.Exit(1)
 	}
@@ -64,7 +72,7 @@ func main() {
 	logger.Info("Expiry process completed successfully")
 }
 
-func runExpiry(ctx context.Context, config *common.Config, logger *common.IngestLogger, dryRun, skipTLSVerify bool, retentionDays int) error {
+func runExpiry(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify bool, retentionDays int) error {
 	// Default graceful timeout for delete operations during shutdown
 	const graceTimeout = 30 * time.Second
 	// Initialize Elasticsearch client
@@ -90,6 +98,9 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 	}
 
 	expiryService := elasticsearch_expiry.NewService(esClient, expiryConfig, logger)
+
+	// Mark service as healthy once we've successfully initialized
+	healthServer.SetHealthy(true, fmt.Sprintf("Expiring documents older than %d days", retentionDays))
 
 	// Define the collections to clean up
 	// Each collection has different date fields to check

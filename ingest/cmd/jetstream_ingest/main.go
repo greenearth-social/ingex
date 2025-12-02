@@ -60,6 +60,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Start health check server
+	healthServer, err := common.NewHealthServer(8080, 8089, logger)
+	if err != nil {
+		logger.Error("Failed to create health check server: %v", err)
+		os.Exit(1)
+	}
+	go healthServer.Start(ctx)
+
 	// Handle signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -70,10 +78,10 @@ func main() {
 	}()
 
 	logger.Info("Starting Jetstream likes ingestion")
-	runIngestion(ctx, config, logger, *dryRun, *skipTLSVerify, *noRewind)
+	runIngestion(ctx, config, logger, healthServer, *dryRun, *skipTLSVerify, *noRewind)
 }
 
-func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, dryRun, skipTLSVerify, noRewind bool) {
+func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify, noRewind bool) {
 	stateManager, err := common.NewStateManager(config.JetstreamStateFile, logger)
 	if err != nil {
 		logger.Error("Failed to initialize state manager: %v", err)
@@ -113,6 +121,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			logger.Error("Failed to close Jetstream client: %v", err)
 		}
 	}()
+
+	// Mark service as healthy once we've successfully connected and started processing
+	healthServer.SetHealthy(true, "Processing Jetstream messages")
 
 	// Process messages from Jetstream with parallel workers
 	msgChan := client.GetMessageChannel()
