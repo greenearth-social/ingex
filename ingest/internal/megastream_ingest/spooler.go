@@ -487,17 +487,27 @@ func (ss *S3Spooler) downloadFile(ctx context.Context, key, destPath string) err
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
-	defer func() {
-		if err := outFile.Close(); err != nil {
-			ss.logger.Error("Failed to close output file: %v", err)
-		}
-	}()
 
-	if _, err := io.Copy(outFile, result.Body); err != nil {
+	bytesWritten, err := io.Copy(outFile, result.Body)
+	if err != nil {
+		_ = outFile.Close()
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
-	ss.logger.Debug("Downloaded S3 file to: %s", destPath)
+	if err := outFile.Close(); err != nil {
+		return fmt.Errorf("failed to close output file: %w", err)
+	}
+
+	// Verify file size matches what we downloaded
+	fileInfo, err := os.Stat(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat downloaded file: %w", err)
+	}
+	if fileInfo.Size() != bytesWritten {
+		return fmt.Errorf("file size mismatch: wrote %d bytes but file is %d bytes", bytesWritten, fileInfo.Size())
+	}
+
+	ss.logger.Debug("Downloaded S3 file to: %s (%d bytes)", destPath, bytesWritten)
 	return nil
 }
 

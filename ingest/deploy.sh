@@ -15,9 +15,8 @@ ENVIRONMENT="${ENVIRONMENT:-stage}"  # TODO: change default when we have more en
 
 # Non-secret configuration
 ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-INTERNAL_LB_PLACEHOLDER}"
-# TODO: actual s3 bucket name
-S3_SQLITE_DB_BUCKET="${S3_SQLITE_DB_BUCKET:-greenearth-megastream-data}"
-S3_SQLITE_DB_PREFIX="${S3_SQLITE_DB_PREFIX:-megastream/databases/}"
+S3_SQLITE_DB_BUCKET="${S3_SQLITE_DB_BUCKET:-graze-mega-02}"
+S3_SQLITE_DB_PREFIX="${S3_SQLITE_DB_PREFIX:-mega/}"
 
 # Service configuration
 JETSTREAM_INSTANCES="${JETSTREAM_INSTANCES:-1}"
@@ -155,7 +154,7 @@ deploy_megastream_service() {
         --vpc-egress=private-ranges-only \
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest" \
         --set-env-vars="LOGGING_ENABLED=true" \
-        --set-env-vars="SPOOL_INTERVAL_SEC=300" \
+        --set-env-vars="SPOOL_INTERVAL_SEC=60" \
         --set-env-vars="AWS_REGION=us-east-1" \
         --set-env-vars="MEGASTREAM_STATE_FILE=gs://$PROJECT_ID-ingex-state-$ENVIRONMENT/megastream_state.json" \
         --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
