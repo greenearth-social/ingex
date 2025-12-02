@@ -20,10 +20,8 @@ S3_SQLITE_DB_BUCKET="${S3_SQLITE_DB_BUCKET:-greenearth-megastream-data}"
 S3_SQLITE_DB_PREFIX="${S3_SQLITE_DB_PREFIX:-megastream/databases/}"
 
 # Service configuration
-JETSTREAM_MIN_INSTANCES="${JETSTREAM_MIN_INSTANCES:-1}"
-JETSTREAM_MAX_INSTANCES="${JETSTREAM_MAX_INSTANCES:-1}"
-MEGASTREAM_MIN_INSTANCES="${MEGASTREAM_MIN_INSTANCES:-1}"
-MEGASTREAM_MAX_INSTANCES="${MEGASTREAM_MAX_INSTANCES:-1}"
+JETSTREAM_INSTANCES="${JETSTREAM_INSTANCES:-1}"
+MEGASTREAM_INSTANCES="${MEGASTREAM_INSTANCES:-1}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -137,8 +135,7 @@ deploy_jetstream_service() {
         --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
         --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
-        --min-instances="$JETSTREAM_MIN_INSTANCES" \
-        --max-instances="$JETSTREAM_MAX_INSTANCES" \
+        --scaling="$JETSTREAM_INSTANCES" \
         --cpu=1 \
         --memory=512Mi \
         --timeout=3600 \
@@ -166,8 +163,7 @@ deploy_megastream_service() {
         --set-env-vars="S3_SQLITE_DB_BUCKET=$S3_SQLITE_DB_BUCKET" \
         --set-env-vars="S3_SQLITE_DB_PREFIX=$S3_SQLITE_DB_PREFIX" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest,AWS_S3_ACCESS_KEY=aws-s3-access-key:latest,AWS_S3_SECRET_KEY=aws-s3-secret-key:latest" \
-        --min-instances="$MEGASTREAM_MIN_INSTANCES" \
-        --max-instances="$MEGASTREAM_MAX_INSTANCES" \
+        --scaling="$MEGASTREAM_INSTANCES" \
         --cpu=1 \
         --memory=1Gi \
         --timeout=3600 \
@@ -232,6 +228,8 @@ show_service_status() {
 }
 
 main() {
+    local service="${1:-all}"
+
     echo "=================================================="
     echo "Green Earth Ingex - Cloud Run Source Deployment"
     echo "Environment: $ENVIRONMENT"
@@ -243,15 +241,38 @@ main() {
     validate_config
     verify_vpc_connector
     get_elasticsearch_internal_lb_ip
-    deploy_all_services
+
+    case "$service" in
+        jetstream|jetstream-ingest)
+            log_info "Deploying jetstream-ingest service..."
+            deploy_jetstream_service
+            ;;
+        megastream|megastream-ingest)
+            log_info "Deploying megastream-ingest service..."
+            deploy_megastream_service
+            ;;
+        expiry|elasticsearch-expiry)
+            log_info "Deploying elasticsearch-expiry job..."
+            deploy_expiry_job
+            ;;
+        all)
+            deploy_all_services
+            ;;
+        *)
+            log_error "Unknown service: $service"
+            echo "Valid services: jetstream, megastream, expiry, all"
+            exit 1
+            ;;
+    esac
+
     show_service_status
 
-    log_info "Source deployment complete!"
+    log_info "Deployment complete!"
     echo
     echo "Next steps:"
     echo "1. Check service logs to ensure they're running correctly"
     echo "2. Verify data is being ingested into Elasticsearch"
-    echo "3. Test the expiry job manually if needed"
+    echo "3. Use './ingestctl status' to check service status"
     echo
 }
 
@@ -271,17 +292,26 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --jetstream-instances)
-            JETSTREAM_MIN_INSTANCES="$2"
-            JETSTREAM_MAX_INSTANCES="$2"
+            JETSTREAM_INSTANCES="$2"
             shift 2
             ;;
         --megastream-instances)
-            MEGASTREAM_MIN_INSTANCES="$2"
-            MEGASTREAM_MAX_INSTANCES="$2"
+            MEGASTREAM_INSTANCES="$2"
             shift 2
             ;;
         --help)
-            echo "Usage: $0 [OPTIONS]"
+            echo "Usage: $0 [SERVICE] [OPTIONS]"
+            echo
+            echo "Services:"
+            echo "  jetstream                   Deploy jetstream-ingest service only"
+            echo "  megastream                  Deploy megastream-ingest service only"
+            echo "  expiry                      Deploy elasticsearch-expiry job only"
+            echo "  all                         Deploy all services (default)"
+            echo
+            echo "Examples:"
+            echo "  $0 jetstream                Deploy only jetstream-ingest"
+            echo "  $0 megastream               Deploy only megastream-ingest"
+            echo "  $0                          Deploy all services"
             echo
             echo "Prerequisites:"
             echo "  Run gcp_setup.sh first to configure the GCP environment"
@@ -291,19 +321,25 @@ while [[ $# -gt 0 ]]; do
             echo "  --project-id ID              GCP project ID"
             echo "  --region REGION             GCP region (default: us-east1)"
             echo "  --environment ENV           Environment name (default: stage)"
-            echo "  --jetstream-instances N     Set min/max instances for jetstream service"
-            echo "  --megastream-instances N    Set min/max instances for megastream service"
+            echo "  --jetstream-instances N     Number of instances for jetstream (default: 1)"
+            echo "  --megastream-instances N    Number of instances for megastream (default: 1)"
             echo "  --help                      Show this help message"
             echo
             echo "Environment variables:"
             echo "  PROJECT_ID                  GCP project ID"
             echo "  REGION                      GCP region"
             echo "  ENVIRONMENT                 Environment name"
-            echo "  ELASTICSEARCH_URL           Elasticsearch URL (default: https://greenearth-es-http.greenearth-stage.svc.cluster.local:9200)"
+            echo "  JETSTREAM_INSTANCES         Number of jetstream instances (default: 1)"
+            echo "  MEGASTREAM_INSTANCES        Number of megastream instances (default: 1)"
+            echo "  ELASTICSEARCH_URL           Elasticsearch URL (auto-detect internal LB)"
             echo "  S3_SQLITE_DB_BUCKET         S3 bucket name (default: greenearth-megastream-data)"
             echo "  S3_SQLITE_DB_PREFIX         S3 prefix (default: megastream/databases/)"
             echo
             exit 0
+            ;;
+        jetstream|megastream|expiry|all)
+            # Handle service as first positional argument
+            break
             ;;
         *)
             log_error "Unknown option: $1"
@@ -313,4 +349,4 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-main
+main "$@"
