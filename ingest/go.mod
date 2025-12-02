@@ -5,7 +5,7 @@ go 1.25.1
 require (
 	github.com/aws/aws-sdk-go-v2 v1.40.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.2
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.92.0
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.92.1
 	github.com/elastic/go-elasticsearch/v9 v9.2.0
 	github.com/gorilla/websocket v1.5.3
 	modernc.org/sqlite v1.40.1
