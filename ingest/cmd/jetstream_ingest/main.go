@@ -136,6 +136,8 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	var cursorMu sync.Mutex
 	var pendingCursor int64
 	var hasPendingUpdate bool
+	var pendingBatchCount int
+	var pendingSkipCount int
 
 	// Start throttled state writer (writes at most once every 10 seconds)
 	if !dryRun {
@@ -162,6 +164,13 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 							logger.Error("Failed to update cursor: %v", err)
 						} else {
 							hasPendingUpdate = false
+							// Log summary of batches processed since last log
+							if pendingBatchCount > 0 {
+								freshnessSeconds := calculateFreshness(pendingCursor)
+								logger.Info("Indexed %d likes (skipped: %d, freshness: %ds)", pendingBatchCount, pendingSkipCount, freshnessSeconds)
+								pendingBatchCount = 0
+								pendingSkipCount = 0
+							}
 						}
 					}
 					cursorMu.Unlock()
@@ -177,7 +186,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		var wg sync.WaitGroup
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, dryRun, logger, &wg)
+			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, &wg)
 		}
 		wg.Wait()
 		close(workersDone)
@@ -277,31 +286,22 @@ cleanup:
 }
 
 // esWorker processes batches of documents and writes them to Elasticsearch
-func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, dryRun bool, logger *common.IngestLogger, wg *sync.WaitGroup) {
+func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for job := range batchChan {
 		if err := common.BulkIndexLikes(ctx, esClient, "likes", job.batch, dryRun, logger); err != nil {
 			logger.Error("Worker %d: Failed to bulk index likes: %v", id, err)
 		} else {
-			// Calculate freshness (lag in seconds)
-			freshnessSeconds := calculateFreshness(job.timeUs)
-
-			if dryRun {
-				logger.Info("Worker %d: Dry-run: Would index batch: %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
-			} else {
-				logger.Info("Worker %d: Indexed batch: %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
+			// Record cursor and batch stats for throttled logging (logged every 10 seconds by state writer goroutine)
+			cursorMu.Lock()
+			if job.timeUs > *pendingCursor {
+				*pendingCursor = job.timeUs
+				*hasPendingUpdate = true
 			}
-
-			// Record cursor for throttled update (written every 10 seconds by separate goroutine)
-			if !dryRun {
-				cursorMu.Lock()
-				if job.timeUs > *pendingCursor {
-					*pendingCursor = job.timeUs
-					*hasPendingUpdate = true
-				}
-				cursorMu.Unlock()
-			}
+			*pendingBatchCount += job.batchCount
+			*pendingSkipCount += job.skipCount
+			cursorMu.Unlock()
 		}
 	}
 }
