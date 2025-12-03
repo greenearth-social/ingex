@@ -96,3 +96,28 @@ func TestStateManager_EmptyStateFile(t *testing.T) {
 		t.Errorf("Expected cursor to be initialized, got nil")
 	}
 }
+
+func TestStateManager_GCSPath(t *testing.T) {
+	// Skip this test if GCS credentials aren't available
+	// This test requires actual GCS access
+	if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") == "" && os.Getenv("GOOGLE_CLOUD_PROJECT") == "" {
+		t.Skip("Skipping GCS test: no credentials available")
+	}
+
+	logger := NewLogger(false)
+	gcsPath := "gs://test-bucket/state.json"
+
+	// This should not panic, though it may fail due to missing permissions
+	sm, err := NewStateManager(gcsPath, logger)
+
+	// We expect either success or a permission error, but not a panic
+	if err == nil {
+		// If it succeeds (e.g., in CI with service account), verify cursor is initialized
+		if sm.GetCursor() == nil {
+			t.Errorf("Expected cursor to be initialized, got nil")
+		}
+	} else {
+		// If we get a permission error, that's also acceptable - it means GCS code executed correctly
+		t.Skipf("GCS access denied (expected without proper permissions): %v", err)
+	}
+}

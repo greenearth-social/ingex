@@ -1,0 +1,17 @@
+# Ignore development files
+.git
+.gitignore
+*.md
+.DS_Store
+
+# Ignore deployment configs in subdirectories
+cmd/*/app.yaml
+
+# Keep go.mod and go.sum at root
+!go.mod
+!go.sum
+
+# Keep all source code
+!**/*.go
+!internal/**
+!cmd/**

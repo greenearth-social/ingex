@@ -63,6 +63,19 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Start health check server
+	healthServer, err := common.NewHealthServer(8080, 8089, logger)
+	if err != nil {
+		logger.Error("Failed to create health check server: %v", err)
+		os.Exit(1)
+	}
+	go func() {
+		if err := healthServer.Start(ctx); err != nil {
+			logger.Error("Health server failed: %v", err)
+			cancel()
+		}
+	}()
+
 	// Handle signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -73,10 +86,10 @@ func main() {
 	}()
 
 	logger.Info("Starting Jetstream likes ingestion")
-	runIngestion(ctx, config, logger, *dryRun, *skipTLSVerify, *noRewind)
+	runIngestion(ctx, config, logger, healthServer, *dryRun, *skipTLSVerify, *noRewind)
 }
 
-func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, dryRun, skipTLSVerify, noRewind bool) {
+func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify, noRewind bool) {
 	stateManager, err := common.NewStateManager(config.JetstreamStateFile, logger)
 	if err != nil {
 		logger.Error("Failed to initialize state manager: %v", err)
@@ -87,7 +100,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	esConfig := common.ElasticsearchConfig{
 		URL:           config.ElasticsearchURL,
 		APIKey:        config.ElasticsearchAPIKey,
-		SkipTLSVerify: skipTLSVerify,
+		SkipTLSVerify: skipTLSVerify || config.ElasticsearchTLSSkipVerify,
 	}
 
 	esClient, err := common.NewElasticsearchClient(esConfig, logger)
@@ -117,12 +130,62 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		}
 	}()
 
+	// Mark service as healthy once we've successfully connected and started processing
+	healthServer.SetHealthy(true, "Processing Jetstream messages")
+
 	// Process messages from Jetstream with parallel workers
 	msgChan := client.GetMessageChannel()
 
 	// Create a channel for batches to be processed by workers
 	// Can queue 50k docs (50 batches of 1000)
 	batchChan := make(chan batchJob, 50)
+
+	// Track pending cursor updates to throttle state writes
+	var cursorMu sync.Mutex
+	var pendingCursor int64
+	var hasPendingUpdate bool
+	var pendingBatchCount int
+	var pendingSkipCount int
+
+	// Start throttled state writer (writes at most once every 10 seconds)
+	if !dryRun {
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					// Flush any pending update before exiting
+					cursorMu.Lock()
+					if hasPendingUpdate {
+						if err := stateManager.UpdateCursor(pendingCursor); err != nil {
+							logger.Error("Failed to flush final cursor update: %v", err)
+						}
+					}
+					cursorMu.Unlock()
+					return
+				case <-ticker.C:
+					cursorMu.Lock()
+					if hasPendingUpdate {
+						if err := stateManager.UpdateCursor(pendingCursor); err != nil {
+							logger.Error("Failed to update cursor: %v", err)
+						} else {
+							hasPendingUpdate = false
+							// Log summary of batches processed since last log
+							if pendingBatchCount > 0 {
+								freshnessSeconds := calculateFreshness(pendingCursor)
+								logger.Info("Indexed %d likes (skipped: %d, freshness: %ds)", pendingBatchCount, pendingSkipCount, freshnessSeconds)
+								pendingBatchCount = 0
+								pendingSkipCount = 0
+							}
+						}
+					}
+					cursorMu.Unlock()
+				}
+			}
+		}()
+	}
 
 	// Start worker pool for parallel Elasticsearch writes
 	const numWorkers = 3
@@ -131,7 +194,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		var wg sync.WaitGroup
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go esWorker(ctx, i, batchChan, esClient, stateManager, dryRun, logger, &wg)
+			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, &wg)
 		}
 		wg.Wait()
 		close(workersDone)
@@ -370,7 +433,7 @@ cleanup:
 }
 
 // esWorker processes batches of documents and writes them to Elasticsearch
-func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, stateManager *common.StateManager, dryRun bool, logger *common.IngestLogger, wg *sync.WaitGroup) {
+func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for job := range batchChan {
@@ -423,9 +486,16 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 
 		// Save cursor after successful batch operations
 		if success && !dryRun {
-			if err := stateManager.UpdateCursor(job.timeUs); err != nil {
-				logger.Error("Worker %d: Failed to update cursor: %v", id, err)
+			// Record cursor and batch stats for throttled logging (logged every 10 seconds by state writer goroutine)
+			// This is necessary to avoid a GSE ratelimit on state file writes
+			cursorMu.Lock()
+			if job.timeUs > *pendingCursor {
+				*pendingCursor = job.timeUs
+				*hasPendingUpdate = true
 			}
+			*pendingBatchCount += job.batchCount
+			*pendingSkipCount += job.skipCount
+			cursorMu.Unlock()
 		}
 	}
 }
