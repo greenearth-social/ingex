@@ -38,7 +38,9 @@ func TestHealthServer_SetHealthy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go hs.Start(ctx)
+	go func() {
+		_ = hs.Start(ctx) // Error logged by Start itself
+	}()
 	time.Sleep(100 * time.Millisecond)
 
 	port := hs.GetPort()
@@ -91,17 +93,23 @@ func TestHealthServer_Endpoints(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go hs.Start(ctx)
+	go func() {
+		_ = hs.Start(ctx) // Error logged by Start itself
+	}()
 	time.Sleep(100 * time.Millisecond)
 
 	port := hs.GetPort()
 
 	// Test that server starts unhealthy
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", port))
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://localhost:%d/health", port), nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to get /health: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("Expected status 503 for unhealthy service, got %d", resp.StatusCode)
@@ -121,11 +129,15 @@ func TestHealthServer_Endpoints(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Test /health endpoint returns 200 when healthy
-	resp, err = http.Get(fmt.Sprintf("http://localhost:%d/health", port))
+	req, err = http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://localhost:%d/health", port), nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to get /health: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status 200 for healthy service, got %d", resp.StatusCode)
@@ -144,33 +156,45 @@ func TestHealthServer_Endpoints(t *testing.T) {
 	}
 
 	// Test /healthz endpoint (should be same as /health)
-	resp, err = http.Get(fmt.Sprintf("http://localhost:%d/healthz", port))
+	req, err = http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://localhost:%d/healthz", port), nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to get /healthz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status 200 for /healthz, got %d", resp.StatusCode)
 	}
 
 	// Test /ready endpoint
-	resp, err = http.Get(fmt.Sprintf("http://localhost:%d/ready", port))
+	req, err = http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://localhost:%d/ready", port), nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to get /ready: %v", err)
 	}
-	defer resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status 200 for /ready, got %d", resp.StatusCode)
 	}
 
 	// Test root endpoint
-	resp, err = http.Get(fmt.Sprintf("http://localhost:%d/", port))
+	req, err = http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://localhost:%d/", port), nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to get /: %v", err)
 	}
-	defer resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status 200 for /, got %d", resp.StatusCode)
@@ -189,7 +213,9 @@ func TestHealthServer_PortRetry(t *testing.T) {
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	defer cancel1()
 
-	go hs1.Start(ctx1)
+	go func() {
+		_ = hs1.Start(ctx1) // Error logged by Start itself
+	}()
 	time.Sleep(100 * time.Millisecond)
 
 	// Create second server with same port range - should get different port
@@ -201,7 +227,9 @@ func TestHealthServer_PortRetry(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 
-	go hs2.Start(ctx2)
+	go func() {
+		_ = hs2.Start(ctx2) // Error logged by Start itself
+	}()
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify both servers are running on different ports
@@ -226,11 +254,15 @@ func TestHealthServer_PortRetry(t *testing.T) {
 
 // Helper function to get health status from a running server
 func getHealthStatus(t *testing.T, port int) HealthStatus {
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", port))
+	req, err := http.NewRequestWithContext(context.Background(), "GET", fmt.Sprintf("http://localhost:%d/health", port), nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to get health status: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var status HealthStatus
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {

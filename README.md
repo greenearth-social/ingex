@@ -45,4 +45,3 @@ gcloud container clusters get-credentials "greenearth-stage-cluster" --region "u
 You may need to run `gcloud components install gke-gcloud-auth-plugin` first.
 
 To see which cluster you're pointed at, run `kubectl cluster-info`
-

@@ -97,7 +97,7 @@ func (sm *StateManager) LoadState() error {
 			}
 			return fmt.Errorf("failed to read state from GCS: %w", err)
 		}
-		defer reader.Close()
+		defer func() { _ = reader.Close() }() // Best-effort close for read operation
 
 		data = make([]byte, reader.Attrs.Size)
 		_, err = reader.Read(data)
@@ -161,7 +161,7 @@ func (sm *StateManager) UpdateCursor(timeUs int64) error {
 		ctx := context.Background()
 		writer := sm.gcsClient.Bucket(sm.gcsBucket).Object(sm.gcsObject).NewWriter(ctx)
 		if _, err := writer.Write(data); err != nil {
-			writer.Close()
+			_ = writer.Close() // Best-effort close on error
 			return fmt.Errorf("failed to write state to GCS: %w", err)
 		}
 		if err := writer.Close(); err != nil {
