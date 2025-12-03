@@ -450,13 +450,24 @@ func (ss *S3Spooler) processFile(ctx context.Context, key, filename string) erro
 	}()
 
 	zipPath := filepath.Join(tmpDir, filename)
+	ss.logger.Debug("Will download %s to %s", key, zipPath)
 	if err := ss.downloadFile(ctx, key, zipPath); err != nil {
 		return fmt.Errorf("failed to download file: %w", err)
 	}
 
-	dbPath, err := unzipFile(zipPath, tmpDir)
-	if err != nil {
-		return fmt.Errorf("failed to unzip file: %w", err)
+	// Check if file is actually zipped or just a raw SQLite database
+	var dbPath string
+	if isZipFile(zipPath) {
+		ss.logger.Debug("File is zipped, extracting %s", zipPath)
+		dbPath, err = unzipFile(zipPath, tmpDir)
+		if err != nil {
+			return fmt.Errorf("failed to unzip file: %w", err)
+		}
+		ss.logger.Debug("Successfully unzipped to %s", dbPath)
+	} else {
+		// File is not zipped, use it directly
+		ss.logger.Debug("File is not zipped, using directly: %s", zipPath)
+		dbPath = zipPath
 	}
 
 	if err := processDatabase(ctx, dbPath, filename, ss.rowChan, ss.logger); err != nil {
@@ -507,8 +518,36 @@ func (ss *S3Spooler) downloadFile(ctx context.Context, key, destPath string) err
 		return fmt.Errorf("file size mismatch: wrote %d bytes but file is %d bytes", bytesWritten, fileInfo.Size())
 	}
 
-	ss.logger.Debug("Downloaded S3 file to: %s (%d bytes)", destPath, bytesWritten)
+	// Check file signature to verify it's a valid zip file
+	f, err := os.Open(destPath) // nolint:gosec // G304: destPath is created internally, not from user input
+	if err != nil {
+		return fmt.Errorf("failed to open file for signature check: %w", err)
+	}
+	header := make([]byte, 4)
+	n, _ := f.Read(header)
+	_ = f.Close() // Best-effort close for read-only file check
+
+	ss.logger.Debug("Downloaded S3 file to: %s (%d bytes, signature: %x)", destPath, bytesWritten, header[:n])
+
 	return nil
+}
+
+// isZipFile checks if a file is a valid ZIP file by examining its signature
+func isZipFile(path string) bool {
+	f, err := os.Open(path) // nolint:gosec // G304: path is created internally, not from user input
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }() // Best-effort close for read-only file check
+
+	header := make([]byte, 2)
+	n, err := f.Read(header)
+	if err != nil || n < 2 {
+		return false
+	}
+
+	// ZIP files start with PK (0x504b)
+	return n >= 2 && header[0] == 0x50 && header[1] == 0x4b // nolint:gosec // G602: bounds already checked above
 }
 
 func unzipFile(zipPath, destDir string) (string, error) {
