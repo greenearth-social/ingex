@@ -66,7 +66,12 @@ func main() {
 		logger.Error("Failed to create health check server: %v", err)
 		os.Exit(1)
 	}
-	go healthServer.Start(ctx)
+	go func() {
+		if err := healthServer.Start(ctx); err != nil {
+			logger.Error("Health server failed: %v", err)
+			cancel()
+		}
+	}()
 
 	// Handle signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -294,6 +299,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 			logger.Error("Worker %d: Failed to bulk index likes: %v", id, err)
 		} else {
 			// Record cursor and batch stats for throttled logging (logged every 10 seconds by state writer goroutine)
+			// This is necessary to avoid a GSE ratelimit on state file writes
 			cursorMu.Lock()
 			if job.timeUs > *pendingCursor {
 				*pendingCursor = job.timeUs

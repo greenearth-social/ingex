@@ -52,7 +52,12 @@ func main() {
 		logger.Error("Failed to create health server: %v", err)
 		os.Exit(1)
 	}
-	go healthServer.Start(ctx)
+	go func() {
+		if err := healthServer.Start(ctx); err != nil {
+			logger.Error("Health server failed: %v", err)
+			cancel()
+		}
+	}()
 
 	// Handle shutdown signals
 	sigChan := make(chan os.Signal, 1)

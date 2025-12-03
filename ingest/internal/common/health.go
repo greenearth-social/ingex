@@ -42,10 +42,11 @@ func NewHealthServer(port int, maxPort int, logger *IngestLogger) (*HealthServer
 
 	// Try to find an available port
 	actualPort := port
+	lc := &net.ListenConfig{}
 	for actualPort <= maxPort {
-		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", actualPort))
+		listener, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf(":%d", actualPort))
 		if err == nil {
-			listener.Close()
+			_ = listener.Close()
 			hs.port = actualPort
 			break
 		}
@@ -68,8 +69,9 @@ func NewHealthServer(port int, maxPort int, logger *IngestLogger) (*HealthServer
 	mux.HandleFunc("/", hs.handleRoot)
 
 	hs.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", hs.port),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", hs.port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	return hs, nil
@@ -127,7 +129,9 @@ func (hs *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}
 
-	json.NewEncoder(w).Encode(status)
+	if err := json.NewEncoder(w).Encode(status); err != nil {
+		hs.logger.Error("Failed to encode health status: %v", err)
+	}
 }
 
 // handleReady handles /ready endpoint (returns 200 only when fully ready)
@@ -137,12 +141,12 @@ func (hs *HealthServer) handleReady(w http.ResponseWriter, r *http.Request) {
 
 	if !hs.healthy {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("Not ready"))
+		_, _ = w.Write([]byte("Not ready"))
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Ready"))
+	_, _ = w.Write([]byte("Ready"))
 }
 
 // handleRoot handles the root endpoint
@@ -159,7 +163,9 @@ func (hs *HealthServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(status)
+	if err := json.NewEncoder(w).Encode(status); err != nil {
+		hs.logger.Error("Failed to encode health status: %v", err)
+	}
 }
 
 // getStatusString returns a human-readable status string
