@@ -5,6 +5,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 K8S_DIR="$SCRIPT_DIR/deploy/k8s"
 
+# set default cluster, region, project id
+GKE_REGION="${GKE_REGION:-us-east1}"
+GKE_PROJECT_ID="${GKE_PROJECT_ID:-greenearth-471522}"
+
 print_usage() {
     echo "Usage: $0 <environment> [options]"
     echo ""
@@ -331,6 +335,8 @@ teardown_environment() {
 deploy_environment() {
     local environment=$1
     local namespace="greenearth-$environment"
+
+    GKE_CLUSTER="${GKE_CLUSTER:-greenearth-$environment-cluster}"
 
     if [ "$TEARDOWN" = true ]; then
         setup_kubectl_context "$environment" false

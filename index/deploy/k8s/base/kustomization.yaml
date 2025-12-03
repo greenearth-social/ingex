@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
   - elasticsearch.yaml
+  - elasticsearch-internal-lb.yaml
   - kibana.yaml
   - templates/posts-index-template.yaml
   - templates/post-tombstones-index-template.yaml
