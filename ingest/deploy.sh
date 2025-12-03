@@ -175,6 +175,18 @@ deploy_megastream_service() {
 deploy_expiry_job() {
     log_info "Deploying elasticsearch-expiry job from source..."
 
+    # Set retention hours based on environment
+    # Stage: 5 hours (aggressive cleanup for limited 8-hour capacity)
+    # Prod: 720 hours = 30 days (standard retention)
+    local retention_hours
+    if [ "$ENVIRONMENT" = "stage" ]; then
+        retention_hours=5
+        log_info "Stage environment: Using 5-hour retention period"
+    else
+        retention_hours=720
+        log_info "Production environment: Using 720-hour (30-day) retention period"
+    fi
+
     gcloud run jobs deploy elasticsearch-expiry \
         --source=. \
         --region="$REGION" \
@@ -189,7 +201,7 @@ deploy_expiry_job() {
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=3600 \
-        --args="--retention-days,60"
+        --args="--retention-hours,$retention_hours"
 }
 
 deploy_all_services() {
