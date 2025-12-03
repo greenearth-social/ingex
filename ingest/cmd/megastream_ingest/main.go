@@ -275,22 +275,22 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Post creation - add to batch
 				doc := common.CreateElasticsearchDoc(msg)
 				batch = append(batch, doc)
-			}
 
-			if len(batch) >= batchSize {
-				batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-				if err := common.BulkIndex(batchCtx, esClient, "posts", batch, dryRun, logger); err != nil {
-					logger.Error("Failed to bulk index batch: %v", err)
-				} else {
-					processedCount += len(batch)
-					if dryRun {
-						logger.Info("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
+				if len(batch) >= batchSize {
+					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+					if err := common.BulkIndex(batchCtx, esClient, "posts", batch, dryRun, logger); err != nil {
+						logger.Error("Failed to bulk index batch: %v", err)
 					} else {
-						logger.Info("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
+						processedCount += len(batch)
+						if dryRun {
+							logger.Info("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
+						} else {
+							logger.Info("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
+						}
 					}
+					batch = batch[:0]
+					cancelBatchCtx()
 				}
-				batch = batch[:0]
-				cancelBatchCtx()
 			}
 		}
 	}
