@@ -41,6 +41,19 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Start health check server
+	healthServer, err := common.NewHealthServer(8080, 8089, logger)
+	if err != nil {
+		logger.Error("Failed to create health check server: %v", err)
+		os.Exit(1)
+	}
+	go func() {
+		if err := healthServer.Start(ctx); err != nil {
+			logger.Error("Health server failed: %v", err)
+			cancel()
+		}
+	}()
+
 	// Handle signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -51,10 +64,10 @@ func main() {
 	}()
 
 	logger.Info("Starting SQLite ingestion (source: %s, mode: %s)", *source, *mode)
-	runIngestion(ctx, config, logger, *source, *mode, *dryRun, *skipTLSVerify, *noRewind)
+	runIngestion(ctx, config, logger, healthServer, *source, *mode, *dryRun, *skipTLSVerify, *noRewind)
 }
 
-func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, source, mode string, dryRun, skipTLSVerify, noRewind bool) {
+func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, source, mode string, dryRun, skipTLSVerify, noRewind bool) {
 	// Validate source parameter
 	if source != "local" && source != "s3" {
 		logger.Error("Invalid source: %s (must be 'local' or 's3')", source)
@@ -122,7 +135,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	esConfig := common.ElasticsearchConfig{
 		URL:           config.ElasticsearchURL,
 		APIKey:        config.ElasticsearchAPIKey,
-		SkipTLSVerify: skipTLSVerify,
+		SkipTLSVerify: skipTLSVerify || config.ElasticsearchTLSSkipVerify,
 	}
 
 	esClient, err := common.NewElasticsearchClient(esConfig, logger)
@@ -150,6 +163,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		logger.Error("Failed to start spooler: %v", err)
 		os.Exit(1)
 	}
+
+	// Mark service as healthy once we've successfully started the spooler
+	healthServer.SetHealthy(true, fmt.Sprintf("Processing %s data in %s mode", source, mode))
 
 	// Process rows from spooler
 	rowChan := spooler.GetRowChannel()
