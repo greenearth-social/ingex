@@ -246,7 +246,7 @@ setup_kubectl_context() {
                         --location="$GKE_REGION" \
                         --project="$GKE_PROJECT_ID" \
                         --machine-type="n2-highmem-2" \
-                        --num-nodes=15 \
+                        --num-nodes=4 \
                         --node-labels=workload=es-data \
                         --disk-size=100 \
                         --disk-type=pd-standard \
