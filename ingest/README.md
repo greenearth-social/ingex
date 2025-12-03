@@ -34,6 +34,9 @@ Data Sources:
 ```text
 ingest/
 ├── cmd/
+│   ├── elasticsearch_expiry/       # Elasticsearch data expiry job
+│   │   ├── main.go                 # CLI and orchestration
+│   │   └── README.md               # Expiry-specific documentation
 │   ├── megastream_ingest/          # Megastream SQLite ingestion
 │   │   ├── main.go                 # CLI and orchestration
 │   │   └── README.md               # Megastream-specific documentation
@@ -49,10 +52,19 @@ ingest/
 │   │   ├── logger.go               # Structured logging
 │   │   ├── message.go              # MegaStream message parsing
 │   │   └── state.go                # File processing state management
+│   ├── elasticsearch_expiry/       # Expiry-specific implementations
+│   │   └── service.go              # Expiry logic
 │   ├── megastream_ingest/          # MegaStream-specific implementations
 │   │   └── spooler.go              # Local and S3 file discovery/processing
 │   └── jetstream_ingest/           # Jetstream-specific implementations
 │       └── client.go               # WebSocket client
+├── scripts/
+│   ├── deploy.sh                   # Deployment automation
+│   ├── gcp_setup.sh                # GCP environment setup
+│   ├── ingestctl.sh                # Control script for ingest services
+│   ├── k8s_delete_all_es_data.sh   # Delete all ES data via Kubernetes
+│   ├── delete_all_es_data.sh       # Delete all ES data (direct)
+│   └── fix_es_readonly.sh          # Fix ES read-only blocks
 ├── go.mod                          # Module: github.com/greenearth/ingest
 └── test_data/                      # Sample SQLite databases for testing
 ```

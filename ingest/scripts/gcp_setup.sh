@@ -418,7 +418,7 @@ main() {
     log_info "Environment setup complete!"
     echo
     echo "Next steps:"
-    echo "1. Run './deploy.sh' to build and deploy your services"
+    echo "1. Run './scripts/deploy.sh' to build and deploy your services"
     echo "2. Check Cloud Run console to verify services are running"
     echo "3. Monitor logs for any issues"
     echo
