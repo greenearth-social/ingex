@@ -172,17 +172,18 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				goto cleanup
 			}
 
-			if row.AtURI == "" {
+			msg := common.NewMegaStreamMessage(row.AtURI, row.DID, row.RawPost, row.Inferences, logger)
+
+			// Skip rows with empty at_uri unless it's an account deletion event
+			if row.AtURI == "" && !msg.IsAccountDeletion() {
 				logger.Error("Skipping row with empty at_uri from file %s (did: %s)", row.SourceFilename, row.DID)
 				skippedCount++
 				continue
 			}
 
-			msg := common.NewMegaStreamMessage(row.AtURI, row.DID, row.RawPost, row.Inferences, logger)
-
 			// Handle different event types with if-else chain
-			if msg.IsAccountDeletion() && msg.GetAccountStatus() == "deleted" {
-				// CRITICAL: Flush all pending batches before account deletion
+			if msg.IsAccountDeletion() {
+				// Flush all pending batches before account deletion
 				// This prevents post creation/deletion events from being processed
 				// after the account deletion (which would be out of order)
 
