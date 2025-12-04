@@ -15,10 +15,13 @@ import (
 )
 
 type batchJob struct {
-	batch      []common.LikeDoc
-	timeUs     int64
-	batchCount int
-	skipCount  int
+	batch          []common.LikeDoc
+	tombstoneBatch []common.LikeTombstoneDoc
+	deleteBatch    []common.DeleteDoc
+	timeUs         int64
+	batchCount     int
+	tombstoneCount int
+	skipCount      int
 }
 
 func main() {
@@ -198,9 +201,11 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	}()
 
 	var batch []common.LikeDoc
+	var deleteMessages []common.JetstreamMessage
 	var lastTimeUs int64
 	const batchSize = 100
 	processedCount := 0
+	deletedCount := 0
 	skippedCount := 0
 
 	for {
@@ -216,68 +221,205 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 			msg := common.NewJetstreamMessage(rawMsg, logger)
 
-			// Only process like events
-			if !msg.IsLike() {
-				continue
-			}
-
-			if msg.GetAtURI() == "" {
-				logger.Error("Skipping like with empty at_uri (author_did: %s)", msg.GetAuthorDID())
-				skippedCount++
-				continue
-			}
-
-			if msg.GetSubjectURI() == "" {
-				logger.Error("Skipping like with empty subject_uri (at_uri: %s, author_did: %s)", msg.GetAtURI(), msg.GetAuthorDID())
-				skippedCount++
-				continue
-			}
-
-			doc := common.CreateLikeDoc(msg)
-			batch = append(batch, doc)
-
-			// Track the latest timestamp
-			if msg.GetTimeUs() > lastTimeUs {
-				lastTimeUs = msg.GetTimeUs()
-			}
-
-			if len(batch) >= batchSize {
-				// Send batch to workers for processing
-				job := batchJob{
-					batch:      batch,
-					timeUs:     lastTimeUs,
-					batchCount: len(batch),
-					skipCount:  skippedCount,
+			// Handle like deletions
+			if msg.IsLikeDelete() {
+				if msg.GetAtURI() == "" {
+					logger.Error("Skipping like deletion with empty at_uri (author_did: %s)", msg.GetAuthorDID())
+					skippedCount++
+					continue
 				}
 
-				select {
-				case batchChan <- job:
-					processedCount += len(batch)
-				case <-ctx.Done():
-					goto cleanup
+				// Store delete message for batch processing
+				deleteMessages = append(deleteMessages, msg)
+
+				// Track the latest timestamp
+				if msg.GetTimeUs() > lastTimeUs {
+					lastTimeUs = msg.GetTimeUs()
 				}
 
-				// Create new batch slice
-				batch = make([]common.LikeDoc, 0, batchSize)
+				// Process batch when full
+				if len(deleteMessages) >= batchSize {
+					// Fetch existing like documents from Elasticsearch
+					likeIDs := make([]common.LikeIdentifier, len(deleteMessages))
+					for i, delMsg := range deleteMessages {
+						likeIDs[i] = common.LikeIdentifier{
+							AtURI:     delMsg.GetAtURI(),
+							AuthorDID: delMsg.GetAuthorDID(),
+						}
+					}
+
+					likeDocs, err := common.BulkGetLikes(ctx, esClient, "likes", likeIDs, logger)
+					if err != nil {
+						logger.Error("Failed to fetch like documents for deletion: %v", err)
+						// Continue processing - we'll skip tombstone creation for missing docs
+					}
+
+					// Build tombstone and delete batches
+					var tombstoneBatch []common.LikeTombstoneDoc
+					var deleteBatch []common.DeleteDoc
+
+					for _, delMsg := range deleteMessages {
+						atURI := delMsg.GetAtURI()
+						authorDID := delMsg.GetAuthorDID()
+
+						// Check if we found the like document
+						if likeDoc, found := likeDocs[atURI]; found {
+							// Create tombstone with subject_uri from ES
+							tombstone := common.CreateLikeTombstoneDoc(delMsg, likeDoc.SubjectURI)
+							tombstoneBatch = append(tombstoneBatch, tombstone)
+						} else {
+							logger.Error("Like document not found for deletion, skipping tombstone: at_uri=%s", atURI)
+						}
+
+						// Always add to delete batch (idempotent operation)
+						deleteBatch = append(deleteBatch, common.DeleteDoc{
+							DocID:     atURI,
+							AuthorDID: authorDID,
+						})
+					}
+
+					// Send batch to workers
+					job := batchJob{
+						batch:          make([]common.LikeDoc, 0),
+						tombstoneBatch: tombstoneBatch,
+						deleteBatch:    deleteBatch,
+						timeUs:         lastTimeUs,
+						batchCount:     0,
+						tombstoneCount: len(tombstoneBatch),
+						skipCount:      skippedCount,
+					}
+
+					select {
+					case batchChan <- job:
+						deletedCount += len(deleteBatch)
+					case <-ctx.Done():
+						goto cleanup
+					}
+
+					// Reset delete messages batch
+					deleteMessages = make([]common.JetstreamMessage, 0, batchSize)
+				}
+			} else if msg.IsLike() {
+
+				if msg.GetAtURI() == "" {
+					logger.Error("Skipping like with empty at_uri (author_did: %s)", msg.GetAuthorDID())
+					skippedCount++
+					continue
+				}
+
+				if msg.GetSubjectURI() == "" {
+					logger.Error("Skipping like with empty subject_uri (at_uri: %s, author_did: %s)", msg.GetAtURI(), msg.GetAuthorDID())
+					skippedCount++
+					continue
+				}
+
+				doc := common.CreateLikeDoc(msg)
+				batch = append(batch, doc)
+
+				// Track the latest timestamp
+				if msg.GetTimeUs() > lastTimeUs {
+					lastTimeUs = msg.GetTimeUs()
+				}
+
+				if len(batch) >= batchSize {
+					// Send batch to workers for processing
+					job := batchJob{
+						batch:          batch,
+						tombstoneBatch: make([]common.LikeTombstoneDoc, 0),
+						deleteBatch:    make([]common.DeleteDoc, 0),
+						timeUs:         lastTimeUs,
+						batchCount:     len(batch),
+						tombstoneCount: 0,
+						skipCount:      skippedCount,
+					}
+
+					select {
+					case batchChan <- job:
+						processedCount += len(batch)
+					case <-ctx.Done():
+						goto cleanup
+					}
+
+					// Create new batch slice
+					batch = make([]common.LikeDoc, 0, batchSize)
+				}
 			}
 		}
 	}
 
 cleanup:
-	// Send final batch to workers
+	// Send final like batch to workers
 	if len(batch) > 0 {
 		job := batchJob{
-			batch:      batch,
-			timeUs:     lastTimeUs,
-			batchCount: len(batch),
-			skipCount:  skippedCount,
+			batch:          batch,
+			tombstoneBatch: make([]common.LikeTombstoneDoc, 0),
+			deleteBatch:    make([]common.DeleteDoc, 0),
+			timeUs:         lastTimeUs,
+			batchCount:     len(batch),
+			tombstoneCount: 0,
+			skipCount:      skippedCount,
 		}
 
 		select {
 		case batchChan <- job:
 			processedCount += len(batch)
 		case <-time.After(5 * time.Second):
-			logger.Error("Timeout sending final batch to workers")
+			logger.Error("Timeout sending final like batch to workers")
+		}
+	}
+
+	// Send final delete batch to workers
+	if len(deleteMessages) > 0 {
+		// Fetch existing like documents from Elasticsearch
+		likeIDs := make([]common.LikeIdentifier, len(deleteMessages))
+		for i, delMsg := range deleteMessages {
+			likeIDs[i] = common.LikeIdentifier{
+				AtURI:     delMsg.GetAtURI(),
+				AuthorDID: delMsg.GetAuthorDID(),
+			}
+		}
+
+		likeDocs, err := common.BulkGetLikes(ctx, esClient, "likes", likeIDs, logger)
+		if err != nil {
+			logger.Error("Failed to fetch like documents for final deletion batch: %v", err)
+		}
+
+		// Build tombstone and delete batches
+		var tombstoneBatch []common.LikeTombstoneDoc
+		var deleteBatch []common.DeleteDoc
+
+		for _, delMsg := range deleteMessages {
+			atURI := delMsg.GetAtURI()
+			authorDID := delMsg.GetAuthorDID()
+
+			if likeDoc, found := likeDocs[atURI]; found {
+				tombstone := common.CreateLikeTombstoneDoc(delMsg, likeDoc.SubjectURI)
+				tombstoneBatch = append(tombstoneBatch, tombstone)
+			} else {
+				logger.Error("Like document not found for final deletion, skipping tombstone: at_uri=%s", atURI)
+			}
+
+			deleteBatch = append(deleteBatch, common.DeleteDoc{
+				DocID:     atURI,
+				AuthorDID: authorDID,
+			})
+		}
+
+		job := batchJob{
+			batch:          make([]common.LikeDoc, 0),
+			tombstoneBatch: tombstoneBatch,
+			deleteBatch:    deleteBatch,
+			timeUs:         lastTimeUs,
+			batchCount:     0,
+			tombstoneCount: len(tombstoneBatch),
+			skipCount:      skippedCount,
+		}
+
+		select {
+		case batchChan <- job:
+			deletedCount += len(deleteBatch)
+		case <-time.After(5 * time.Second):
+			logger.Error("Timeout sending final delete batch to workers")
 		}
 	}
 
@@ -287,7 +429,7 @@ cleanup:
 	// Wait for all workers to complete
 	<-workersDone
 
-	logger.Info("Jetstream ingestion complete. Processed: %d, Skipped: %d", processedCount, skippedCount)
+	logger.Info("Jetstream ingestion complete. Processed: %d, Deleted: %d, Skipped: %d", processedCount, deletedCount, skippedCount)
 }
 
 // esWorker processes batches of documents and writes them to Elasticsearch
@@ -295,9 +437,55 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 	defer wg.Done()
 
 	for job := range batchChan {
-		if err := common.BulkIndexLikes(ctx, esClient, "likes", job.batch, dryRun, logger); err != nil {
-			logger.Error("Worker %d: Failed to bulk index likes: %v", id, err)
-		} else {
+		// Calculate freshness once at start
+		freshnessSeconds := calculateFreshness(job.timeUs)
+		success := true
+
+		// Handle tombstone and deletion batch
+		if len(job.tombstoneBatch) > 0 {
+			// Index tombstones FIRST (critical for data preservation)
+			if err := common.BulkIndexLikeTombstones(ctx, esClient, "like_tombstones", job.tombstoneBatch, dryRun, logger); err != nil {
+				logger.Error("Worker %d: Failed to bulk index like tombstones: %v", id, err)
+				success = false
+			} else {
+				if dryRun {
+					logger.Info("Worker %d: Dry-run: Would index %d like tombstones", id, job.tombstoneCount)
+				} else {
+					logger.Info("Worker %d: Indexed %d like tombstones", id, job.tombstoneCount)
+				}
+
+				// Only delete if tombstone indexing succeeded
+				if len(job.deleteBatch) > 0 {
+					if err := common.BulkDelete(ctx, esClient, "likes", job.deleteBatch, dryRun, logger); err != nil {
+						logger.Error("Worker %d: Failed to bulk delete likes: %v", id, err)
+						success = false
+					} else {
+						if dryRun {
+							logger.Info("Worker %d: Dry-run: Would delete %d likes (freshness: %ds)", id, len(job.deleteBatch), freshnessSeconds)
+						} else {
+							logger.Info("Worker %d: Deleted %d likes (freshness: %ds)", id, len(job.deleteBatch), freshnessSeconds)
+						}
+					}
+				}
+			}
+		}
+
+		// Handle like creation batch
+		if len(job.batch) > 0 {
+			if err := common.BulkIndexLikes(ctx, esClient, "likes", job.batch, dryRun, logger); err != nil {
+				logger.Error("Worker %d: Failed to bulk index likes: %v", id, err)
+				success = false
+			} else {
+				if dryRun {
+					logger.Info("Worker %d: Dry-run: Would index %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
+				} else {
+					logger.Info("Worker %d: Indexed %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
+				}
+			}
+		}
+
+		// Save cursor after successful batch operations
+		if success && !dryRun {
 			// Record cursor and batch stats for throttled logging (logged every 10 seconds by state writer goroutine)
 			// This is necessary to avoid a GSE ratelimit on state file writes
 			cursorMu.Lock()

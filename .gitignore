@@ -38,9 +38,10 @@ go.work.sum
 claude.md
 .claude/
 
-# MegaStream Test Data
+# Ingest Test Data
 ingest/test_data/graze
 ingest/test_data/parquet
+ingest/test_data/jetstream
 
 # ES Test Queries
 index/test_queries
