@@ -347,27 +347,17 @@ setup_cloud_scheduler() {
     # Prod: Daily at 2 AM UTC (standard retention)
     local schedule
     local job_name
-    local old_job_name
     local description
     if [ "$ENVIRONMENT" = "stage" ]; then
         schedule="0 * * * *"  # Every hour at minute 0
         job_name="elasticsearch-expiry-hourly-$ENVIRONMENT"
-        old_job_name="elasticsearch-expiry-daily-$ENVIRONMENT"
         description="Hourly Elasticsearch data expiry for $ENVIRONMENT (limited capacity)"
         log_info "Stage environment: Configuring hourly expiry schedule"
     else
         schedule="0 2 * * *"  # Daily at 2 AM UTC
         job_name="elasticsearch-expiry-daily-$ENVIRONMENT"
-        old_job_name=""
         description="Daily Elasticsearch data expiry for $ENVIRONMENT"
         log_info "Production environment: Configuring daily expiry schedule"
-    fi
-
-    # Clean up old scheduler job with different naming (if it exists)
-    if [ -n "$old_job_name" ] && gcloud scheduler jobs describe "$old_job_name" --location="$REGION" > /dev/null 2>&1; then
-        log_warn "Found old scheduler job: $old_job_name - deleting it"
-        gcloud scheduler jobs delete "$old_job_name" --location="$REGION" --quiet
-        log_info "Old scheduler job deleted: $old_job_name"
     fi
 
     # Create or update the scheduler job
