@@ -59,12 +59,13 @@ ingest/
 │   └── jetstream_ingest/           # Jetstream-specific implementations
 │       └── client.go               # WebSocket client
 ├── scripts/
-│   ├── deploy.sh                   # Deployment automation
-│   ├── gcp_setup.sh                # GCP environment setup
-│   ├── ingestctl.sh                # Control script for ingest services
-│   ├── k8s_delete_all_es_data.sh   # Delete all ES data via Kubernetes
-│   ├── delete_all_es_data.sh       # Delete all ES data (direct)
-│   └── fix_es_readonly.sh          # Fix ES read-only blocks
+│   ├── deploy.sh                                      # Deployment automation
+│   ├── gcp_setup.sh                                   # GCP environment setup
+│   ├── ingestctl.sh                                   # Control script for ingest services
+│   ├── k8s_recreate_api_key.sh                        # Recreate Elasticsearch API key
+│   ├── k8s_delete_es_data_via_api.sh                  # Delete ES data via API (safe)
+│   ├── k8s_delete_es_data_filesystem_emergency.sh     # Delete ES data from filesystem (emergency only)
+│   └── fix_es_readonly.sh                             # Fix ES read-only blocks
 ├── go.mod                          # Module: github.com/greenearth/ingest
 └── test_data/                      # Sample SQLite databases for testing
 ```
@@ -163,7 +164,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "indices": [
           {
             "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1", "likes", "likes_v1"],
-            "privileges": ["create_doc", "create", "delete", "index", "write", "all"]
+            "privileges": ["create_doc", "create", "delete", "index", "write", "maintenance", "all"]
           }
         ]
       }

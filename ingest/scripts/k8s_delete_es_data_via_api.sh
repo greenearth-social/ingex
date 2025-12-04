@@ -5,24 +5,25 @@
 set -e
 
 ENVIRONMENT="${1:-stage}"
-NAMESPACE="ingex-${ENVIRONMENT}"
+NAMESPACE="greenearth-${ENVIRONMENT}"
 
 echo "Running ES data deletion in ${ENVIRONMENT} environment (namespace: ${NAMESPACE})"
 echo ""
 
-# Get the ES API key from the secret
-ES_API_KEY=$(kubectl get secret elasticsearch-api-keys -n "${NAMESPACE}" -o jsonpath='{.data.service-user-key}' | base64 -d)
+# Get the ES credentials from the secret
+ES_USERNAME=$(kubectl get secret es-service-user-secret -n "${NAMESPACE}" -o jsonpath='{.data.username}' | base64 -d)
+ES_PASSWORD=$(kubectl get secret es-service-user-secret -n "${NAMESPACE}" -o jsonpath='{.data.password}' | base64 -d)
 
-if [ -z "$ES_API_KEY" ]; then
-  echo "Error: Could not retrieve ES API key from secret"
+if [ -z "$ES_USERNAME" ] || [ -z "$ES_PASSWORD" ]; then
+  echo "Error: Could not retrieve ES credentials from secret"
   exit 1
 fi
 
-echo "Found ES API key"
+echo "Found ES credentials for user: ${ES_USERNAME}"
 echo ""
 
-# The internal service name for Elasticsearch
-ES_HOST="http://elasticsearch-internal:9200"
+# The internal service name for Elasticsearch (HTTPS)
+ES_HOST="https://greenearth-es-http:9200"
 
 echo "Will connect to: ${ES_HOST}"
 echo "WARNING: This will delete ALL data from Elasticsearch indices!"
@@ -41,35 +42,36 @@ kubectl run es-data-deletion-$(date +%s) \
   --restart=Never \
   --rm -i --tty \
   --env="ES_HOST=${ES_HOST}" \
-  --env="ES_API_KEY=${ES_API_KEY}" \
+  --env="ES_USERNAME=${ES_USERNAME}" \
+  --env="ES_PASSWORD=${ES_PASSWORD}" \
   -- sh -c '
 echo "Removing read-only blocks..."
-curl -X PUT "${ES_HOST}/_all/_settings" \
-  -H "Authorization: ApiKey ${ES_API_KEY}" \
+curl -k -X PUT "${ES_HOST}/_all/_settings" \
+  -u "${ES_USERNAME}:${ES_PASSWORD}" \
   -H "Content-Type: application/json" \
   -d "{\"index.blocks.read_only_allow_delete\": null}"
 
 echo ""
 echo ""
 echo "Deleting all documents from posts index..."
-curl -X POST "${ES_HOST}/posts/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
-  -H "Authorization: ApiKey ${ES_API_KEY}" \
+curl -k -X POST "${ES_HOST}/posts/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
+  -u "${ES_USERNAME}:${ES_PASSWORD}" \
   -H "Content-Type: application/json" \
   -d "{\"query\": {\"match_all\": {}}}"
 
 echo ""
 echo ""
 echo "Deleting all documents from likes index..."
-curl -X POST "${ES_HOST}/likes/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
-  -H "Authorization: ApiKey ${ES_API_KEY}" \
+curl -k -X POST "${ES_HOST}/likes/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
+  -u "${ES_USERNAME}:${ES_PASSWORD}" \
   -H "Content-Type: application/json" \
   -d "{\"query\": {\"match_all\": {}}}"
 
 echo ""
 echo ""
 echo "Deleting all documents from post-tombstones index..."
-curl -X POST "${ES_HOST}/post-tombstones/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
-  -H "Authorization: ApiKey ${ES_API_KEY}" \
+curl -k -X POST "${ES_HOST}/post-tombstones/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
+  -u "${ES_USERNAME}:${ES_PASSWORD}" \
   -H "Content-Type: application/json" \
   -d "{\"query\": {\"match_all\": {}}}"
 
@@ -80,4 +82,4 @@ echo "Deletion tasks started!"
 
 echo ""
 echo "Done! Check progress with:"
-echo "kubectl exec -n ${NAMESPACE} -it elasticsearch-0 -- curl -X GET \"http://localhost:9200/_tasks?detailed=true&actions=*delete/byquery\""
+echo "kubectl exec -n ${NAMESPACE} -it greenearth-es-data-only-0 -- curl -k -u ${ES_USERNAME}:${ES_PASSWORD} -X GET \"https://localhost:9200/_tasks?detailed=true&actions=*delete/byquery\""
