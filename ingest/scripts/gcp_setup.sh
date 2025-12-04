@@ -339,23 +339,49 @@ setup_firewall_rules() {
 setup_cloud_scheduler() {
     log_info "Setting up Cloud Scheduler for elasticsearch-expiry..."
 
-    JOB_NAME="elasticsearch-expiry-daily-$ENVIRONMENT"
     SERVICE_ACCOUNT="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com"
     JOB_URI="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/elasticsearch-expiry:run"
 
-    # Create the scheduler job (runs daily at 2 AM UTC)
-    if ! gcloud scheduler jobs describe "$JOB_NAME" --location="$REGION" > /dev/null 2>&1; then
-        gcloud scheduler jobs create http "$JOB_NAME" \
+    # Set schedule based on environment
+    # Stage: Every hour (for aggressive cleanup of limited capacity cluster)
+    # Prod: Daily at 2 AM UTC (standard retention)
+    local schedule
+    local job_name
+    local description
+    if [ "$ENVIRONMENT" = "stage" ]; then
+        schedule="0 * * * *"  # Every hour at minute 0
+        job_name="elasticsearch-expiry-hourly-$ENVIRONMENT"
+        description="Hourly Elasticsearch data expiry for $ENVIRONMENT (limited capacity)"
+        log_info "Stage environment: Configuring hourly expiry schedule"
+    else
+        schedule="0 2 * * *"  # Daily at 2 AM UTC
+        job_name="elasticsearch-expiry-daily-$ENVIRONMENT"
+        description="Daily Elasticsearch data expiry for $ENVIRONMENT"
+        log_info "Production environment: Configuring daily expiry schedule"
+    fi
+
+    # Create or update the scheduler job
+    if ! gcloud scheduler jobs describe "$job_name" --location="$REGION" > /dev/null 2>&1; then
+        gcloud scheduler jobs create http "$job_name" \
             --location="$REGION" \
-            --schedule="0 2 * * *" \
+            --schedule="$schedule" \
             --uri="$JOB_URI" \
             --http-method=POST \
             --oidc-service-account-email="$SERVICE_ACCOUNT" \
             --oidc-token-audience="$JOB_URI" \
-            --description="Daily Elasticsearch data expiry for $ENVIRONMENT"
-        log_info "Cloud Scheduler job created: $JOB_NAME"
+            --description="$description"
+        log_info "Cloud Scheduler job created: $job_name"
     else
-        log_info "Cloud Scheduler job already exists: $JOB_NAME"
+        # Update existing job to ensure schedule and other settings are current
+        gcloud scheduler jobs update http "$job_name" \
+            --location="$REGION" \
+            --schedule="$schedule" \
+            --uri="$JOB_URI" \
+            --http-method=POST \
+            --oidc-service-account-email="$SERVICE_ACCOUNT" \
+            --oidc-token-audience="$JOB_URI" \
+            --description="$description"
+        log_info "Cloud Scheduler job updated: $job_name"
     fi
 }
 
@@ -382,7 +408,7 @@ main() {
     log_info "Environment setup complete!"
     echo
     echo "Next steps:"
-    echo "1. Run './deploy.sh' to build and deploy your services"
+    echo "1. Run './scripts/deploy.sh' to build and deploy your services"
     echo "2. Check Cloud Run console to verify services are running"
     echo "3. Monitor logs for any issues"
     echo

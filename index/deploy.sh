@@ -96,7 +96,11 @@ wait_for_resource() {
         else
             # Elasticsearch and other resources may have both health and phase
             local phase=$(kubectl get $resource_type $resource_name -n $namespace -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            if [ "$health" = "green" ] && [ "$phase" = "Ready" ]; then
+            # Accept yellow health for non-prod environments (staging with limited nodes)
+            if [ "$ENVIRONMENT" != "prod" ] && [ "$health" = "yellow" ] && [ "$phase" = "Ready" ]; then
+                log_success "$resource_type/$resource_name is ready (yellow health acceptable for $ENVIRONMENT)"
+                return 0
+            elif [ "$health" = "green" ] && [ "$phase" = "Ready" ]; then
                 log_success "$resource_type/$resource_name is ready"
                 return 0
             fi

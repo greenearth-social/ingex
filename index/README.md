@@ -252,7 +252,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "indices": [
           {
             "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1", "likes", "likes_v1"],
-            "privileges": ["create_doc", "create", "delete", "index", "write", "all"]
+            "privileges": ["create_doc", "create", "delete", "index", "write", "maintenance", "all"]
           }
         ]
       }
