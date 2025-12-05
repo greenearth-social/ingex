@@ -339,36 +339,41 @@ setup_firewall_rules() {
 setup_cloud_scheduler() {
     log_info "Setting up Cloud Scheduler for elasticsearch-expiry..."
 
-    SERVICE_ACCOUNT="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com"
-    JOB_URI="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/elasticsearch-expiry:run"
+    # Get project number for default compute service account
+    PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+    COMPUTE_SERVICE_ACCOUNT="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
 
-    # Set schedule based on environment
-    # Stage: Every hour (for aggressive cleanup of limited capacity cluster)
-    # Prod: Daily at 2 AM UTC (standard retention)
-    local schedule
-    local job_name
-    local description
-    if [ "$ENVIRONMENT" = "stage" ]; then
-        schedule="0 * * * *"  # Every hour at minute 0
-        job_name="elasticsearch-expiry-hourly-$ENVIRONMENT"
-        description="Hourly Elasticsearch data expiry for $ENVIRONMENT (limited capacity)"
-        log_info "Stage environment: Configuring hourly expiry schedule"
-    else
-        schedule="0 2 * * *"  # Daily at 2 AM UTC
-        job_name="elasticsearch-expiry-daily-$ENVIRONMENT"
-        description="Daily Elasticsearch data expiry for $ENVIRONMENT"
-        log_info "Production environment: Configuring daily expiry schedule"
+    # Use Cloud Run v2 API endpoint format
+    JOB_URI="https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/elasticsearch-expiry:run"
+
+    # Only configure for stage environment (hourly cleanup for limited capacity cluster)
+    if [ "$ENVIRONMENT" != "stage" ]; then
+        log_info "Skipping Cloud Scheduler setup for $ENVIRONMENT (only stage is configured)"
+        return 0
     fi
 
+    local schedule="0 * * * *"  # Every hour at minute 0
+    local job_name="elasticsearch-expiry-hourly-stage"
+    local description="Hourly Elasticsearch data expiry for stage (limited capacity)"
+    log_info "Stage environment: Configuring hourly expiry schedule"
+
+    # Grant the default compute service account permission to invoke the Cloud Run job
+    log_info "Granting default compute service account permission to invoke Cloud Run job..."
+    gcloud run jobs add-iam-policy-binding elasticsearch-expiry \
+        --region="$REGION" \
+        --member="serviceAccount:$COMPUTE_SERVICE_ACCOUNT" \
+        --role="roles/run.invoker" \
+        2>/dev/null || log_info "Service account already has run.invoker permission"
+
     # Create or update the scheduler job
+    # Note: Uses OAuth (not OIDC) as documented in https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule#command-line
     if ! gcloud scheduler jobs describe "$job_name" --location="$REGION" > /dev/null 2>&1; then
         gcloud scheduler jobs create http "$job_name" \
             --location="$REGION" \
             --schedule="$schedule" \
             --uri="$JOB_URI" \
             --http-method=POST \
-            --oidc-service-account-email="$SERVICE_ACCOUNT" \
-            --oidc-token-audience="$JOB_URI" \
+            --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
             --description="$description"
         log_info "Cloud Scheduler job created: $job_name"
     else
@@ -378,8 +383,7 @@ setup_cloud_scheduler() {
             --schedule="$schedule" \
             --uri="$JOB_URI" \
             --http-method=POST \
-            --oidc-service-account-email="$SERVICE_ACCOUNT" \
-            --oidc-token-audience="$JOB_URI" \
+            --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
             --description="$description"
         log_info "Cloud Scheduler job updated: $job_name"
     fi

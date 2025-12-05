@@ -11,12 +11,11 @@ echo "Environment: ${ENVIRONMENT}"
 echo "Namespace: ${NAMESPACE}"
 echo ""
 
-# Get credentials
-ES_USERNAME=$(kubectl get secret es-service-user-secret -n "${NAMESPACE}" -o jsonpath='{.data.username}' | base64 -d)
-ES_PASSWORD=$(kubectl get secret es-service-user-secret -n "${NAMESPACE}" -o jsonpath='{.data.password}' | base64 -d)
+# Get elastic superuser credentials (required for creating API keys)
+ES_USERNAME=$(kubectl get secret greenearth-es-elastic-user -n "${NAMESPACE}" -o jsonpath='{.data.elastic}' | base64 -d)
 
-if [ -z "$ES_USERNAME" ] || [ -z "$ES_PASSWORD" ]; then
-  echo "Error: Could not retrieve ES credentials from secret"
+if [ -z "$ES_USERNAME" ]; then
+  echo "Error: Could not retrieve elastic superuser password from secret"
   exit 1
 fi
 
@@ -24,7 +23,7 @@ echo "Creating API key with permissions for ingest services..."
 
 # Create API key with full permissions for all indices
 API_KEY_RESPONSE=$(kubectl exec -n "${NAMESPACE}" greenearth-es-data-only-0 -- curl -k -s -X POST \
-  -u "${ES_USERNAME}:${ES_PASSWORD}" \
+  -u "elastic:${ES_USERNAME}" \
   "https://localhost:9200/_security/api_key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -35,8 +34,8 @@ API_KEY_RESPONSE=$(kubectl exec -n "${NAMESPACE}" greenearth-es-data-only-0 -- c
         "cluster": ["monitor", "manage_index_templates"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "likes", "likes_*", "post-tombstones", "post-tombstones_*"],
-            "privileges": ["all", "maintenance"]
+            "names": ["posts", "posts_*", "likes", "likes_*", "post_tombstones", "post_tombstones_*", "like_tombstones", "like_tombstones_*"],
+            "privileges": ["all", "maintenance", "create_index", "auto_configure"]
           }
         ]
       }
