@@ -765,6 +765,39 @@ type PostData struct {
 	IndexedAt        string               `json:"indexed_at"`
 }
 
+// LikeData represents the _source field of a like search hit
+type LikeData struct {
+	AtURI      string `json:"at_uri"`
+	SubjectURI string `json:"subject_uri"`
+	AuthorDID  string `json:"author_did"`
+	CreatedAt  string `json:"created_at"`
+	IndexedAt  string `json:"indexed_at"`
+}
+
+// LikeHit represents a single like search hit
+type LikeHit struct {
+	Index  string        `json:"_index"`
+	ID     string        `json:"_id"`
+	Score  float64       `json:"_score"`
+	Sort   []interface{} `json:"sort,omitempty"`
+	Source LikeData      `json:"_source"`
+}
+
+// LikeHits contains the like search results
+type LikeHits struct {
+	Total    TotalHits `json:"total"`
+	MaxScore float64   `json:"max_score"`
+	Hits     []LikeHit `json:"hits"`
+}
+
+// LikeSearchResponse represents the response from an Elasticsearch like search query
+type LikeSearchResponse struct {
+	Took     int        `json:"took"`
+	TimedOut bool       `json:"timed_out"`
+	Shards   ShardsInfo `json:"_shards"`
+	Hits     LikeHits   `json:"hits"`
+}
+
 // FetchPosts queries Elasticsearch with pagination using search_after
 // Parameters:
 //   - client: Elasticsearch client
@@ -844,6 +877,83 @@ func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *Inges
 	}
 
 	logger.Debug("Search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
+
+	return response, nil
+}
+
+// FetchLikes queries Elasticsearch for likes with pagination using search_after
+// Parameters mirror FetchPosts but return LikeSearchResponse
+func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, size int) (LikeSearchResponse, error) {
+	var response LikeSearchResponse
+
+	if size <= 0 {
+		size = 1000
+	}
+
+	// Build query based on whether time range is specified
+	var queryClause map[string]interface{}
+	if startTime != "" || endTime != "" {
+		rangeQuery := map[string]interface{}{}
+		if startTime != "" {
+			rangeQuery["gte"] = startTime
+		}
+		if endTime != "" {
+			rangeQuery["lte"] = endTime
+		}
+		queryClause = map[string]interface{}{
+			"range": map[string]interface{}{
+				"created_at": rangeQuery,
+			},
+		}
+	} else {
+		queryClause = map[string]interface{}{
+			"match_all": map[string]interface{}{},
+		}
+	}
+
+	query := map[string]interface{}{
+		"query": queryClause,
+		"sort": []interface{}{
+			map[string]interface{}{"created_at": "asc"},
+			map[string]interface{}{"indexed_at": "asc"},
+		},
+		"size": size,
+	}
+
+	if afterCreatedAt != "" && afterIndexedAt != "" {
+		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt}
+	}
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return response, fmt.Errorf("failed to marshal query: %w", err)
+	}
+
+	logger.Debug("Executing like search query on index '%s': %s", index, string(queryJSON))
+
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
+	)
+	if err != nil {
+		return response, fmt.Errorf("like search request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close like search response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return response, fmt.Errorf("like search request returned error: %s", res.String())
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
+		return response, fmt.Errorf("failed to parse like search response: %w", err)
+	}
+
+	logger.Debug("Like search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
 
 	return response, nil
 }

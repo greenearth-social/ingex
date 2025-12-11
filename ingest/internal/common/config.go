@@ -42,7 +42,7 @@ type Config struct {
 	ParquetOutputPath  string
 	ParquetMaxRecords  int64
 	ExtractFetchSize   int
-	ExtractIndexName   string
+	ExtractIndices     string
 }
 
 // LoadConfig loads configuration from environment variables with defaults
@@ -69,7 +69,7 @@ func LoadConfig() *Config {
 		ParquetOutputPath:          getEnv("PARQUET_OUTPUT_PATH", "./output"),
 		ParquetMaxRecords:          int64(getEnvInt("PARQUET_MAX_RECORDS", 100000)),
 		ExtractFetchSize:           getEnvInt("EXTRACT_FETCH_SIZE", 1000),
-		ExtractIndexName:           getEnv("EXTRACT_INDEX_NAME", "posts"),
+		ExtractIndices:             getEnv("EXTRACT_INDICES", "posts"),
 	}
 }
 
