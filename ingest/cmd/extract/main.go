@@ -112,13 +112,20 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 	for _, indexName := range indices {
 		logger.Info("Starting export from index: %s", indexName)
 
-		indexType := getIndexType(indexName)
+		indexType := getIndexType(indexName, logger)
 
 		var exportErr error
-		if indexType == "likes" {
-			exportErr = runExportForLikes(ctx, esClient, logger, dryRun, outputPath, indexName, startTime, endTime, config)
-		} else {
+		switch indexType {
+		case IndexTypePosts:
 			exportErr = runExportForPosts(ctx, esClient, logger, dryRun, outputPath, indexName, startTime, endTime, config)
+		case IndexTypeLikes:
+			exportErr = runExportForLikes(ctx, esClient, logger, dryRun, outputPath, indexName, startTime, endTime, config)
+		case IndexTypeUnknown:
+			logger.Error("Skipping index %s: unknown index type", indexName)
+			continue
+		default:
+			logger.Error("Unhandled index type for index %s", indexName)
+			continue
 		}
 
 		if exportErr != nil {
@@ -179,7 +186,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 				fileNum++
 			} else {
 				lastPost := currentFileBatch[len(currentFileBatch)-1]
-				filename := generateFilename(indexName, lastPost.RecordCreatedAt)
+				filename := generateFilename(indexName, lastPost.RecordCreatedAt, logger)
 				logger.Info("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
 				fileNum++
 			}
@@ -198,7 +205,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 			}
 		} else {
 			lastPost := currentFileBatch[len(currentFileBatch)-1]
-			filename := generateFilename(indexName, lastPost.RecordCreatedAt)
+			filename := generateFilename(indexName, lastPost.RecordCreatedAt, logger)
 			logger.Info("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
 		}
 	}
@@ -254,7 +261,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 				fileNum++
 			} else {
 				lastLike := currentFileBatch[len(currentFileBatch)-1]
-				filename := generateFilename(indexName, lastLike.RecordCreatedAt)
+				filename := generateFilename(indexName, lastLike.RecordCreatedAt, logger)
 				logger.Info("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
 				fileNum++
 			}
@@ -273,7 +280,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 			}
 		} else {
 			lastLike := currentFileBatch[len(currentFileBatch)-1]
-			filename := generateFilename(indexName, lastLike.RecordCreatedAt)
+			filename := generateFilename(indexName, lastLike.RecordCreatedAt, logger)
 			logger.Info("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
 		}
 	}
@@ -282,7 +289,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 	return nil
 }
 
-func generateFilename(indexName, lastPostTimestamp string) string {
+func generateFilename(indexName, lastPostTimestamp string, logger *common.IngestLogger) string {
 	// Parse the timestamp to extract date/time
 	// Expected format: "2025-10-12T09:05:56.961Z" or similar RFC3339
 	t, err := time.Parse(time.RFC3339, lastPostTimestamp)
@@ -292,13 +299,31 @@ func generateFilename(indexName, lastPostTimestamp string) string {
 	}
 
 	// Format: bsky_posts_YYYYMMDD_HHMMSS.parquet or bsky_likes_YYYYMMDD_HHMMSS.parquet
-	indexType := "posts"
-	if strings.Contains(indexName, "like") {
-		indexType = "likes"
+	indexType := getIndexType(indexName, logger)
+
+	var typeStr string
+	switch indexType {
+	case IndexTypePosts:
+		typeStr = "posts"
+	case IndexTypeLikes:
+		typeStr = "likes"
+	case IndexTypeUnknown:
+		typeStr = "unknown"
+	default:
+		typeStr = "unknown"
 	}
 
-	return fmt.Sprintf("bsky_%s_%s.parquet", indexType, t.Format("20060102_150405"))
+	return fmt.Sprintf("bsky_%s_%s.parquet", typeStr, t.Format("20060102_150405"))
 }
+
+// IndexType represents the type of index being exported
+type IndexType string
+
+const (
+	IndexTypePosts IndexType = "posts"
+	IndexTypeLikes IndexType = "likes"
+	IndexTypeUnknown IndexType = ""
+)
 
 func parseIndices(indicesStr string) []string {
 	if indicesStr == "" {
@@ -318,11 +343,27 @@ func parseIndices(indicesStr string) []string {
 	return result
 }
 
-func getIndexType(indexName string) string {
-	if strings.Contains(strings.ToLower(indexName), "like") {
-		return "likes"
+// ParseIndexType attempts to parse an index name into an IndexType
+func ParseIndexType(indexName string) (IndexType, error) {
+	lowerName := strings.ToLower(indexName)
+
+	if strings.Contains(lowerName, "post") {
+		return IndexTypePosts, nil
 	}
-	return "posts"
+
+	if strings.Contains(lowerName, "like") {
+		return IndexTypeLikes, nil
+	}
+
+	return IndexTypeUnknown, fmt.Errorf("index name '%s' does not contain 'posts' or 'likes'", indexName)
+}
+
+func getIndexType(indexName string, logger *common.IngestLogger) IndexType {
+	indexType, err := ParseIndexType(indexName)
+	if err != nil {
+		logger.Error("Unable to determine index type: %v", err)
+	}
+	return indexType
 }
 
 func writePostsParquetFile(basePath string, indexName string, posts []common.ExtractPost, logger *common.IngestLogger) error {
@@ -332,7 +373,7 @@ func writePostsParquetFile(basePath string, indexName string, posts []common.Ext
 
 	// Use the last post's timestamp for the filename (posts are sorted by created_at)
 	lastPost := posts[len(posts)-1]
-	filename := generateFilename(indexName, lastPost.RecordCreatedAt)
+	filename := generateFilename(indexName, lastPost.RecordCreatedAt, logger)
 	fullPath := filepath.Join(basePath, filename)
 
 	logger.Info("Writing %d records to: %s", len(posts), fullPath)
@@ -351,7 +392,7 @@ func writeLikesParquetFile(basePath string, indexName string, likes []common.Ext
 	}
 
 	lastLike := likes[len(likes)-1]
-	filename := generateFilename(indexName, lastLike.RecordCreatedAt)
+	filename := generateFilename(indexName, lastLike.RecordCreatedAt, logger)
 	fullPath := filepath.Join(basePath, filename)
 
 	logger.Info("Writing %d like records to: %s", len(likes), fullPath)
