@@ -12,9 +12,9 @@ echo "Namespace: ${NAMESPACE}"
 echo ""
 
 # Get elastic superuser credentials (required for creating API keys)
-ES_USERNAME=$(kubectl get secret greenearth-es-elastic-user -n "${NAMESPACE}" -o jsonpath='{.data.elastic}' | base64 -d)
+ES_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n "${NAMESPACE}" -o jsonpath='{.data.elastic}' | base64 -d)
 
-if [ -z "$ES_USERNAME" ]; then
+if [ -z "$ES_PASSWORD" ]; then
   echo "Error: Could not retrieve elastic superuser password from secret"
   exit 1
 fi
@@ -23,7 +23,7 @@ echo "Creating API key with permissions for ingest services..."
 
 # Create API key with full permissions for all indices
 API_KEY_RESPONSE=$(kubectl exec -n "${NAMESPACE}" greenearth-es-data-only-0 -- curl -k -s -X POST \
-  -u "elastic:${ES_USERNAME}" \
+  -u "elastic:${ES_PASSWORD}" \
   "https://localhost:9200/_security/api_key" \
   -H "Content-Type: application/json" \
   -d '{
