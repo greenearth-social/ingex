@@ -25,8 +25,8 @@ type ElasticsearchDoc struct {
 	IndexedAt        string               `json:"indexed_at"`
 }
 
-// TombstoneDoc represents the document structure for post deletion tombstones
-type TombstoneDoc struct {
+// PostTombstoneDoc represents the document structure for post deletion tombstones
+type PostTombstoneDoc struct {
 	AtURI     string `json:"at_uri"`
 	AuthorDID string `json:"author_did"`
 	DeletedAt string `json:"deleted_at"`
@@ -39,6 +39,21 @@ type LikeDoc struct {
 	SubjectURI string `json:"subject_uri"`
 	AuthorDID  string `json:"author_did"`
 	CreatedAt  string `json:"created_at"`
+	IndexedAt  string `json:"indexed_at"`
+}
+
+// LikeIdentifier holds the at_uri and author_did pair for looking up likes
+type LikeIdentifier struct {
+	AtURI     string
+	AuthorDID string
+}
+
+// LikeTombstoneDoc represents the document structure for like deletion tombstones
+type LikeTombstoneDoc struct {
+	AtURI      string `json:"at_uri"`
+	AuthorDID  string `json:"author_did"`
+	SubjectURI string `json:"subject_uri"`
+	DeletedAt  string `json:"deleted_at"`
 	IndexedAt  string `json:"indexed_at"`
 }
 
@@ -180,8 +195,8 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 	return nil
 }
 
-// BulkIndexTombstones indexes a batch of tombstone documents to Elasticsearch
-func BulkIndexTombstones(ctx context.Context, client *elasticsearch.Client, index string, docs []TombstoneDoc, dryRun bool, logger *IngestLogger) error {
+// BulkIndexPostTombstones indexes a batch of post tombstone documents to Elasticsearch
+func BulkIndexPostTombstones(ctx context.Context, client *elasticsearch.Client, index string, docs []PostTombstoneDoc, dryRun bool, logger *IngestLogger) error {
 	if len(docs) == 0 {
 		return nil
 	}
@@ -384,8 +399,8 @@ func CreateElasticsearchDoc(msg MegaStreamMessage) ElasticsearchDoc {
 	}
 }
 
-// CreateTombstoneDoc creates a TombstoneDoc from a MegaStreamMessage
-func CreateTombstoneDoc(msg MegaStreamMessage) TombstoneDoc {
+// CreatePostTombstoneDoc creates a PostTombstoneDoc from a MegaStreamMessage
+func CreatePostTombstoneDoc(msg MegaStreamMessage) PostTombstoneDoc {
 	now := time.Now().UTC()
 	deletedAt := now
 
@@ -393,7 +408,7 @@ func CreateTombstoneDoc(msg MegaStreamMessage) TombstoneDoc {
 		deletedAt = time.Unix(0, timeUs*1000)
 	}
 
-	return TombstoneDoc{
+	return PostTombstoneDoc{
 		AtURI:     msg.GetAtURI(),
 		AuthorDID: msg.GetAuthorDID(),
 		DeletedAt: deletedAt.Format(time.RFC3339),
@@ -409,6 +424,24 @@ func CreateLikeDoc(msg JetstreamMessage) LikeDoc {
 		AuthorDID:  msg.GetAuthorDID(),
 		CreatedAt:  msg.GetCreatedAt(),
 		IndexedAt:  time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+// CreateLikeTombstoneDoc creates a LikeTombstoneDoc from a JetstreamMessage and subject URI
+func CreateLikeTombstoneDoc(msg JetstreamMessage, subjectURI string) LikeTombstoneDoc {
+	now := time.Now().UTC()
+	deletedAt := now
+
+	if timeUs := msg.GetTimeUs(); timeUs > 0 {
+		deletedAt = time.Unix(0, timeUs*1000)
+	}
+
+	return LikeTombstoneDoc{
+		AtURI:      msg.GetAtURI(),
+		AuthorDID:  msg.GetAuthorDID(),
+		SubjectURI: subjectURI,
+		DeletedAt:  deletedAt.Format(time.RFC3339),
+		IndexedAt:  now.Format(time.RFC3339),
 	}
 }
 
@@ -499,6 +532,183 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
 		logger.Error("Bulk like indexing failed with errors. Response items: %s", string(itemsJSON))
 		return fmt.Errorf("bulk like indexing failed: some documents had errors (see logs for details)")
+	}
+
+	return nil
+}
+
+// BulkGetLikes fetches multiple like documents from Elasticsearch by at_uri with routing
+func BulkGetLikes(ctx context.Context, client *elasticsearch.Client, index string, likeIDs []LikeIdentifier, logger *IngestLogger) (map[string]LikeDoc, error) {
+	if len(likeIDs) == 0 {
+		return make(map[string]LikeDoc), nil
+	}
+
+	// Build mget request with proper docs array structure
+	docs := make([]map[string]interface{}, 0, len(likeIDs))
+	for _, id := range likeIDs {
+		if id.AtURI == "" {
+			continue
+		}
+
+		doc := map[string]interface{}{
+			"_index": index,
+			"_id":    id.AtURI,
+		}
+
+		// Add routing if author_did is provided
+		if id.AuthorDID != "" {
+			doc["routing"] = id.AuthorDID
+		}
+
+		docs = append(docs, doc)
+	}
+
+	// Wrap docs in the required structure
+	requestBody := map[string]interface{}{
+		"docs": docs,
+	}
+
+	bodyJSON, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal mget request: %w", err)
+	}
+
+	// Execute mget request
+	res, err := client.Mget(
+		bytes.NewReader(bodyJSON),
+		client.Mget.WithContext(ctx),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("mget request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close mget response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return nil, fmt.Errorf("mget request returned error: %s", res.String())
+	}
+
+	// Parse response
+	var mgetResponse struct {
+		Docs []struct {
+			ID     string  `json:"_id"`
+			Found  bool    `json:"found"`
+			Source LikeDoc `json:"_source"`
+		} `json:"docs"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&mgetResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse mget response: %w", err)
+	}
+
+	// Build result map
+	result := make(map[string]LikeDoc)
+	for _, doc := range mgetResponse.Docs {
+		if doc.Found {
+			result[doc.ID] = doc.Source
+		} else {
+			logger.Error("Like document not found for deletion: at_uri=%s", doc.ID)
+		}
+	}
+
+	return result, nil
+}
+
+// BulkIndexLikeTombstones indexes a batch of like tombstone documents to Elasticsearch
+func BulkIndexLikeTombstones(ctx context.Context, client *elasticsearch.Client, index string, docs []LikeTombstoneDoc, dryRun bool, logger *IngestLogger) error {
+	if len(docs) == 0 {
+		return nil
+	}
+
+	if dryRun {
+		logger.Debug("Dry-run: Skipping bulk index of %d like tombstones to index '%s'", len(docs), index)
+		return nil
+	}
+
+	var buf bytes.Buffer
+	validDocCount := 0
+
+	for _, doc := range docs {
+		if doc.AtURI == "" {
+			logger.Error("Skipping like tombstone with empty at_uri (author_did: %s)", doc.AuthorDID)
+			continue
+		}
+
+		if doc.SubjectURI == "" {
+			logger.Error("Skipping like tombstone with empty subject_uri (at_uri: %s)", doc.AtURI)
+			continue
+		}
+
+		meta := map[string]interface{}{
+			"index": map[string]interface{}{
+				"_index":  index,
+				"_id":     doc.AtURI,
+				"routing": doc.AuthorDID,
+			},
+		}
+
+		validDocCount++
+
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			return fmt.Errorf("failed to marshal metadata: %w", err)
+		}
+
+		buf.Write(metaJSON)
+		buf.WriteByte('\n')
+
+		docJSON, err := json.Marshal(doc)
+		if err != nil {
+			return fmt.Errorf("failed to marshal like tombstone document: %w", err)
+		}
+
+		buf.Write(docJSON)
+		buf.WriteByte('\n')
+	}
+
+	if validDocCount == 0 {
+		logger.Error("No valid like tombstones to index (all had empty at_uri or subject_uri)")
+		return fmt.Errorf("no valid like tombstones in batch")
+	}
+
+	res, err := client.Bulk(
+		bytes.NewReader(buf.Bytes()),
+		client.Bulk.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("bulk like tombstone request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return fmt.Errorf("bulk like tombstone request returned error: %s", res.String())
+	}
+
+	var bulkResponse struct {
+		Errors bool `json:"errors"`
+		Items  []map[string]struct {
+			Error *struct {
+				Type   string `json:"type"`
+				Reason string `json:"reason"`
+			} `json:"error"`
+		} `json:"items"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
+		return fmt.Errorf("failed to parse bulk like tombstone response: %w", err)
+	}
+
+	if bulkResponse.Errors {
+		itemsJSON, _ := json.Marshal(bulkResponse.Items)
+		logger.Error("Bulk like tombstone indexing failed with errors. Response items: %s", string(itemsJSON))
+		return fmt.Errorf("bulk like tombstone indexing failed: some documents had errors (see logs for details)")
 	}
 
 	return nil

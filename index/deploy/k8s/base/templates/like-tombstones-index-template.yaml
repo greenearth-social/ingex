@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: like-tombstones-index-template
+data:
+  like-tombstones-index-template.json: |
+    {
+      "index_patterns": ["like_tombstones_v1*"],
+      "template": {
+        "settings": {
+          "number_of_shards": $(INDEX_SHARDS),
+          "number_of_replicas": $(INDEX_REPLICAS)
+        },
+        "mappings": {
+          "_routing": {
+            "required": true
+          },
+          "properties": {
+            "at_uri": {
+              "type": "keyword",
+              "index": true
+            },
+            "author_did": {
+              "type": "keyword",
+              "index": true
+            },
+            "subject_uri": {
+              "type": "keyword",
+              "index": true
+            },
+            "deleted_at": {
+              "type": "date",
+              "format": "iso8601"
+            },
+            "indexed_at": {
+              "type": "date",
+              "format": "iso8601"
+            }
+          }
+        }
+      }
+    }
