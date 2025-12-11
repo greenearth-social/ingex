@@ -1,33 +1,28 @@
 package common
 
 // ExtractPost represents the Post document structure for Parquet serialization
-// Identical to ElasticsearchDoc but adds EsID field from Hit metadata
+// Field names match the expected parquet output format
 type ExtractPost struct {
-	EsID             string               `json:"es_id"`
-	AtURI            string               `json:"at_uri"`
-	AuthorDID        string               `json:"author_did"`
-	Content          string               `json:"content"`
-	CreatedAt        string               `json:"created_at"`
-	ThreadRootPost   string               `json:"thread_root_post,omitempty"`
-	ThreadParentPost string               `json:"thread_parent_post,omitempty"`
-	QuotePost        string               `json:"quote_post,omitempty"`
-	Embeddings       map[string][]float32 `json:"embeddings,omitempty"`
-	IndexedAt        string               `json:"indexed_at"`
+	DID             string `json:"did"`
+	EmbedQuoteURI   string `json:"embed_quote_uri,omitempty"`
+	InsertedAt      string `json:"inserted_at"`
+	RecordCreatedAt string `json:"record_created_at"`
+	RecordText      string `json:"record_text"`
+	ReplyParentURI  string `json:"reply_parent_uri,omitempty"`
+	ReplyRootURI    string `json:"reply_root_uri,omitempty"`
+	// TODO: Add embeddings as encoded values in the future
 }
 
 // HitToExtractPost converts an Elasticsearch Hit to an ExtractPost
 func HitToExtractPost(hit Hit) ExtractPost {
 	return ExtractPost{
-		EsID:             hit.ID,
-		AtURI:            hit.Source.AtURI,
-		AuthorDID:        hit.Source.AuthorDID,
-		Content:          hit.Source.Content,
-		CreatedAt:        hit.Source.CreatedAt,
-		ThreadRootPost:   hit.Source.ThreadRootPost,
-		ThreadParentPost: hit.Source.ThreadParentPost,
-		QuotePost:        hit.Source.QuotePost,
-		Embeddings:       hit.Source.Embeddings,
-		IndexedAt:        hit.Source.IndexedAt,
+		DID:             hit.Source.AuthorDID,
+		EmbedQuoteURI:   hit.Source.QuotePost,
+		InsertedAt:      hit.Source.IndexedAt,
+		RecordCreatedAt: hit.Source.CreatedAt,
+		RecordText:      hit.Source.Content,
+		ReplyParentURI:  hit.Source.ThreadParentPost,
+		ReplyRootURI:    hit.Source.ThreadRootPost,
 	}
 }
 

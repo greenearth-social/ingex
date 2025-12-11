@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/greenearth/ingest/internal/common"
 	"github.com/parquet-go/parquet-go"
@@ -83,7 +85,7 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 	}
 
 	if maxRecordsPerFile <= 0 {
-		maxRecordsPerFile = config.ParquetMaxFileSize
+		maxRecordsPerFile = config.ParquetMaxRecords
 	}
 
 	var fileNum int = 1
@@ -95,7 +97,7 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 		select {
 		case <-ctx.Done():
 			if len(currentFileBatch) > 0 && !dryRun {
-				if err := writeParquetFile(outputPath, fileNum, currentFileBatch, logger); err != nil {
+				if err := writeParquetFile(outputPath, indexName, currentFileBatch, logger); err != nil {
 					logger.Error("Failed to write final parquet file: %v", err)
 				}
 			}
@@ -121,12 +123,14 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 
 		if maxRecordsPerFile > 0 && int64(len(currentFileBatch)) >= maxRecordsPerFile {
 			if !dryRun {
-				if err := writeParquetFile(outputPath, fileNum, currentFileBatch, logger); err != nil {
-					return fmt.Errorf("failed to write parquet file %d: %w", fileNum, err)
+				if err := writeParquetFile(outputPath, indexName, currentFileBatch, logger); err != nil {
+					return fmt.Errorf("failed to write parquet file: %w", err)
 				}
 				fileNum++
 			} else {
-				logger.Info("Dry-run: Would write file %d with %d records", fileNum, len(currentFileBatch))
+				lastPost := currentFileBatch[len(currentFileBatch)-1]
+				filename := generateFilename(indexName, lastPost.RecordCreatedAt)
+				logger.Info("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
 				fileNum++
 			}
 			currentFileBatch = currentFileBatch[:0]
@@ -139,11 +143,13 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 
 	if len(currentFileBatch) > 0 {
 		if !dryRun {
-			if err := writeParquetFile(outputPath, fileNum, currentFileBatch, logger); err != nil {
+			if err := writeParquetFile(outputPath, indexName, currentFileBatch, logger); err != nil {
 				return fmt.Errorf("failed to write final parquet file: %w", err)
 			}
 		} else {
-			logger.Info("Dry-run: Would write final file %d with %d records", fileNum, len(currentFileBatch))
+			lastPost := currentFileBatch[len(currentFileBatch)-1]
+			filename := generateFilename(indexName, lastPost.RecordCreatedAt)
+			logger.Info("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
 		}
 	}
 
@@ -151,14 +157,40 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 	return nil
 }
 
-func writeParquetFile(basePath string, fileNum int, posts []common.ExtractPost, logger *common.IngestLogger) error {
-	filename := filepath.Join(basePath, fmt.Sprintf("posts_export_%d.parquet", fileNum))
-	logger.Info("Writing %d records to: %s", len(posts), filename)
+func generateFilename(indexName, lastPostTimestamp string) string {
+	// Parse the timestamp to extract date/time
+	// Expected format: "2025-10-12T09:05:56.961Z" or similar RFC3339
+	t, err := time.Parse(time.RFC3339, lastPostTimestamp)
+	if err != nil {
+		// Fallback to current time if parsing fails
+		t = time.Now().UTC()
+	}
 
-	if err := parquet.WriteFile(filename, posts); err != nil {
+	// Format: bsky_posts_YYYYMMDD_HHMMSS.parquet or bsky_likes_YYYYMMDD_HHMMSS.parquet
+	indexType := "posts"
+	if strings.Contains(indexName, "like") {
+		indexType = "likes"
+	}
+
+	return fmt.Sprintf("bsky_%s_%s.parquet", indexType, t.Format("20060102_150405"))
+}
+
+func writeParquetFile(basePath string, indexName string, posts []common.ExtractPost, logger *common.IngestLogger) error {
+	if len(posts) == 0 {
+		return fmt.Errorf("no posts to write")
+	}
+
+	// Use the last post's timestamp for the filename (posts are sorted by created_at)
+	lastPost := posts[len(posts)-1]
+	filename := generateFilename(indexName, lastPost.RecordCreatedAt)
+	fullPath := filepath.Join(basePath, filename)
+
+	logger.Info("Writing %d records to: %s", len(posts), fullPath)
+
+	if err := parquet.WriteFile(fullPath, posts); err != nil {
 		return fmt.Errorf("failed to write parquet file: %w", err)
 	}
 
-	logger.Info("Successfully wrote %d records to %s", len(posts), filename)
+	logger.Info("Successfully wrote %d records to %s", len(posts), fullPath)
 	return nil
 }

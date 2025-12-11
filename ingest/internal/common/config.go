@@ -40,7 +40,7 @@ type Config struct {
 
 	// Extract/Export configuration
 	ParquetOutputPath  string
-	ParquetMaxFileSize int64
+	ParquetMaxRecords  int64
 	ExtractFetchSize   int
 	ExtractIndexName   string
 }
@@ -67,7 +67,7 @@ func LoadConfig() *Config {
 		AWSS3SecretKey:             getEnv("AWS_S3_SECRET_KEY", ""),
 		LoggingEnabled:             getEnvBool("LOGGING_ENABLED", true),
 		ParquetOutputPath:          getEnv("PARQUET_OUTPUT_PATH", "./output"),
-		ParquetMaxFileSize:         int64(getEnvInt("PARQUET_MAX_FILE_SIZE", 100000)),
+		ParquetMaxRecords:          int64(getEnvInt("PARQUET_MAX_RECORDS", 100000)),
 		ExtractFetchSize:           getEnvInt("EXTRACT_FETCH_SIZE", 1000),
 		ExtractIndexName:           getEnv("EXTRACT_INDEX_NAME", "posts"),
 	}

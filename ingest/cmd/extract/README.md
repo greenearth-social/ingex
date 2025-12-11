@@ -14,7 +14,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `--skip-tls-verify`: Skip TLS verification (local development only, default: false)
 - `--output-path PATH`: Override output directory (default: from PARQUET_OUTPUT_PATH)
 - `--index NAME`: Elasticsearch index to export (default: "posts")
-- `--max-records N`: Max records per file, 0 for unlimited (default: from PARQUET_MAX_FILE_SIZE or 100000)
+- `--max-records N`: Max records per file, 0 for unlimited (default: from PARQUET_MAX_RECORDS or 100000)
 - `--fetch-size N`: Batch size for ES queries (default: 1000)
 
 ## Environment Variables
@@ -23,7 +23,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `ELASTICSEARCH_API_KEY`: ES API key (optional, recommended for production)
 - `ELASTICSEARCH_TLS_SKIP_VERIFY`: Skip TLS verification (default: false)
 - `PARQUET_OUTPUT_PATH`: Default output directory (default: "./output")
-- `PARQUET_MAX_FILE_SIZE`: Default max records per file (default: 100000)
+- `PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
 - `EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
 - `EXTRACT_INDEX_NAME`: Default index name (default: "posts")
 - `LOGGING_ENABLED`: Enable logging (default: true)
@@ -64,26 +64,26 @@ export ELASTICSEARCH_API_KEY="your-api-key"
 
 ## Output Format
 
-The command exports data to Parquet files with the following naming convention:
-- `posts_export_1.parquet`
-- `posts_export_2.parquet`
+The command exports data to Parquet files with timestamp-based naming:
+- `bsky_posts_20251012_090556.parquet`
+- `bsky_posts_20251012_120823.parquet`
+- `bsky_likes_20251012_150430.parquet` (for likes index)
 - etc.
+
+The timestamp in the filename reflects the `record_created_at` of the most recent post in the file (posts are sorted chronologically).
 
 Each file contains up to `max-records` posts (or all remaining posts if `max-records` is 0).
 
 ### Parquet Schema
 
 Each record in the Parquet file contains:
-- `es_id`: Elasticsearch document ID
-- `at_uri`: Post AT-URI
-- `author_did`: Author DID
-- `content`: Post content/text
-- `created_at`: Post creation timestamp
-- `thread_root_post`: Root post URI (if in thread)
-- `thread_parent_post`: Parent post URI (if in thread)
-- `quote_post`: Quoted post URI (if quote post)
-- `embeddings`: Embedding vectors (map of string to float32 array)
-- `indexed_at`: Timestamp when indexed in Elasticsearch
+- `did`: Author DID (BlueSky user identifier)
+- `embed_quote_uri`: Quoted post URI (if quote post)
+- `inserted_at`: Timestamp when indexed in Elasticsearch
+- `record_created_at`: Post creation timestamp
+- `record_text`: Post content/text
+- `reply_parent_uri`: Parent post URI (if in thread)
+- `reply_root_uri`: Root post URI (if in thread)
 
 ## Features
 
