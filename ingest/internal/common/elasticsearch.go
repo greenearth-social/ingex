@@ -770,19 +770,39 @@ type PostData struct {
 //   - client: Elasticsearch client
 //   - logger: Logger for debug/error messages
 //   - index: Index name to query
+//   - startTime, endTime: optional time range filter on created_at field (RFC3339 format)
 //   - afterCreatedAt, afterIndexedAt: pagination cursors (both required if either provided)
 //   - size: number of results to fetch (defaults to 1000 if 0)
-func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, afterCreatedAt string, afterIndexedAt string, size int) (SearchResponse, error) {
+func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, size int) (SearchResponse, error) {
 	var response SearchResponse
 
 	if size <= 0 {
 		size = 1000
 	}
 
-	query := map[string]interface{}{
-		"query": map[string]interface{}{
+	// Build query based on whether time range is specified
+	var queryClause map[string]interface{}
+	if startTime != "" || endTime != "" {
+		rangeQuery := map[string]interface{}{}
+		if startTime != "" {
+			rangeQuery["gte"] = startTime
+		}
+		if endTime != "" {
+			rangeQuery["lte"] = endTime
+		}
+		queryClause = map[string]interface{}{
+			"range": map[string]interface{}{
+				"created_at": rangeQuery,
+			},
+		}
+	} else {
+		queryClause = map[string]interface{}{
 			"match_all": map[string]interface{}{},
-		},
+		}
+	}
+
+	query := map[string]interface{}{
+		"query": queryClause,
 		"sort": []interface{}{
 			map[string]interface{}{"created_at": "asc"},
 			map[string]interface{}{"indexed_at": "asc"},

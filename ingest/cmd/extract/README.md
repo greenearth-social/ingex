@@ -14,8 +14,8 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `--skip-tls-verify`: Skip TLS verification (local development only, default: false)
 - `--output-path PATH`: Override output directory (default: from PARQUET_OUTPUT_PATH)
 - `--index NAME`: Elasticsearch index to export (default: "posts")
-- `--max-records N`: Max records per file, 0 for unlimited (default: from PARQUET_MAX_RECORDS or 100000)
-- `--fetch-size N`: Batch size for ES queries (default: 1000)
+- `--start-time TIME`: Start time for export window in RFC3339 format (e.g., 2025-01-01T00:00:00Z)
+- `--end-time TIME`: End time for export window in RFC3339 format (e.g., 2025-12-31T23:59:59Z)
 
 ## Environment Variables
 
@@ -38,10 +38,10 @@ export ELASTICSEARCH_API_KEY="your-api-key"
 ./extract --output-path ./exports
 ```
 
-### Export with file size limit
+### Export with time window
 
 ```bash
-./extract --max-records 100000 --fetch-size 5000
+./extract --start-time "2025-01-01T00:00:00Z" --end-time "2025-01-31T23:59:59Z"
 ```
 
 ### Dry-run to preview
@@ -56,10 +56,22 @@ export ELASTICSEARCH_API_KEY="your-api-key"
 ./extract --skip-tls-verify --output-path ./test_output
 ```
 
-### Export from different index
+### Export from different index with time range
 
 ```bash
-./extract --index posts_v2 --output-path ./v2_exports
+./extract --index posts_v2 --output-path ./v2_exports --start-time "2025-10-01T00:00:00Z"
+```
+
+### Export only posts after a specific date
+
+```bash
+./extract --start-time "2025-12-01T00:00:00Z"
+```
+
+### Export only posts before a specific date
+
+```bash
+./extract --end-time "2025-11-30T23:59:59Z"
 ```
 
 ## Output Format

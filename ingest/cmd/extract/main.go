@@ -20,8 +20,8 @@ func main() {
 	skipTLSVerify := flag.Bool("skip-tls-verify", false, "Skip TLS certificate verification (use for local development only)")
 	outputPath := flag.String("output-path", "", "Override PARQUET_OUTPUT_PATH env var")
 	indexName := flag.String("index", "posts", "Elasticsearch index to export")
-	maxRecords := flag.Int64("max-records", 0, "Maximum records per file (0=unlimited)")
-	fetchSize := flag.Int("fetch-size", 1000, "Batch size for ES queries")
+	startTime := flag.String("start-time", "", "Start time for export window (RFC3339 format, e.g., 2025-01-01T00:00:00Z)")
+	endTime := flag.String("end-time", "", "End time for export window (RFC3339 format, e.g., 2025-12-31T23:59:59Z)")
 	flag.Parse()
 
 	config := common.LoadConfig()
@@ -30,6 +30,26 @@ func main() {
 	logger.Info("Green Earth Ingex - Elasticsearch Export Service")
 	if *dryRun {
 		logger.Info("Running in DRY-RUN mode - no files will be written")
+	}
+
+	// Validate time window if provided
+	if *startTime != "" {
+		if _, err := time.Parse(time.RFC3339, *startTime); err != nil {
+			logger.Error("Invalid start-time format: %v (expected RFC3339, e.g., 2025-01-01T00:00:00Z)", err)
+			os.Exit(1)
+		}
+	}
+	if *endTime != "" {
+		if _, err := time.Parse(time.RFC3339, *endTime); err != nil {
+			logger.Error("Invalid end-time format: %v (expected RFC3339, e.g., 2025-12-31T23:59:59Z)", err)
+			os.Exit(1)
+		}
+	}
+
+	if *startTime != "" || *endTime != "" {
+		logger.Info("Time window filter: %s to %s",
+			func() string { if *startTime != "" { return *startTime }; return "beginning" }(),
+			func() string { if *endTime != "" { return *endTime }; return "end" }())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -44,7 +64,7 @@ func main() {
 	}()
 
 	logger.Info("Starting export from index: %s", *indexName)
-	if err := runExport(ctx, config, logger, *dryRun, *skipTLSVerify, *outputPath, *indexName, *maxRecords, *fetchSize); err != nil {
+	if err := runExport(ctx, config, logger, *dryRun, *skipTLSVerify, *outputPath, *indexName, *startTime, *endTime); err != nil {
 		logger.Error("Export failed: %v", err)
 		os.Exit(1)
 	}
@@ -53,8 +73,7 @@ func main() {
 }
 
 func runExport(ctx context.Context, config *common.Config, logger *common.IngestLogger,
-	dryRun, skipTLSVerify bool, outputPath, indexName string,
-	maxRecordsPerFile int64, fetchSize int) error {
+	dryRun, skipTLSVerify bool, outputPath, indexName, startTime, endTime string) error {
 
 	if config.ElasticsearchURL == "" {
 		return fmt.Errorf("ELASTICSEARCH_URL environment variable is required")
@@ -84,9 +103,8 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 		return fmt.Errorf("failed to create ES client: %w", err)
 	}
 
-	if maxRecordsPerFile <= 0 {
-		maxRecordsPerFile = config.ParquetMaxRecords
-	}
+	maxRecordsPerFile := config.ParquetMaxRecords
+	fetchSize := config.ExtractFetchSize
 
 	var fileNum int = 1
 	var totalRecords int64 = 0
@@ -105,7 +123,7 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 		default:
 		}
 
-		response, err := common.FetchPosts(ctx, esClient, logger, indexName, afterCreatedAt, afterIndexedAt, fetchSize)
+		response, err := common.FetchPosts(ctx, esClient, logger, indexName, startTime, endTime, afterCreatedAt, afterIndexedAt, fetchSize)
 		if err != nil {
 			return fmt.Errorf("failed to fetch posts: %w", err)
 		}
