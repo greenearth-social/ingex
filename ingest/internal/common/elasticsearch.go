@@ -713,3 +713,274 @@ func BulkIndexLikeTombstones(ctx context.Context, client *elasticsearch.Client, 
 
 	return nil
 }
+
+// QueryPostsByAuthorDID retrieves all post at_uris for a given author_did using scroll API
+func QueryPostsByAuthorDID(ctx context.Context, client *elasticsearch.Client, index string, authorDID string, logger *IngestLogger) ([]string, error) {
+	// Build search query
+	query := map[string]interface{}{
+		"query": map[string]interface{}{
+			"term": map[string]interface{}{
+				"author_did": authorDID,
+			},
+		},
+		"_source": []string{"at_uri"},
+		"size":    1000,
+	}
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query: %w", err)
+	}
+
+	// Initial scroll request with routing
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
+		client.Search.WithScroll(time.Minute*5),
+		client.Search.WithRouting(authorDID),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initial scroll search failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return nil, fmt.Errorf("scroll search returned error: %s", res.String())
+	}
+
+	var searchResponse struct {
+		ScrollID string `json:"_scroll_id"`
+		Hits     struct {
+			Hits []struct {
+				Source struct {
+					AtURI string `json:"at_uri"`
+				} `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&searchResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse search response: %w", err)
+	}
+
+	// Collect all at_uris
+	var atURIs []string
+	for _, hit := range searchResponse.Hits.Hits {
+		if hit.Source.AtURI != "" {
+			atURIs = append(atURIs, hit.Source.AtURI)
+		}
+	}
+
+	scrollID := searchResponse.ScrollID
+	count := len(atURIs)
+
+	// Continue scrolling until no more results
+	for {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		// Get next batch
+		scrollRes, err := client.Scroll(
+			client.Scroll.WithContext(ctx),
+			client.Scroll.WithScrollID(scrollID),
+			client.Scroll.WithScroll(time.Minute*5),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scroll request failed: %w", err)
+		}
+
+		if scrollRes.IsError() {
+			_ = scrollRes.Body.Close()
+			return nil, fmt.Errorf("scroll request returned error: %s", scrollRes.String())
+		}
+
+		var scrollResponse struct {
+			ScrollID string `json:"_scroll_id"`
+			Hits     struct {
+				Hits []struct {
+					Source struct {
+						AtURI string `json:"at_uri"`
+					} `json:"_source"`
+				} `json:"hits"`
+			} `json:"hits"`
+		}
+
+		if err := json.NewDecoder(scrollRes.Body).Decode(&scrollResponse); err != nil {
+			_ = scrollRes.Body.Close()
+			return nil, fmt.Errorf("failed to parse scroll response: %w", err)
+		}
+		_ = scrollRes.Body.Close()
+
+		// No more results
+		if len(scrollResponse.Hits.Hits) == 0 {
+			break
+		}
+
+		// Collect at_uris from this batch
+		for _, hit := range scrollResponse.Hits.Hits {
+			if hit.Source.AtURI != "" {
+				atURIs = append(atURIs, hit.Source.AtURI)
+			}
+		}
+
+		scrollID = scrollResponse.ScrollID
+		count += len(scrollResponse.Hits.Hits)
+
+		// Log progress every 1000 documents
+		if count%1000 == 0 {
+			logger.Info("QueryPostsByAuthorDID progress: %d posts found for DID %s", count, authorDID)
+		}
+	}
+
+	// Clear scroll context
+	_, _ = client.ClearScroll(client.ClearScroll.WithScrollID(scrollID))
+
+	logger.Info("QueryPostsByAuthorDID complete: found %d posts for DID %s", len(atURIs), authorDID)
+	return atURIs, nil
+}
+
+// QueryLikesByAuthorDID retrieves all likes for a given author_did using scroll API
+// Returns map of at_uri -> subject_uri (subject_uri needed for tombstone creation)
+func QueryLikesByAuthorDID(ctx context.Context, client *elasticsearch.Client, index string, authorDID string, logger *IngestLogger) (map[string]string, error) {
+	// Build search query
+	query := map[string]interface{}{
+		"query": map[string]interface{}{
+			"term": map[string]interface{}{
+				"author_did": authorDID,
+			},
+		},
+		"_source": []string{"at_uri", "subject_uri"},
+		"size":    1000,
+	}
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query: %w", err)
+	}
+
+	// Initial scroll request with routing
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
+		client.Search.WithScroll(time.Minute*5),
+		client.Search.WithRouting(authorDID),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initial scroll search failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return nil, fmt.Errorf("scroll search returned error: %s", res.String())
+	}
+
+	var searchResponse struct {
+		ScrollID string `json:"_scroll_id"`
+		Hits     struct {
+			Hits []struct {
+				Source struct {
+					AtURI      string `json:"at_uri"`
+					SubjectURI string `json:"subject_uri"`
+				} `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&searchResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse search response: %w", err)
+	}
+
+	// Collect all likes
+	likes := make(map[string]string)
+	for _, hit := range searchResponse.Hits.Hits {
+		if hit.Source.AtURI != "" && hit.Source.SubjectURI != "" {
+			likes[hit.Source.AtURI] = hit.Source.SubjectURI
+		}
+	}
+
+	scrollID := searchResponse.ScrollID
+	count := len(likes)
+
+	// Continue scrolling until no more results
+	for {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		// Get next batch
+		scrollRes, err := client.Scroll(
+			client.Scroll.WithContext(ctx),
+			client.Scroll.WithScrollID(scrollID),
+			client.Scroll.WithScroll(time.Minute*5),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scroll request failed: %w", err)
+		}
+
+		if scrollRes.IsError() {
+			_ = scrollRes.Body.Close()
+			return nil, fmt.Errorf("scroll request returned error: %s", scrollRes.String())
+		}
+
+		var scrollResponse struct {
+			ScrollID string `json:"_scroll_id"`
+			Hits     struct {
+				Hits []struct {
+					Source struct {
+						AtURI      string `json:"at_uri"`
+						SubjectURI string `json:"subject_uri"`
+					} `json:"_source"`
+				} `json:"hits"`
+			} `json:"hits"`
+		}
+
+		if err := json.NewDecoder(scrollRes.Body).Decode(&scrollResponse); err != nil {
+			_ = scrollRes.Body.Close()
+			return nil, fmt.Errorf("failed to parse scroll response: %w", err)
+		}
+		_ = scrollRes.Body.Close()
+
+		// No more results
+		if len(scrollResponse.Hits.Hits) == 0 {
+			break
+		}
+
+		// Collect likes from this batch
+		for _, hit := range scrollResponse.Hits.Hits {
+			if hit.Source.AtURI != "" && hit.Source.SubjectURI != "" {
+				likes[hit.Source.AtURI] = hit.Source.SubjectURI
+			}
+		}
+
+		scrollID = scrollResponse.ScrollID
+		count += len(scrollResponse.Hits.Hits)
+
+		// Log progress every 1000 documents
+		if count%1000 == 0 {
+			logger.Info("QueryLikesByAuthorDID progress: %d likes found for DID %s", count, authorDID)
+		}
+	}
+
+	// Clear scroll context
+	_, _ = client.ClearScroll(client.ClearScroll.WithScrollID(scrollID))
+
+	logger.Info("QueryLikesByAuthorDID complete: found %d likes for DID %s", len(likes), authorDID)
+	return likes, nil
+}
