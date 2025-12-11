@@ -4,7 +4,7 @@ go 1.25.1
 
 require (
 	cloud.google.com/go/storage v1.57.2
-	github.com/aws/aws-sdk-go-v2 v1.40.1
+	github.com/aws/aws-sdk-go-v2 v1.41.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.2
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.93.0
 	github.com/elastic/go-elasticsearch/v9 v9.2.0
