@@ -87,7 +87,7 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 	}
 
 	if !dryRun {
-		if err := os.MkdirAll(outputPath, 0755); err != nil {
+		if err := os.MkdirAll(outputPath, 0750); err != nil {
 			return fmt.Errorf("failed to create output directory: %w", err)
 		}
 	}
@@ -106,7 +106,7 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 	maxRecordsPerFile := config.ParquetMaxRecords
 	fetchSize := config.ExtractFetchSize
 
-	var fileNum int = 1
+	var fileNum = 1
 	var totalRecords int64 = 0
 	var afterCreatedAt, afterIndexedAt string
 	var currentFileBatch []common.ExtractPost
