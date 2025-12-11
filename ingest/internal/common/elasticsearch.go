@@ -713,3 +713,137 @@ func BulkIndexLikeTombstones(ctx context.Context, client *elasticsearch.Client, 
 
 	return nil
 }
+
+// SearchResponse represents the response from an Elasticsearch search query
+type SearchResponse struct {
+	Took     int        `json:"took"`
+	TimedOut bool       `json:"timed_out"`
+	Shards   ShardsInfo `json:"_shards"`
+	Hits     Hits       `json:"hits"`
+}
+
+// ShardsInfo contains information about the shards that were queried
+type ShardsInfo struct {
+	Total      int `json:"total"`
+	Successful int `json:"successful"`
+	Skipped    int `json:"skipped"`
+	Failed     int `json:"failed"`
+}
+
+// Hits contains the search results
+type Hits struct {
+	Total    TotalHits `json:"total"`
+	MaxScore float64   `json:"max_score"`
+	Hits     []Hit     `json:"hits"`
+}
+
+// TotalHits contains the total number of hits and their relation
+type TotalHits struct {
+	Value    int    `json:"value"`
+	Relation string `json:"relation"`
+}
+
+// Hit represents a single search hit
+type Hit struct {
+	Index  string        `json:"_index"`
+	ID     string        `json:"_id"`
+	Score  float64       `json:"_score"`
+	Sort   []interface{} `json:"sort,omitempty"`
+	Source PostData      `json:"_source"`
+}
+
+// PostData represents the _source field of a search hit
+type PostData struct {
+	AtURI            string               `json:"at_uri"`
+	AuthorDID        string               `json:"author_did"`
+	Content          string               `json:"content"`
+	CreatedAt        string               `json:"created_at"`
+	ThreadRootPost   string               `json:"thread_root_post,omitempty"`
+	ThreadParentPost string               `json:"thread_parent_post,omitempty"`
+	QuotePost        string               `json:"quote_post,omitempty"`
+	Embeddings       map[string][]float32 `json:"embeddings,omitempty"`
+	IndexedAt        string               `json:"indexed_at"`
+}
+
+// FetchPosts queries Elasticsearch with pagination using search_after
+// Parameters:
+//   - client: Elasticsearch client
+//   - logger: Logger for debug/error messages
+//   - index: Index name to query
+//   - startTime, endTime: optional time range filter on created_at field (RFC3339 format)
+//   - afterCreatedAt, afterIndexedAt: pagination cursors (both required if either provided)
+//   - size: number of results to fetch (defaults to 1000 if 0)
+func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, size int) (SearchResponse, error) {
+	var response SearchResponse
+
+	if size <= 0 {
+		size = 1000
+	}
+
+	// Build query based on whether time range is specified
+	var queryClause map[string]interface{}
+	if startTime != "" || endTime != "" {
+		rangeQuery := map[string]interface{}{}
+		if startTime != "" {
+			rangeQuery["gte"] = startTime
+		}
+		if endTime != "" {
+			rangeQuery["lte"] = endTime
+		}
+		queryClause = map[string]interface{}{
+			"range": map[string]interface{}{
+				"created_at": rangeQuery,
+			},
+		}
+	} else {
+		queryClause = map[string]interface{}{
+			"match_all": map[string]interface{}{},
+		}
+	}
+
+	query := map[string]interface{}{
+		"query": queryClause,
+		"sort": []interface{}{
+			map[string]interface{}{"created_at": "asc"},
+			map[string]interface{}{"indexed_at": "asc"},
+		},
+		"size": size,
+	}
+
+	if afterCreatedAt != "" && afterIndexedAt != "" {
+		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt}
+	}
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return response, fmt.Errorf("failed to marshal query: %w", err)
+	}
+
+	logger.Debug("Executing search query on index '%s': %s", index, string(queryJSON))
+
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
+	)
+	if err != nil {
+		return response, fmt.Errorf("search request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close search response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return response, fmt.Errorf("search request returned error: %s", res.String())
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
+		return response, fmt.Errorf("failed to parse search response: %w", err)
+	}
+
+	logger.Debug("Search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
+
+	return response, nil
+}
