@@ -235,7 +235,7 @@ func TestEmbeddingRoundTrip(t *testing.T) {
 		{"zeros", []float32{0.0, 0.0, 0.0}},
 		{"negative", []float32{-1.0, -2.0, -3.0}},
 		{"mixed", []float32{-1.5, 0.0, 1.5, 42.0}},
-		{"special values", []float32{0.0, -0.0, float32(math.Inf(1)), float32(math.Inf(-1))}},
+		{"special values", []float32{0.0, 0.0, float32(math.Inf(1)), float32(math.Inf(-1))}},
 	}
 
 	for _, tt := range tests {
