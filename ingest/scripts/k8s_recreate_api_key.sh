@@ -4,17 +4,17 @@
 set -e
 
 ENVIRONMENT="${1:-stage}"
-NAMESPACE="greenearth-${ENVIRONMENT}"
+K8S_NAMESPACE="greenearth-${ENVIRONMENT}"
 
 echo "Creating new Elasticsearch API key..."
 echo "Environment: ${ENVIRONMENT}"
-echo "Namespace: ${NAMESPACE}"
+echo "Namespace: ${K8S_NAMESPACE}"
 echo ""
 
 # Get elastic superuser credentials (required for creating API keys)
-ES_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n "${NAMESPACE}" -o jsonpath='{.data.elastic}' | base64 -d)
+ELASTICSEARCH_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n "${K8S_NAMESPACE}" -o jsonpath='{.data.elastic}' | base64 -d)
 
-if [ -z "$ES_PASSWORD" ]; then
+if [ -z "$ELASTICSEARCH_PASSWORD" ]; then
   echo "Error: Could not retrieve elastic superuser password from secret"
   exit 1
 fi
@@ -22,8 +22,8 @@ fi
 echo "Creating API key with permissions for ingest services..."
 
 # Create API key with full permissions for all indices
-API_KEY_RESPONSE=$(kubectl exec -n "${NAMESPACE}" greenearth-es-data-only-0 -- curl -k -s -X POST \
-  -u "elastic:${ES_PASSWORD}" \
+API_KEY_RESPONSE=$(kubectl exec -n "${K8S_NAMESPACE}" greenearth-es-data-only-0 -- curl -k -s -X POST \
+  -u "elastic:${ELASTICSEARCH_PASSWORD}" \
   "https://localhost:9200/_security/api_key" \
   -H "Content-Type: application/json" \
   -d '{

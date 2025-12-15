@@ -5,7 +5,7 @@
 set -e
 
 # Configuration
-REGION="us-east1"
+GCP_REGION="${GCP_REGION:-us-east1}"
 SERVICES=(
     "jetstream-ingest"
     "megastream-ingest"
@@ -22,7 +22,7 @@ NC='\033[0m' # No Color
 # Check if a service exists
 service_exists() {
     local service=$1
-    gcloud run services describe "$service" --region="$REGION" > /dev/null 2>&1
+    gcloud run services describe "$service" --region="$GCP_REGION" > /dev/null 2>&1
 }
 
 # Get service status (simplified)
@@ -36,11 +36,11 @@ get_service_status() {
 
     # Check manual instance count (0 = stopped)
     local instance_count=$(gcloud run services describe "$service" \
-        --region="$REGION" \
+        --region="$GCP_REGION" \
         --format="value(spec.template.metadata.annotations['run.googleapis.com/scaling-mode'])" 2>/dev/null || echo "")
 
     local manual_count=$(gcloud run services describe "$service" \
-        --region="$REGION" \
+        --region="$GCP_REGION" \
         --format="value(spec.template.metadata.annotations['run.googleapis.com/manual-scaling'])" 2>/dev/null || echo "")
 
     if [[ "$manual_count" == "0" ]]; then
@@ -50,7 +50,7 @@ get_service_status() {
     else
         # Check ready condition
         local ready=$(gcloud run services describe "$service" \
-            --region="$REGION" \
+            --region="$GCP_REGION" \
             --format="value(status.url)" 2>/dev/null)
 
         if [[ -n "$ready" ]]; then
@@ -73,7 +73,7 @@ start_service() {
     echo -e "${BLUE}Starting $service...${NC}"
 
     gcloud run services update "$service" \
-        --region="$REGION" \
+        --region="$GCP_REGION" \
         --scaling=1 \
         --quiet
 
@@ -92,7 +92,7 @@ stop_service() {
     echo -e "${BLUE}Stopping $service...${NC}"
 
     gcloud run services update "$service" \
-        --region="$REGION" \
+        --region="$GCP_REGION" \
         --scaling=0 \
         --quiet
 
@@ -138,7 +138,7 @@ show_details() {
     echo "===================="
 
     gcloud run services describe "$service" \
-        --region="$REGION" \
+        --region="$GCP_REGION" \
         --format="table(
             metadata.name,
             status.url,
