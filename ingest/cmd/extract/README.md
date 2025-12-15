@@ -12,7 +12,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 
 - `--dry-run`: Preview export without writing files (default: false)
 - `--skip-tls-verify`: Skip TLS verification (local development only, default: false)
-- `--output-path PATH`: Override output directory (default: from PARQUET_OUTPUT_PATH)
+- `--output-path PATH`: Override output directory (default: from PARQUET_DESTINATION)
 - `--window-size-min MINUTES`: Time window in minutes from now (e.g., 240 for 4-hour lookback). Overrides start-time and end-time if set.
 - `--start-time TIME`: Start time for export window in RFC3339 format (e.g., 2025-01-01T00:00:00Z)
 - `--end-time TIME`: End time for export window in RFC3339 format (e.g., 2025-12-31T23:59:59Z)
@@ -22,7 +22,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `ELASTICSEARCH_URL`: ES cluster URL (required)
 - `ELASTICSEARCH_API_KEY`: ES API key (optional, recommended for production)
 - `ELASTICSEARCH_TLS_SKIP_VERIFY`: Skip TLS verification (default: false)
-- `PARQUET_OUTPUT_PATH`: Default output directory (default: "./output")
+- `PARQUET_DESTINATION`: Output destination - supports local paths (./output) or GCS paths (gs://bucket/path)
 - `PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
 - `EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
 - `EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts")
@@ -30,12 +30,21 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 
 ## Examples
 
-### Export full posts index
+### Export full posts index to local directory
 
 ```bash
 export ELASTICSEARCH_URL="https://es.example.com:9200"
 export ELASTICSEARCH_API_KEY="your-api-key"
 ./extract --output-path ./exports
+```
+
+### Export to Google Cloud Storage
+
+```bash
+export ELASTICSEARCH_URL="https://es.example.com:9200"
+export ELASTICSEARCH_API_KEY="your-api-key"
+export PARQUET_DESTINATION="gs://my-bucket/exports/"
+./extract
 ```
 
 ### Export with rolling time window (last 4 hours)
