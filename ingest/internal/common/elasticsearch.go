@@ -969,11 +969,18 @@ func QueryPostsByAuthorDID(ctx context.Context, client *elasticsearch.Client, in
 		},
 		"_source": []string{"at_uri"},
 		"size":    1000,
+	}
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
 		return nil, fmt.Errorf("failed to marshal query: %w", err)
 	}
 
-	// Initial scroll request with routing
+// Initial scroll request with routing
 	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
 		client.Search.WithScroll(time.Minute*5),
 		client.Search.WithRouting(authorDID),
 	)
@@ -984,6 +991,9 @@ func QueryPostsByAuthorDID(ctx context.Context, client *elasticsearch.Client, in
 		if err := res.Body.Close(); err != nil {
 			logger.Error("Failed to close response body: %v", err)
 		}
+	}()
+
+	if res.IsError() {
 		return nil, fmt.Errorf("scroll search returned error: %s", res.String())
 	}
 
@@ -1094,9 +1104,18 @@ func QueryLikesByAuthorDID(ctx context.Context, client *elasticsearch.Client, in
 		},
 		"_source": []string{"at_uri", "subject_uri"},
 		"size":    1000,
+	}
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
 		return nil, fmt.Errorf("failed to marshal query: %w", err)
 	}
+
+	// Initial scroll request with routing
 	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
 		client.Search.WithScroll(time.Minute*5),
 		client.Search.WithRouting(authorDID),
 	)
@@ -1107,6 +1126,9 @@ func QueryLikesByAuthorDID(ctx context.Context, client *elasticsearch.Client, in
 		if err := res.Body.Close(); err != nil {
 			logger.Error("Failed to close response body: %v", err)
 		}
+	}()
+
+	if res.IsError() {
 		return nil, fmt.Errorf("scroll search returned error: %s", res.String())
 	}
 
