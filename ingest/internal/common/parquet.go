@@ -47,3 +47,30 @@ func HitsToExtractPosts(hits []Hit) []ExtractPost {
 	}
 	return posts
 }
+
+// ExtractLike represents the Like document structure for Parquet serialization
+type ExtractLike struct {
+	DID             string `json:"did"`
+	SubjectURI      string `json:"subject_uri"`
+	InsertedAt      string `json:"inserted_at"`
+	RecordCreatedAt string `json:"record_created_at"`
+}
+
+// LikeHitToExtractLike converts an Elasticsearch LikeHit to an ExtractLike
+func LikeHitToExtractLike(hit LikeHit) ExtractLike {
+	return ExtractLike{
+		DID:             hit.Source.AuthorDID,
+		SubjectURI:      hit.Source.SubjectURI,
+		InsertedAt:      hit.Source.IndexedAt,
+		RecordCreatedAt: hit.Source.CreatedAt,
+	}
+}
+
+// LikeHitsToExtractLikes converts multiple Elasticsearch LikeHits to ExtractLikes
+func LikeHitsToExtractLikes(hits []LikeHit) []ExtractLike {
+	likes := make([]ExtractLike, len(hits))
+	for i, hit := range hits {
+		likes[i] = LikeHitToExtractLike(hit)
+	}
+	return likes
+}
