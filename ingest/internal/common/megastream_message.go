@@ -17,6 +17,8 @@ type MegaStreamMessage interface {
 	GetEmbeddings() map[string][]float32
 	GetTimeUs() int64
 	IsDelete() bool
+	IsAccountDeletion() bool
+	GetAccountStatus() string
 }
 
 // megaStreamMessage is the implementation of MegaStreamMessage
@@ -31,6 +33,7 @@ type megaStreamMessage struct {
 	embeddings       map[string][]float32
 	timeUs           int64
 	isDelete         bool
+	accountStatus    string
 	parseError       error
 }
 
@@ -65,6 +68,19 @@ func (m *megaStreamMessage) parseRawPost(rawPostJSON string, logger *IngestLogge
 
 	if timeUs, ok := message["time_us"].(float64); ok {
 		m.timeUs = int64(timeUs)
+	}
+
+	// Check for account deletion event FIRST (before checking commit field)
+	if kind, ok := message["kind"].(string); ok && kind == "account" {
+		if account, ok := message["account"].(map[string]interface{}); ok {
+			if active, ok := account["active"].(bool); ok && !active {
+				if status, ok := account["status"].(string); ok {
+					m.accountStatus = status
+					logger.Debug("Account event detected for DID %s: status=%s", m.did, status)
+					return
+				}
+			}
+		}
 	}
 
 	commit, ok := message["commit"].(map[string]interface{})
@@ -174,4 +190,12 @@ func (m *megaStreamMessage) GetTimeUs() int64 {
 
 func (m *megaStreamMessage) IsDelete() bool {
 	return m.isDelete
+}
+
+func (m *megaStreamMessage) IsAccountDeletion() bool {
+	return m.accountStatus == "deleted"
+}
+
+func (m *megaStreamMessage) GetAccountStatus() string {
+	return m.accountStatus
 }
