@@ -12,7 +12,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 
 - `--dry-run`: Preview export without writing files (default: false)
 - `--skip-tls-verify`: Skip TLS verification (local development only, default: false)
-- `--output-path PATH`: Override output directory (default: from PARQUET_OUTPUT_PATH)
+- `--output-path PATH`: Override output directory (default: from PARQUET_DESTINATION)
 - `--window-size-min MINUTES`: Time window in minutes from now (e.g., 240 for 4-hour lookback). Overrides start-time and end-time if set.
 - `--start-time TIME`: Start time for export window in RFC3339 format (e.g., 2025-01-01T00:00:00Z)
 - `--end-time TIME`: End time for export window in RFC3339 format (e.g., 2025-12-31T23:59:59Z)
@@ -23,7 +23,6 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `ELASTICSEARCH_API_KEY`: ES API key (optional, recommended for production)
 - `ELASTICSEARCH_TLS_SKIP_VERIFY`: Skip TLS verification (default: false)
 - `PARQUET_DESTINATION`: Output destination - supports local paths (./output) or GCS paths (gs://bucket/path)
-- `PARQUET_OUTPUT_PATH`: Deprecated, use PARQUET_DESTINATION (default: "./output")
 - `PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
 - `EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
 - `EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts")
