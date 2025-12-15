@@ -39,7 +39,8 @@ type Config struct {
 	LoggingEnabled bool
 
 	// Extract/Export configuration
-	ParquetOutputPath  string
+	ParquetOutputPath  string // Deprecated, use ParquetDestination
+	ParquetDestination string // Supports local paths (./output) or GCS paths (gs://bucket/path)
 	ParquetMaxRecords  int64
 	ExtractFetchSize   int
 	ExtractIndices     string
@@ -67,6 +68,7 @@ func LoadConfig() *Config {
 		AWSS3SecretKey:             getEnv("AWS_S3_SECRET_KEY", ""),
 		LoggingEnabled:             getEnvBool("LOGGING_ENABLED", true),
 		ParquetOutputPath:          getEnv("PARQUET_OUTPUT_PATH", "./output"),
+		ParquetDestination:         getEnv("PARQUET_DESTINATION", ""), // Defaults to ParquetOutputPath if empty
 		ParquetMaxRecords:          int64(getEnvInt("PARQUET_MAX_RECORDS", 100000)),
 		ExtractFetchSize:           getEnvInt("EXTRACT_FETCH_SIZE", 1000),
 		ExtractIndices:             getEnv("EXTRACT_INDICES", "posts"),

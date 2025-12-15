@@ -22,7 +22,8 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `ELASTICSEARCH_URL`: ES cluster URL (required)
 - `ELASTICSEARCH_API_KEY`: ES API key (optional, recommended for production)
 - `ELASTICSEARCH_TLS_SKIP_VERIFY`: Skip TLS verification (default: false)
-- `PARQUET_OUTPUT_PATH`: Default output directory (default: "./output")
+- `PARQUET_DESTINATION`: Output destination - supports local paths (./output) or GCS paths (gs://bucket/path)
+- `PARQUET_OUTPUT_PATH`: Deprecated, use PARQUET_DESTINATION (default: "./output")
 - `PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
 - `EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
 - `EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts")
@@ -30,12 +31,21 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 
 ## Examples
 
-### Export full posts index
+### Export full posts index to local directory
 
 ```bash
 export ELASTICSEARCH_URL="https://es.example.com:9200"
 export ELASTICSEARCH_API_KEY="your-api-key"
 ./extract --output-path ./exports
+```
+
+### Export to Google Cloud Storage
+
+```bash
+export ELASTICSEARCH_URL="https://es.example.com:9200"
+export ELASTICSEARCH_API_KEY="your-api-key"
+export PARQUET_DESTINATION="gs://my-bucket/exports/"
+./extract
 ```
 
 ### Export with rolling time window (last 4 hours)
