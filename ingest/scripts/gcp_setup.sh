@@ -242,10 +242,10 @@ create_secrets() {
     log_info "Note: Non-secret configuration (Elasticsearch URL, S3 bucket, S3 prefix) is now stored in the deployment scripts."
 }
 
-create_persistent_storage() {
-    log_info "Setting up persistent storage for state files..."
+create_ingest_state_storage() {
+    log_info "Setting up storage for ingest state files..."
 
-    # Create a Cloud Storage bucket for state files
+    # Create a Cloud Storage bucket for ingest state files
     BUCKET_NAME="$PROJECT_ID-ingex-state-$ENVIRONMENT"
 
     if ! gsutil ls -b gs://"$BUCKET_NAME" > /dev/null 2>&1; then
@@ -257,6 +257,23 @@ create_persistent_storage() {
 
     # Set appropriate permissions
     gsutil iam ch serviceAccount:"ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com":objectAdmin gs://"$BUCKET_NAME"
+}
+
+create_extract_storage() {
+    log_info "Setting up storage bucket for extracted parquet files..."
+
+    BUCKET_NAME="$PROJECT_ID-ingex-extract-$ENVIRONMENT"
+
+    if ! gsutil ls -b gs://"$BUCKET_NAME" > /dev/null 2>&1; then
+        gsutil mb -l "$REGION" gs://"$BUCKET_NAME"
+        log_info "Extract storage bucket created: $BUCKET_NAME"
+    else
+        log_info "Extract storage bucket already exists: $BUCKET_NAME"
+    fi
+
+    # Grant service account objectAdmin permission
+    gsutil iam ch serviceAccount:"ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com":objectAdmin gs://"$BUCKET_NAME"
+    log_info "Granted objectAdmin to service account for bucket: $BUCKET_NAME"
 }
 
 create_vpc_connector() {
@@ -336,7 +353,7 @@ setup_firewall_rules() {
     fi
 }
 
-setup_cloud_scheduler() {
+setup_expiry_cloud_scheduler() {
     log_info "Setting up Cloud Scheduler for elasticsearch-expiry..."
 
     # Get project number for default compute service account
@@ -389,6 +406,57 @@ setup_cloud_scheduler() {
     fi
 }
 
+setup_extract_cloud_scheduler() {
+    log_info "Setting up Cloud Scheduler for extract job..."
+
+    # Get project number for default compute service account
+    PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+    COMPUTE_SERVICE_ACCOUNT="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
+
+    # Use Cloud Run v2 API endpoint format
+    JOB_URI="https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/extract:run"
+
+    # Only configure for stage environment
+    if [ "$ENVIRONMENT" != "stage" ]; then
+        log_info "Skipping extract Cloud Scheduler setup for $ENVIRONMENT (only stage is configured)"
+        return 0
+    fi
+
+    local schedule="0 */4 * * *"  # Every 4 hours
+    local job_name="extract-4hourly-stage"
+    local description="4-hourly extract job for stage (export last 4 hours of data)"
+    log_info "Stage environment: Configuring 4-hourly extract schedule"
+
+    # Grant the default compute service account permission to invoke the Cloud Run job
+    log_info "Granting default compute service account permission to invoke extract job..."
+    gcloud run jobs add-iam-policy-binding extract \
+        --region="$REGION" \
+        --member="serviceAccount:$COMPUTE_SERVICE_ACCOUNT" \
+        --role="roles/run.invoker" \
+        2>/dev/null || log_info "Service account already has run.invoker permission"
+
+    # Create or update the scheduler job
+    if ! gcloud scheduler jobs describe "$job_name" --location="$REGION" > /dev/null 2>&1; then
+        gcloud scheduler jobs create http "$job_name" \
+            --location="$REGION" \
+            --schedule="$schedule" \
+            --uri="$JOB_URI" \
+            --http-method=POST \
+            --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
+            --description="$description"
+        log_info "Cloud Scheduler job created: $job_name"
+    else
+        gcloud scheduler jobs update http "$job_name" \
+            --location="$REGION" \
+            --schedule="$schedule" \
+            --uri="$JOB_URI" \
+            --http-method=POST \
+            --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
+            --description="$description"
+        log_info "Cloud Scheduler job updated: $job_name"
+    fi
+}
+
 main() {
     echo "=================================================="
     echo "Green Earth Ingex - GCP Environment Setup"
@@ -404,10 +472,12 @@ main() {
     create_artifact_registry
     create_service_account
     create_secrets
-    create_persistent_storage
+    create_ingest_state_storage
+    create_extract_storage
     create_vpc_connector
     setup_firewall_rules
-    setup_cloud_scheduler
+    setup_expiry_cloud_scheduler
+    setup_extract_cloud_scheduler
 
     log_info "Environment setup complete!"
     echo

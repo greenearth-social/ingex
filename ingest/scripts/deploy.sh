@@ -243,12 +243,67 @@ EOF
         --args="--retention-hours,$retention_hours"
 }
 
+deploy_extract_job() {
+    log_info "Deploying extract job from source..."
+
+    # Set extraction parameters based on environment
+    local max_records
+    local window_minutes
+    local indices
+    local destination_bucket
+
+    if [ "$ENVIRONMENT" = "stage" ]; then
+        max_records=1000000      # 1M records
+        window_minutes=240       # 4 hours
+        indices="posts,likes"
+        destination_bucket="$PROJECT_ID-ingex-extract-$ENVIRONMENT"
+        log_info "Stage environment: 1M max records, 4-hour window, indices: posts,likes"
+    else
+        max_records=10000000     # 10M records for production
+        window_minutes=240       # 4 hours
+        indices="posts,likes"
+        destination_bucket="$PROJECT_ID-ingex-extract-$ENVIRONMENT"
+        log_info "Production environment: 10M max records, 4-hour window, indices: posts,likes"
+    fi
+
+    # Prepare source directory (similar to expiry job)
+    local temp_dir=$(mktemp -d)
+    trap "rm -rf $temp_dir" EXIT
+
+    cp go.mod go.sum "$temp_dir/"
+    cp -r internal "$temp_dir/"
+    mkdir -p "$temp_dir/cmd/extract"
+    cp cmd/extract/main.go "$temp_dir/cmd/extract/"
+    cp cmd/extract/main.go "$temp_dir/"
+
+    log_info "Deploying extract job with buildpacks..."
+
+    gcloud run jobs deploy extract \
+        --source="$temp_dir" \
+        --region="$REGION" \
+        --service-account="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com" \
+        --vpc-connector="ingex-vpc-connector-$ENVIRONMENT" \
+        --vpc-egress=private-ranges-only \
+        --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
+        --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
+        --set-env-vars="PARQUET_DESTINATION=gs://$destination_bucket/" \
+        --set-env-vars="PARQUET_MAX_RECORDS=$max_records" \
+        --set-env-vars="EXTRACT_INDICES=$indices" \
+        --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
+        --set-env-vars="LOGGING_ENABLED=true" \
+        --cpu=2 \
+        --memory=2Gi \
+        --task-timeout=7200 \
+        --args="--window-size-min,$window_minutes"
+}
+
 deploy_all_services() {
     log_info "Deploying all services to Cloud Run..."
 
     deploy_jetstream_service
     deploy_megastream_service
     deploy_expiry_job
+    deploy_extract_job
 
     log_info "All services deployed successfully!"
 }
@@ -262,7 +317,7 @@ show_service_status() {
 
     echo
     echo "=== Cloud Run Jobs ==="
-    gcloud run jobs list --region="$REGION" --filter="metadata.name:elasticsearch-expiry"
+    gcloud run jobs list --region="$REGION" --filter="metadata.name:(elasticsearch-expiry OR extract)"
 
     echo
     echo "=== Service URLs ==="
@@ -275,6 +330,7 @@ show_service_status() {
 
     log_info "Use 'gcloud run services logs read SERVICE_NAME --region=$REGION' to view logs"
     log_info "Use 'gcloud run jobs execute elasticsearch-expiry --region=$REGION' to manually run expiry"
+    log_info "Use 'gcloud run jobs execute extract --region=$REGION' to manually run extract"
 }
 
 main() {
@@ -305,12 +361,16 @@ main() {
             log_info "Deploying elasticsearch-expiry job..."
             deploy_expiry_job
             ;;
+        extract|extract-job)
+            log_info "Deploying extract job..."
+            deploy_extract_job
+            ;;
         all)
             deploy_all_services
             ;;
         *)
             log_error "Unknown service: $service"
-            echo "Valid services: jetstream, megastream, expiry, all"
+            echo "Valid services: jetstream, megastream, expiry, extract, all"
             exit 1
             ;;
     esac
