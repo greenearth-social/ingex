@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.93.2
 	github.com/elastic/go-elasticsearch/v9 v9.2.1
 	github.com/gorilla/websocket v1.5.3
-	github.com/parquet-go/parquet-go v0.26.1
+	github.com/parquet-go/parquet-go v0.26.3
 	modernc.org/sqlite v1.40.1
 )
 
