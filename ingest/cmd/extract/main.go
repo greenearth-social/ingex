@@ -20,7 +20,7 @@ import (
 func main() {
 	dryRun := flag.Bool("dry-run", false, "Run in dry-run mode (no file writes)")
 	skipTLSVerify := flag.Bool("skip-tls-verify", false, "Skip TLS certificate verification (use for local development only)")
-	outputPath := flag.String("output-path", "", "Override PARQUET_OUTPUT_PATH env var")
+	outputPath := flag.String("output-path", "", "Override PARQUET_DESTINATION env var")
 	windowSizeMin := flag.Int("window-size-min", 0, "Time window in minutes from now (e.g., 240 for 4-hour lookback). Overrides start-time and end-time if set.")
 	startTime := flag.String("start-time", "", "Start time for export window (RFC3339 format, e.g., 2025-01-01T00:00:00Z)")
 	endTime := flag.String("end-time", "", "End time for export window (RFC3339 format, e.g., 2025-12-31T23:59:59Z)")
@@ -101,16 +101,12 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 		return fmt.Errorf("ELASTICSEARCH_URL environment variable is required")
 	}
 
-	// Determine output destination (priority: flag > PARQUET_DESTINATION > PARQUET_OUTPUT_PATH)
-	if outputPath == "" {
-		if config.ParquetDestination != "" {
-			outputPath = config.ParquetDestination
-		} else {
-			outputPath = config.ParquetOutputPath
-		}
+	// Determine output destination (priority: flag > PARQUET_DESTINATION)
+	if outputPath == "" && config.ParquetDestination != "" {
+		outputPath = config.ParquetDestination
 	}
 	if outputPath == "" {
-		return fmt.Errorf("output path not specified (use --output-path, PARQUET_DESTINATION, or PARQUET_OUTPUT_PATH)")
+		return fmt.Errorf("output path not specified (use --output-path, PARQUET_DESTINATION)")
 	}
 
 	// Check if GCS destination
