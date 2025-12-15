@@ -20,6 +20,7 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "Run in dry-run mode (no file writes)")
 	skipTLSVerify := flag.Bool("skip-tls-verify", false, "Skip TLS certificate verification (use for local development only)")
 	outputPath := flag.String("output-path", "", "Override PARQUET_OUTPUT_PATH env var")
+	windowSizeMin := flag.Int("window-size-min", 0, "Time window in minutes from now (e.g., 240 for 4-hour lookback). Overrides start-time and end-time if set.")
 	startTime := flag.String("start-time", "", "Start time for export window (RFC3339 format, e.g., 2025-01-01T00:00:00Z)")
 	endTime := flag.String("end-time", "", "End time for export window (RFC3339 format, e.g., 2025-12-31T23:59:59Z)")
 	flag.Parse()
@@ -30,6 +31,20 @@ func main() {
 	logger.Info("Green Earth Ingex - Elasticsearch Export Service")
 	if *dryRun {
 		logger.Info("Running in DRY-RUN mode - no files will be written")
+	}
+
+	// Calculate time window if --window-size-min is provided
+	if *windowSizeMin > 0 {
+		now := time.Now().UTC()
+		calculatedEndTime := now.Format(time.RFC3339)
+		calculatedStartTime := now.Add(-time.Duration(*windowSizeMin) * time.Minute).Format(time.RFC3339)
+
+		logger.Info("Using window size: %d minutes (from %s to %s)",
+			*windowSizeMin, calculatedStartTime, calculatedEndTime)
+
+		// Override any provided start/end times
+		*startTime = calculatedStartTime
+		*endTime = calculatedEndTime
 	}
 
 	// Validate time window if provided

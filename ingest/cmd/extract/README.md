@@ -13,7 +13,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `--dry-run`: Preview export without writing files (default: false)
 - `--skip-tls-verify`: Skip TLS verification (local development only, default: false)
 - `--output-path PATH`: Override output directory (default: from PARQUET_OUTPUT_PATH)
-- `--index NAME`: Elasticsearch index to export (default: "posts")
+- `--window-size-min MINUTES`: Time window in minutes from now (e.g., 240 for 4-hour lookback). Overrides start-time and end-time if set.
 - `--start-time TIME`: Start time for export window in RFC3339 format (e.g., 2025-01-01T00:00:00Z)
 - `--end-time TIME`: End time for export window in RFC3339 format (e.g., 2025-12-31T23:59:59Z)
 
@@ -25,7 +25,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `PARQUET_OUTPUT_PATH`: Default output directory (default: "./output")
 - `PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
 - `EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
-- `EXTRACT_INDEX_NAME`: Default index name (default: "posts")
+- `EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts")
 - `LOGGING_ENABLED`: Enable logging (default: true)
 
 ## Examples
@@ -38,7 +38,19 @@ export ELASTICSEARCH_API_KEY="your-api-key"
 ./extract --output-path ./exports
 ```
 
-### Export with time window
+### Export with rolling time window (last 4 hours)
+
+```bash
+./extract --window-size-min 240
+```
+
+### Export multiple indices with rolling time window
+
+```bash
+EXTRACT_INDICES="posts,likes" ./extract --window-size-min 240
+```
+
+### Export with fixed time window
 
 ```bash
 ./extract --start-time "2025-01-01T00:00:00Z" --end-time "2025-01-31T23:59:59Z"
@@ -47,7 +59,7 @@ export ELASTICSEARCH_API_KEY="your-api-key"
 ### Dry-run to preview
 
 ```bash
-./extract --dry-run --index posts
+./extract --dry-run --window-size-min 60
 ```
 
 ### Local development with self-signed certs
@@ -56,10 +68,10 @@ export ELASTICSEARCH_API_KEY="your-api-key"
 ./extract --skip-tls-verify --output-path ./test_output
 ```
 
-### Export from different index with time range
+### Export from different indices with time range
 
 ```bash
-./extract --index posts_v2 --output-path ./v2_exports --start-time "2025-10-01T00:00:00Z"
+EXTRACT_INDICES="posts_v2,likes_v2" ./extract --output-path ./v2_exports --start-time "2025-10-01T00:00:00Z"
 ```
 
 ### Export only posts after a specific date
