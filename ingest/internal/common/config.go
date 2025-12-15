@@ -37,6 +37,12 @@ type Config struct {
 
 	// Logging configuration
 	LoggingEnabled bool
+
+	// Extract/Export configuration
+	ParquetDestination string // Supports local paths (./output) or GCS paths (gs://bucket/path)
+	ParquetMaxRecords  int64
+	ExtractFetchSize   int
+	ExtractIndices     string
 }
 
 // LoadConfig loads configuration from environment variables with defaults
@@ -60,6 +66,10 @@ func LoadConfig() *Config {
 		AWSS3AccessKey:             getEnv("AWS_S3_ACCESS_KEY", ""),
 		AWSS3SecretKey:             getEnv("AWS_S3_SECRET_KEY", ""),
 		LoggingEnabled:             getEnvBool("LOGGING_ENABLED", true),
+		ParquetDestination:         getEnv("PARQUET_DESTINATION", ""),
+		ParquetMaxRecords:          int64(getEnvInt("PARQUET_MAX_RECORDS", 100000)),
+		ExtractFetchSize:           getEnvInt("EXTRACT_FETCH_SIZE", 1000),
+		ExtractIndices:             getEnv("EXTRACT_INDICES", "posts"),
 	}
 }
 

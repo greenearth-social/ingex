@@ -4,7 +4,7 @@
 # This script deploys all ingex services to Google Cloud Run using source deployment
 # Source deployment uses Google Cloud buildpacks to automatically build from Go source
 #
-# Prerequisites: Run gcp_setup.sh first to configure the GCP environment
+# Prerequisites: Run scripts/gcp_setup.sh first to configure the GCP environment
 
 set -e
 
@@ -102,7 +102,7 @@ verify_vpc_connector() {
     if ! gcloud compute networks vpc-access connectors describe "$CONNECTOR_NAME" --region="$REGION" > /dev/null 2>&1; then
         log_error "VPC connector '$CONNECTOR_NAME' does not exist"
         log_error "Please run gcp_setup.sh first to create the VPC connector"
-        log_error "Command: cd ingest && ./gcp_setup.sh"
+        log_error "Command: cd ingest && ./scripts/gcp_setup.sh"
         exit 1
     fi
 
@@ -175,13 +175,64 @@ deploy_megastream_service() {
 deploy_expiry_job() {
     log_info "Deploying elasticsearch-expiry job from source..."
 
+    # Set retention hours based on environment
+    # Stage: 5 hours (aggressive cleanup for limited 8-hour capacity)
+    # Prod: 720 hours = 30 days (standard retention)
+    local retention_hours
+    if [ "$ENVIRONMENT" = "stage" ]; then
+        retention_hours=5
+        log_info "Stage environment: Using 5-hour retention period"
+    else
+        retention_hours=720
+        log_info "Production environment: Using 720-hour (30-day) retention period"
+    fi
+
+    # Create a temporary directory structure for buildpacks
+    # Buildpacks expect a go.mod at the root with the main package
+    log_info "Preparing source directory for buildpack..."
+
+    local temp_dir=$(mktemp -d)
+    trap "rm -rf $temp_dir" EXIT
+
+    # Copy the necessary files for building just this binary
+    cp go.mod go.sum "$temp_dir/"
+    cp -r internal "$temp_dir/"
+    mkdir -p "$temp_dir/cmd/elasticsearch_expiry"
+    cp cmd/elasticsearch_expiry/main.go "$temp_dir/cmd/elasticsearch_expiry/"
+
+    # Create a simple main.go at the root that imports the cmd package
+    cat > "$temp_dir/main.go" << 'EOF'
+package main
+
+import "github.com/greenearth/ingest/cmd/elasticsearch_expiry"
+
+func main() {
+    // This file exists to make buildpacks happy
+    // The actual main is in cmd/elasticsearch_expiry
+}
+EOF
+
+    # Replace the main.go with a redirect
+    cat > "$temp_dir/main.go" << 'EOF'
+// Build tag to use the cmd/elasticsearch_expiry as main
+package main
+
+import (
+    _ "github.com/greenearth/ingest/cmd/elasticsearch_expiry"
+)
+EOF
+
+    # Actually, simpler: just copy the main.go content to root
+    cp cmd/elasticsearch_expiry/main.go "$temp_dir/"
+
+    log_info "Deploying elasticsearch-expiry job with buildpacks..."
+
     gcloud run jobs deploy elasticsearch-expiry \
-        --source=. \
+        --source="$temp_dir" \
         --region="$REGION" \
         --service-account="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/elasticsearch_expiry" \
         --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
         --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
@@ -189,7 +240,7 @@ deploy_expiry_job() {
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=3600 \
-        --args="--retention-days,60"
+        --args="--retention-hours,$retention_hours"
 }
 
 deploy_all_services() {
@@ -313,7 +364,7 @@ while [[ $# -gt 0 ]]; do
             echo "  $0                          Deploy all services"
             echo
             echo "Prerequisites:"
-            echo "  Run gcp_setup.sh first to configure the GCP environment"
+            echo "  Run scripts/gcp_setup.sh first to configure the GCP environment"
             echo "  Deploy Elasticsearch cluster (../index/deploy.sh) to get internal load balancer IP"
             echo
             echo "Options:"
