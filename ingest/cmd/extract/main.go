@@ -135,7 +135,11 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 			if err != nil {
 				return fmt.Errorf("failed to create GCS client: %w", err)
 			}
-			defer gcsClient.Close()
+			defer func() {
+				if err := gcsClient.Close(); err != nil {
+					logger.Error("Failed to close GSC client: %v", err)
+				}
+			}()
 		}
 
 		logger.Info("Using GCS destination: gs://%s/%s", gcsBucket, gcsPrefix)
@@ -439,14 +443,20 @@ func writePostsParquetFile(ctx context.Context, basePath string, isGCS bool, gcs
 
 		// Write posts in batch
 		if _, err := parquetWriter.Write(posts); err != nil {
-			parquetWriter.Close()
-			gcsWriter.Close()
+			if err := parquetWriter.Close(); err != nil {
+				logger.Error("Failed to close parquet writer: %v", err)
+			}
+			if err := gcsClient.Close(); err != nil {
+				logger.Error("Failed to close GSC writer: %v", err)
+			}
 			return fmt.Errorf("failed to write parquet data: %w", err)
 		}
 
 		// Close parquet writer (writes footer)
 		if err := parquetWriter.Close(); err != nil {
-			gcsWriter.Close()
+			if err := gcsClient.Close(); err != nil {
+				logger.Error("Failed to close GSC writer: %v", err)
+			}
 			return fmt.Errorf("failed to close parquet writer: %w", err)
 		}
 
@@ -492,14 +502,20 @@ func writeLikesParquetFile(ctx context.Context, basePath string, isGCS bool, gcs
 
 		// Write likes in batch
 		if _, err := parquetWriter.Write(likes); err != nil {
-			parquetWriter.Close()
-			gcsWriter.Close()
+			if err := parquetWriter.Close(); err != nil {
+				logger.Error("Failed to close parquet writer: %v", err)
+			}
+			if err := gcsClient.Close(); err != nil {
+				logger.Error("Failed to close GSC writer: %v", err)
+			}
 			return fmt.Errorf("failed to write parquet data: %w", err)
 		}
 
 		// Close parquet writer (writes footer)
 		if err := parquetWriter.Close(); err != nil {
-			gcsWriter.Close()
+			if err := gcsClient.Close(); err != nil {
+				logger.Error("Failed to close GSC writer: %v", err)
+			}
 			return fmt.Errorf("failed to close parquet writer: %w", err)
 		}
 
