@@ -83,9 +83,14 @@ func (m *megaStreamMessage) parseRawPost(rawPostJSON string, logger *IngestLogge
 		}
 	}
 
+	if m.atURI == "" {
+		logger.Debug("Empty atURI in message for DID %s", m.did)
+		return
+	}
+
 	commit, ok := message["commit"].(map[string]interface{})
 	if !ok {
-		logger.Debug("No commit field in message for %s", m.atURI)
+		logger.Debug("No commit field in message for %v", m.atURI)
 		return
 	}
 
@@ -101,8 +106,13 @@ func (m *megaStreamMessage) parseRawPost(rawPostJSON string, logger *IngestLogge
 		return
 	}
 
-	m.content, _ = record["text"].(string)
+	m.content, _ = record["text"].(string) // This is blank on image posts
+
 	m.createdAt, _ = record["createdAt"].(string)
+	if m.createdAt == "" {
+		logger.Debug("Empty createdAt in record for %s", m.atURI)
+		return
+	}
 
 	hydratedMetadata, _ := rawPost["hydrated_metadata"].(map[string]interface{})
 	if hydratedMetadata != nil {

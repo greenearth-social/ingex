@@ -64,64 +64,58 @@ func main() {
 	}()
 
 	logger.Info("Starting SQLite ingestion (source: %s, mode: %s)", *source, *mode)
-	runIngestion(ctx, config, logger, healthServer, *source, *mode, *dryRun, *skipTLSVerify, *noRewind)
+	if err := runIngestion(ctx, config, logger, healthServer, *source, *mode, *dryRun, *skipTLSVerify, *noRewind); err != nil {
+		logger.Error("%v", err)
+		os.Exit(1)
+	}
 }
 
-func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, source, mode string, dryRun, skipTLSVerify, noRewind bool) {
+func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, source, mode string, dryRun, skipTLSVerify, noRewind bool) error {
 	// Validate source parameter
 	if source != "local" && source != "s3" {
-		logger.Error("Invalid source: %s (must be 'local' or 's3')", source)
-		os.Exit(1)
+		return fmt.Errorf("invalid source: %s (must be 'local' or 's3')", source)
 	}
 
 	// Validate mode parameter
 	if mode != "once" && mode != "spool" {
-		logger.Error("Invalid mode: %s (must be 'once' or 'spool')", mode)
-		os.Exit(1)
+		return fmt.Errorf("invalid mode: %s (must be 'once' or 'spool')", mode)
 	}
 
 	// Validate Elasticsearch configuration
 	if config.ElasticsearchURL == "" {
-		logger.Error("ELASTICSEARCH_URL environment variable is required")
-		os.Exit(1)
+		return fmt.Errorf("ELASTICSEARCH_URL environment variable is required")
 	}
 
 	if !dryRun && config.ElasticsearchAPIKey == "" {
-		logger.Error("ELASTICSEARCH_API_KEY environment variable is required")
-		os.Exit(1)
+		return fmt.Errorf("ELASTICSEARCH_API_KEY environment variable is required")
 	}
 
 	// Validate source-specific configuration
 	switch source {
 	case "local":
 		if config.LocalSQLiteDBPath == "" {
-			logger.Error("LOCAL_SQLITE_DB_PATH environment variable is required for local source")
-			os.Exit(1)
+			return fmt.Errorf("LOCAL_SQLITE_DB_PATH environment variable is required for local source")
 		}
 	case "s3":
 		if config.S3SQLiteDBBucket == "" {
-			logger.Error("S3_SQLITE_DB_BUCKET environment variable is required for s3 source")
-			os.Exit(1)
+			return fmt.Errorf("S3_SQLITE_DB_BUCKET environment variable is required for s3 source")
 		}
 		if config.S3SQLiteDBPrefix == "" {
-			logger.Error("S3_SQLITE_DB_PREFIX environment variable is required for s3 source")
-			os.Exit(1)
+			return fmt.Errorf("S3_SQLITE_DB_PREFIX environment variable is required for s3 source")
 		}
 	}
 
 	// Initialize state manager
 	stateManager, err := common.NewStateManager(config.MegastreamStateFile, logger)
 	if err != nil {
-		logger.Error("Failed to initialize state manager: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to initialize state manager: %w", err)
 	}
 
 	// If no-rewind is enabled, update cursor to current time (service start time)
 	if noRewind {
 		currentTime := time.Now().UnixMicro()
 		if err := stateManager.UpdateCursor(currentTime); err != nil {
-			logger.Error("Failed to update cursor for no-rewind mode: %v", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to update cursor for no-rewind mode: %w", err)
 		}
 		logger.Info("No-rewind mode: set cursor to service start time: %d", currentTime)
 	} else {
@@ -140,8 +134,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 	esClient, err := common.NewElasticsearchClient(esConfig, logger)
 	if err != nil {
-		logger.Error("%v", err)
-		os.Exit(1)
+		return err
 	}
 
 	// Initialize spooler
@@ -153,15 +146,13 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	} else {
 		spooler, err = megastream_ingest.NewS3Spooler(config.S3SQLiteDBBucket, config.S3SQLiteDBPrefix, config.AWSRegion, config.AWSS3AccessKey, config.AWSS3SecretKey, mode, interval, stateManager, logger)
 		if err != nil {
-			logger.Error("Failed to create S3 spooler: %v", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to create S3 spooler: %w", err)
 		}
 	}
 
 	// Start spooler
 	if err := spooler.Start(ctx); err != nil {
-		logger.Error("Failed to start spooler: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to start spooler: %w", err)
 	}
 
 	// Mark service as healthy once we've successfully started the spooler
@@ -355,6 +346,7 @@ cleanup:
 	}
 
 	logger.Info("Spooler ingestion complete. Processed: %d, Deleted: %d, Skipped: %d", processedCount, deletedCount, skippedCount)
+	return nil
 }
 
 // handleAccountDeletion handles account deletion events by querying and deleting all posts and likes
