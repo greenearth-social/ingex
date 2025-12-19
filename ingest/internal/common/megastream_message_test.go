@@ -165,3 +165,68 @@ func TestGetAccountStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestMegaStreamMessage_CreatedAtNormalization(t *testing.T) {
+	logger := NewLogger(false)
+
+	tests := []struct {
+		name              string
+		rawPostJSON       string
+		expectedCreatedAt string
+	}{
+		{
+			name: "UTC timestamp preserved",
+			rawPostJSON: `{
+				"message": {
+					"commit": {
+						"operation": "create",
+						"record": {
+							"text": "Hello",
+							"createdAt": "2025-01-27T12:00:00Z"
+						}
+					}
+				}
+			}`,
+			expectedCreatedAt: "2025-01-27T12:00:00Z",
+		},
+		{
+			name: "timezone offset +05:00 normalized to UTC",
+			rawPostJSON: `{
+				"message": {
+					"commit": {
+						"operation": "create",
+						"record": {
+							"text": "Hello",
+							"createdAt": "2025-01-27T17:00:00+05:00"
+						}
+					}
+				}
+			}`,
+			expectedCreatedAt: "2025-01-27T12:00:00Z",
+		},
+		{
+			name: "timezone offset -08:00 normalized to UTC",
+			rawPostJSON: `{
+				"message": {
+					"commit": {
+						"operation": "create",
+						"record": {
+							"text": "Hello",
+							"createdAt": "2025-01-27T04:00:00-08:00"
+						}
+					}
+				}
+			}`,
+			expectedCreatedAt: "2025-01-27T12:00:00Z",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := NewMegaStreamMessage("at://test", "did:plc:test", tt.rawPostJSON, "{}", logger)
+			if got := msg.GetCreatedAt(); got != tt.expectedCreatedAt {
+				t.Errorf("GetCreatedAt() = %q, expected %q", got, tt.expectedCreatedAt)
+			}
+		})
+	}
+}

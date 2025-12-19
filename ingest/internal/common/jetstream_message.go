@@ -77,9 +77,13 @@ func (m *jetstreamMessage) parseRawEvent(rawJSON string, logger *IngestLogger) {
 				}
 			}
 
-			// Extract created_at timestamp
-			if createdAt, ok := event.Commit.Record["createdAt"].(string); ok {
-				m.createdAt = createdAt
+			// Extract and normalize created_at timestamp to UTC
+			if rawCreatedAt, ok := event.Commit.Record["createdAt"].(string); ok {
+				m.createdAt = NormalizeTimestampToUTC(rawCreatedAt, logger)
+				if m.createdAt == "" {
+					logger.Error("Failed to normalize createdAt timestamp for at_uri: %s (raw value: %s)", m.uri, rawCreatedAt)
+					return
+				}
 			} else {
 				logger.Error("Failed to extract createdAt from Jetstream JSON (at_uri: %s)", m.uri)
 				return

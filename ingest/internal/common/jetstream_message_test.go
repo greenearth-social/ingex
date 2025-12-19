@@ -244,3 +244,77 @@ func TestJetstreamMessage_TimeUs(t *testing.T) {
 		t.Errorf("GetTimeUs() = %v, want %v", got, wantTimeUs)
 	}
 }
+
+func TestJetstreamMessage_CreatedAtNormalization(t *testing.T) {
+	logger := NewLogger(false)
+
+	tests := []struct {
+		name              string
+		rawJSON           string
+		expectedCreatedAt string
+	}{
+		{
+			name: "UTC timestamp preserved",
+			rawJSON: `{
+				"did": "did:plc:test",
+				"time_us": 1764183883593160,
+				"kind": "commit",
+				"commit": {
+					"operation": "create",
+					"collection": "app.bsky.feed.like",
+					"rkey": "testkey",
+					"record": {
+						"subject": {"uri": "at://did:plc:xyz/app.bsky.feed.post/abc"},
+						"createdAt": "2025-01-27T12:00:00Z"
+					}
+				}
+			}`,
+			expectedCreatedAt: "2025-01-27T12:00:00Z",
+		},
+		{
+			name: "timezone offset +05:00 normalized to UTC",
+			rawJSON: `{
+				"did": "did:plc:test",
+				"time_us": 1764183883593160,
+				"kind": "commit",
+				"commit": {
+					"operation": "create",
+					"collection": "app.bsky.feed.like",
+					"rkey": "testkey",
+					"record": {
+						"subject": {"uri": "at://did:plc:xyz/app.bsky.feed.post/abc"},
+						"createdAt": "2025-01-27T17:00:00+05:00"
+					}
+				}
+			}`,
+			expectedCreatedAt: "2025-01-27T12:00:00Z",
+		},
+		{
+			name: "nanosecond precision normalized",
+			rawJSON: `{
+				"did": "did:plc:test",
+				"time_us": 1764183883593160,
+				"kind": "commit",
+				"commit": {
+					"operation": "create",
+					"collection": "app.bsky.feed.like",
+					"rkey": "testkey",
+					"record": {
+						"subject": {"uri": "at://did:plc:xyz/app.bsky.feed.post/abc"},
+						"createdAt": "2025-01-27T12:00:00.789123Z"
+					}
+				}
+			}`,
+			expectedCreatedAt: "2025-01-27T12:00:00Z",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := NewJetstreamMessage(tt.rawJSON, logger)
+			if got := msg.GetCreatedAt(); got != tt.expectedCreatedAt {
+				t.Errorf("GetCreatedAt() = %q, expected %q", got, tt.expectedCreatedAt)
+			}
+		})
+	}
+}
