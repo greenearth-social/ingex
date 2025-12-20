@@ -11,10 +11,9 @@ set -e
 # Configuration
 PROJECT_ID="${PROJECT_ID:-greenearth-471522}"
 REGION="${REGION:-us-east1}"
-ENVIRONMENT="${ENVIRONMENT:-stage}"  # TODO: change default when we have more environments
+ENVIRONMENT="stage"  # you can override with --environment
 
 # Non-secret configuration
-ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-INTERNAL_LB_PLACEHOLDER}"
 S3_SQLITE_DB_BUCKET="${S3_SQLITE_DB_BUCKET:-graze-mega-02}"
 S3_SQLITE_DB_PREFIX="${S3_SQLITE_DB_PREFIX:-mega/}"
 
@@ -61,12 +60,6 @@ validate_config() {
 
 get_elasticsearch_internal_lb_ip() {
     log_info "Getting Elasticsearch internal load balancer IP..."
-
-    # If user has explicitly set a URL, use it
-    if [ "$ELASTICSEARCH_URL" != "INTERNAL_LB_PLACEHOLDER" ]; then
-        log_info "Using user-provided Elasticsearch URL: $ELASTICSEARCH_URL"
-        return
-    fi
 
     # Try to get the internal load balancer IP from the Kubernetes service
     # This assumes the load balancer has been deployed and has an assigned IP
