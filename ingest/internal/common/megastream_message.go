@@ -191,6 +191,11 @@ func (m *megaStreamMessage) GetQuotePost() string {
 }
 
 func (m *megaStreamMessage) GetEmbeddings() map[string][]float32 {
+	// Return nil instead of empty map to avoid Elasticsearch type inference issues
+	// when serializing to JSON (empty map becomes {}, which ES may misinterpret)
+	if len(m.embeddings) == 0 {
+		return nil
+	}
 	return m.embeddings
 }
 

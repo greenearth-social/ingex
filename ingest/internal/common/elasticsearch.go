@@ -976,7 +976,7 @@ func QueryPostsByAuthorDID(ctx context.Context, client *elasticsearch.Client, in
 		return nil, fmt.Errorf("failed to marshal query: %w", err)
 	}
 
-// Initial scroll request with routing
+	// Initial scroll request with routing
 	res, err := client.Search(
 		client.Search.WithContext(ctx),
 		client.Search.WithIndex(index),

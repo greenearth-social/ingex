@@ -1,7 +1,5 @@
 # binaries
 bin/
-jetstream_ingest
-megastream_ingest
 
 # state file
 .megastream_state.json
