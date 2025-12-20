@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/elastic/go-elasticsearch/v9"
 	"github.com/greenearth/ingest/internal/common"
 	"github.com/greenearth/ingest/internal/megastream_ingest"
@@ -23,6 +28,7 @@ func main() {
 	source := flag.String("source", "local", "Source of SQLite files: 'local' or 's3'")
 	mode := flag.String("mode", "once", "Ingestion mode: 'once' or 'spool'")
 	noRewind := flag.Bool("no-rewind", false, "Do not rewind to last processed timestamp on startup (drops intervening data)")
+	startupWithLastFile := flag.Bool("startup-with-last-file", false, "Process the most recent file on startup, even if before the default cursor")
 	flag.Parse()
 
 	// Load configuration
@@ -35,6 +41,9 @@ func main() {
 	}
 	if *noRewind {
 		logger.Info("Rewind disabled - starting from current time")
+	}
+	if *startupWithLastFile {
+		logger.Info("Startup-with-last-file enabled - will process most recent file on startup")
 	}
 
 	// Create context with cancellation for graceful shutdown
@@ -64,13 +73,13 @@ func main() {
 	}()
 
 	logger.Info("Starting SQLite ingestion (source: %s, mode: %s)", *source, *mode)
-	if err := runIngestion(ctx, config, logger, healthServer, *source, *mode, *dryRun, *skipTLSVerify, *noRewind); err != nil {
+	if err := runIngestion(ctx, config, logger, healthServer, *source, *mode, *dryRun, *skipTLSVerify, *noRewind, *startupWithLastFile); err != nil {
 		logger.Error("%v", err)
 		os.Exit(1)
 	}
 }
 
-func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, source, mode string, dryRun, skipTLSVerify, noRewind bool) error {
+func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, source, mode string, dryRun, skipTLSVerify, noRewind, startupWithLastFile bool) error {
 	// Validate source parameter
 	if source != "local" && source != "s3" {
 		return fmt.Errorf("invalid source: %s (must be 'local' or 's3')", source)
@@ -111,13 +120,40 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		return fmt.Errorf("failed to initialize state manager: %w", err)
 	}
 
-	// If no-rewind is enabled, update cursor to current time (service start time)
+	// Handle cursor initialization based on flags
 	if noRewind {
+		// If no-rewind is enabled, update cursor to current time (service start time)
 		currentTime := time.Now().UnixMicro()
 		if err := stateManager.UpdateCursor(currentTime); err != nil {
 			return fmt.Errorf("failed to update cursor for no-rewind mode: %w", err)
 		}
 		logger.Info("No-rewind mode: set cursor to service start time: %d", currentTime)
+	} else if startupWithLastFile {
+		// If startup-with-last-file is enabled, find and set cursor to process the most recent file
+		var mostRecentFileTime int64
+		var err error
+
+		switch source {
+		case "local":
+			mostRecentFileTime, err = findMostRecentLocalFile(config.LocalSQLiteDBPath, logger)
+		case "s3":
+			mostRecentFileTime, err = findMostRecentS3File(ctx, config.S3SQLiteDBBucket, config.S3SQLiteDBPrefix, config.AWSRegion, config.AWSS3AccessKey, config.AWSS3SecretKey, logger)
+		}
+
+		if err != nil {
+			return fmt.Errorf("failed to find most recent file for startup-with-last-file mode: %w", err)
+		}
+
+		if mostRecentFileTime > 0 {
+			// Set cursor to just before the most recent file so it gets processed
+			cursorTime := mostRecentFileTime - 1
+			if err := stateManager.UpdateCursor(cursorTime); err != nil {
+				return fmt.Errorf("failed to update cursor for startup-with-last-file mode: %w", err)
+			}
+			logger.Info("Startup-with-last-file mode: set cursor to %d to process most recent file", cursorTime)
+		} else {
+			logger.Info("Startup-with-last-file mode: no files found, using default cursor")
+		}
 	} else {
 		cursor := stateManager.GetCursor()
 		if cursor != nil {
@@ -548,4 +584,138 @@ func flushLikeDeletionBatch(
 	}
 
 	return nil
+}
+
+// findMostRecentLocalFile finds the most recent file in the local directory
+func findMostRecentLocalFile(directory string, logger *common.IngestLogger) (int64, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	var mostRecentTime int64
+	var mostRecentFile string
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		if !strings.HasSuffix(entry.Name(), ".db.zip") {
+			continue
+		}
+
+		fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(entry.Name())
+		if err != nil {
+			logger.Debug("Skipping file with invalid filename format: %s (%v)", entry.Name(), err)
+			continue
+		}
+
+		if fileTimeUs > mostRecentTime {
+			mostRecentTime = fileTimeUs
+			mostRecentFile = entry.Name()
+		}
+	}
+
+	if mostRecentFile != "" {
+		logger.Info("Found most recent local file: %s (timestamp: %d)", mostRecentFile, mostRecentTime)
+	}
+
+	return mostRecentTime, nil
+}
+
+// findMostRecentS3File finds the most recent file in the S3 bucket
+func findMostRecentS3File(ctx context.Context, bucket, prefix, region, accessKey, secretKey string, logger *common.IngestLogger) (int64, error) {
+	// Create AWS S3 client
+	var cfg aws.Config
+	var err error
+
+	if accessKey != "" && secretKey != "" {
+		cfg, err = config.LoadDefaultConfig(
+			ctx,
+			config.WithRegion(region),
+			config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+				return aws.Credentials{
+					AccessKeyID:     accessKey,
+					SecretAccessKey: secretKey,
+				}, nil
+			})),
+		)
+	} else {
+		cfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	client := s3.NewFromConfig(cfg)
+
+	// Start searching from 1 hour ago to avoid scanning the entire bucket
+	// Files are published every ~5 minutes, so 1 hour should give us plenty of candidates
+	oneHourAgo := time.Now().Add(-1 * time.Hour).UnixMicro()
+	startAfterFilename := common.TimestampToMegastreamFilename(oneHourAgo)
+	startAfterKey := prefix + startAfterFilename
+
+	logger.Debug("Searching for most recent file starting from: %s", startAfterFilename)
+
+	// List objects starting from 1 hour ago
+	input := &s3.ListObjectsV2Input{
+		Bucket:       aws.String(bucket),
+		Prefix:       aws.String(prefix),
+		StartAfter:   aws.String(startAfterKey),
+		RequestPayer: "requester",
+		MaxKeys:      aws.Int32(1000), // Limit to 1000 files (~83 hours worth at 5min intervals)
+	}
+
+	var mostRecentTime int64
+	var mostRecentFile string
+
+	// We only need to check recent files, so limit pagination
+	pageCount := 0
+	maxPages := 5 // At most 5 pages (5000 files = ~17 days worth)
+
+	for pageCount < maxPages {
+		result, err := client.ListObjectsV2(ctx, input)
+		if err != nil {
+			return 0, fmt.Errorf("failed to list S3 objects: %w", err)
+		}
+
+		pageCount++
+
+		for _, obj := range result.Contents {
+			key := *obj.Key
+			filename := filepath.Base(key)
+
+			if !strings.HasSuffix(filename, ".db.zip") {
+				continue
+			}
+
+			fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(filename)
+			if err != nil {
+				logger.Debug("Skipping file with invalid filename format: %s (%v)", filename, err)
+				continue
+			}
+
+			if fileTimeUs > mostRecentTime {
+				mostRecentTime = fileTimeUs
+				mostRecentFile = filename
+			}
+		}
+
+		if !*result.IsTruncated {
+			break
+		}
+
+		input.ContinuationToken = result.NextContinuationToken
+		input.StartAfter = nil // Only use StartAfter on first request
+	}
+
+	if mostRecentFile != "" {
+		logger.Info("Found most recent S3 file: %s (timestamp: %d) after checking %d page(s)", mostRecentFile, mostRecentTime, pageCount)
+	} else {
+		logger.Info("No recent files found in S3 bucket (searched from %s)", startAfterFilename)
+	}
+
+	return mostRecentTime, nil
 }
