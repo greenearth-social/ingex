@@ -29,7 +29,7 @@ Configuration is done through environment variables:
 
 - `--dry-run` - Run in dry-run mode (show what would be deleted without actually deleting)
 - `--skip-tls-verify` - Skip TLS certificate verification (use for local development only)
-- `--retention-days` - Number of days to retain data (default: `60`)
+- `--retention-hours` - Number of hours to retain data (default: `1440` hours = 60 days)
 
 ## Required Elasticsearch Permissions
 
@@ -111,8 +111,8 @@ export LOGGING_ENABLED="true"
 
 ./bin/elasticsearch_expiry --dry-run --skip-tls-verify
 
-# Run with custom retention (30 days instead of default 60)
-./bin/elasticsearch_expiry --dry-run --retention-days 30
+# Run with custom retention (720 hours = 30 days instead of default 1440 hours)
+./bin/elasticsearch_expiry --dry-run --retention-hours 720
 ```
 
 ### Production Usage
@@ -142,7 +142,7 @@ If you see authentication or permission errors:
 If the expiry process is too slow or overwhelming your cluster:
 
 1. Run during off-peak hours when cluster load is lower
-2. Consider running more frequently with shorter retention periods
+2. Consider running more frequently with shorter retention periods (e.g., hourly with 5-hour retention for limited capacity clusters)
 3. Monitor Elasticsearch cluster health during operations
 4. Use `--dry-run` first to estimate the impact
 
@@ -151,6 +151,6 @@ If the expiry process is too slow or overwhelming your cluster:
 If the service runs but doesn't delete anything:
 
 1. Run with `--dry-run` to see what would be deleted
-2. Check the retention period with `--retention-days`
+2. Check the retention period with `--retention-hours`
 3. Verify the date fields in your indices match the expected format (ISO8601)
 4. Enable debug logging and check the search queries being executed

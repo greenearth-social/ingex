@@ -34,6 +34,9 @@ Data Sources:
 ```text
 ingest/
 ├── cmd/
+│   ├── elasticsearch_expiry/       # Elasticsearch data expiry job
+│   │   ├── main.go                 # CLI and orchestration
+│   │   └── README.md               # Expiry-specific documentation
 │   ├── megastream_ingest/          # Megastream SQLite ingestion
 │   │   ├── main.go                 # CLI and orchestration
 │   │   └── README.md               # Megastream-specific documentation
@@ -49,10 +52,20 @@ ingest/
 │   │   ├── logger.go               # Structured logging
 │   │   ├── message.go              # MegaStream message parsing
 │   │   └── state.go                # File processing state management
+│   ├── elasticsearch_expiry/       # Expiry-specific implementations
+│   │   └── service.go              # Expiry logic
 │   ├── megastream_ingest/          # MegaStream-specific implementations
 │   │   └── spooler.go              # Local and S3 file discovery/processing
 │   └── jetstream_ingest/           # Jetstream-specific implementations
 │       └── client.go               # WebSocket client
+├── scripts/
+│   ├── deploy.sh                                      # Deployment automation
+│   ├── gcp_setup.sh                                   # GCP environment setup
+│   ├── ingestctl.sh                                   # Control script for ingest services
+│   ├── k8s_recreate_api_key.sh                        # Recreate Elasticsearch API key
+│   ├── k8s_delete_es_data_via_api.sh                  # Delete ES data via API (safe)
+│   ├── k8s_delete_es_data_filesystem_emergency.sh     # Delete ES data from filesystem (emergency only)
+│   └── fix_es_readonly.sh                             # Fix ES read-only blocks
 ├── go.mod                          # Module: github.com/greenearth/ingest
 └── test_data/                      # Sample SQLite databases for testing
 ```
@@ -133,10 +146,10 @@ Or via command line:
 
 ```bash
 # Port-forward to Elasticsearch
-kubectl port-forward service/greenearth-es-local-es-http 9200 -n greenearth-local &
+kubectl port-forward service/greenearth-es-http 9200 -n greenearth-local
 
 # Get elastic password
-ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-local-es-elastic-user -n greenearth-local -o go-template='{{.data.elastic | base64decode}}')
+ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n greenearth-local -o go-template='{{.data.elastic | base64decode}}')
 
 # Create API key (adjust index names as needed)
 curl -k -X POST "https://localhost:9200/_security/api_key" \
@@ -150,8 +163,8 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "cluster": ["manage_index_templates", "monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1", "likes", "likes_v1"],
-            "privileges": ["create_doc", "create", "delete", "index", "write", "all"]
+            "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1", "likes", "likes_v1", "like_tombstones", "like_tombstones_v1"],
+            "privileges": ["create_doc", "create", "delete", "index", "write", "maintenance", "all"]
           }
         ]
       }
@@ -210,7 +223,7 @@ Run against local Elasticsearch cluster (see [../index/README.md](../index/READM
 
 ```bash
 # Start port-forward to local Elasticsearch
-kubectl port-forward service/greenearth-es-local-es-http 9200 -n greenearth-local
+kubectl port-forward service/greenearth-es-http 9200 -n greenearth-local
 
 # Run megastream_ingest
 ./megastream_ingest --source local --mode once --skip-tls-verify

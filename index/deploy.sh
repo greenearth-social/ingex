@@ -5,6 +5,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 K8S_DIR="$SCRIPT_DIR/deploy/k8s"
 
+# set default cluster, region, project id
+GKE_REGION="${GKE_REGION:-us-east1}"
+GKE_PROJECT_ID="${GKE_PROJECT_ID:-greenearth-471522}"
+
 print_usage() {
     echo "Usage: $0 <environment> [options]"
     echo ""
@@ -92,7 +96,11 @@ wait_for_resource() {
         else
             # Elasticsearch and other resources may have both health and phase
             local phase=$(kubectl get $resource_type $resource_name -n $namespace -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            if [ "$health" = "green" ] && [ "$phase" = "Ready" ]; then
+            # Accept yellow health for non-prod environments (staging with limited nodes)
+            if [ "$ENVIRONMENT" != "prod" ] && [ "$health" = "yellow" ] && [ "$phase" = "Ready" ]; then
+                log_success "$resource_type/$resource_name is ready (yellow health acceptable for $ENVIRONMENT)"
+                return 0
+            elif [ "$health" = "green" ] && [ "$phase" = "Ready" ]; then
                 log_success "$resource_type/$resource_name is ready"
                 return 0
             fi
@@ -246,7 +254,7 @@ setup_kubectl_context() {
                         --location="$GKE_REGION" \
                         --project="$GKE_PROJECT_ID" \
                         --machine-type="n2-highmem-2" \
-                        --num-nodes=15 \
+                        --num-nodes=4 \
                         --node-labels=workload=es-data \
                         --disk-size=100 \
                         --disk-type=pd-standard \
@@ -331,6 +339,8 @@ teardown_environment() {
 deploy_environment() {
     local environment=$1
     local namespace="greenearth-$environment"
+
+    GKE_CLUSTER="${GKE_CLUSTER:-greenearth-$environment-cluster}"
 
     if [ "$TEARDOWN" = true ]; then
         setup_kubectl_context "$environment" false

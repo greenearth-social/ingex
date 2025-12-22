@@ -17,7 +17,7 @@ func main() {
 	// Parse command line flags
 	dryRun := flag.Bool("dry-run", false, "Run in dry-run mode (show what would be deleted without actually deleting)")
 	skipTLSVerify := flag.Bool("skip-tls-verify", false, "Skip TLS certificate verification (use for local development only)")
-	retentionDays := flag.Int("retention-days", 60, "Number of days to retain data (default: 60 days = ~2 months)")
+	retentionHours := flag.Int("retention-hours", 1440, "Number of hours to retain data (default: 1440 hours = 60 days)")
 	flag.Parse()
 
 	// Load configuration
@@ -25,7 +25,7 @@ func main() {
 	logger := common.NewLogger(config.LoggingEnabled)
 
 	logger.Info("Green Earth Ingex - Elasticsearch Expiry Service")
-	logger.Info("Retention period: %d days", *retentionDays)
+	logger.Info("Retention period: %d hours (%.1f days)", *retentionHours, float64(*retentionHours)/24.0)
 
 	if *dryRun {
 		logger.Info("Running in DRY-RUN mode - no documents will be deleted")
@@ -46,6 +46,19 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Start health check server
+	healthServer, err := common.NewHealthServer(8080, 8089, logger)
+	if err != nil {
+		logger.Error("Failed to create health server: %v", err)
+		os.Exit(1)
+	}
+	go func() {
+		if err := healthServer.Start(ctx); err != nil {
+			logger.Error("Health server failed: %v", err)
+			cancel()
+		}
+	}()
+
 	// Handle shutdown signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -56,7 +69,7 @@ func main() {
 	}()
 
 	// Run the expiry process
-	if err := runExpiry(ctx, config, logger, *dryRun, *skipTLSVerify, *retentionDays); err != nil {
+	if err := runExpiry(ctx, config, logger, healthServer, *dryRun, *skipTLSVerify, *retentionHours); err != nil {
 		logger.Error("Expiry process failed: %v", err)
 		os.Exit(1)
 	}
@@ -64,14 +77,14 @@ func main() {
 	logger.Info("Expiry process completed successfully")
 }
 
-func runExpiry(ctx context.Context, config *common.Config, logger *common.IngestLogger, dryRun, skipTLSVerify bool, retentionDays int) error {
+func runExpiry(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify bool, retentionHours int) error {
 	// Default graceful timeout for delete operations during shutdown
 	const graceTimeout = 30 * time.Second
 	// Initialize Elasticsearch client
 	esConfig := common.ElasticsearchConfig{
 		URL:           config.ElasticsearchURL,
 		APIKey:        config.ElasticsearchAPIKey,
-		SkipTLSVerify: skipTLSVerify,
+		SkipTLSVerify: skipTLSVerify || config.ElasticsearchTLSSkipVerify,
 	}
 
 	esClient, err := common.NewElasticsearchClient(esConfig, logger)
@@ -79,8 +92,8 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 		return fmt.Errorf("failed to create Elasticsearch client: %w", err)
 	}
 
-	// Calculate the cutoff date
-	cutoffDate := time.Now().UTC().AddDate(0, 0, -retentionDays)
+	// Calculate the cutoff date using hours
+	cutoffDate := time.Now().UTC().Add(-time.Duration(retentionHours) * time.Hour)
 	logger.Info("Deleting documents older than: %s", cutoffDate.Format(time.RFC3339))
 
 	// Initialize the expiry service
@@ -90,6 +103,9 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 	}
 
 	expiryService := elasticsearch_expiry.NewService(esClient, expiryConfig, logger)
+
+	// Mark service as healthy once we've successfully initialized
+	healthServer.SetHealthy(true, fmt.Sprintf("Expiring documents older than %d hours (%.1f days)", retentionHours, float64(retentionHours)/24.0))
 
 	// Define the collections to clean up
 	// Each collection has different date fields to check

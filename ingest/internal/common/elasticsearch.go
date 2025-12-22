@@ -25,8 +25,8 @@ type ElasticsearchDoc struct {
 	IndexedAt        string               `json:"indexed_at"`
 }
 
-// TombstoneDoc represents the document structure for post deletion tombstones
-type TombstoneDoc struct {
+// PostTombstoneDoc represents the document structure for post deletion tombstones
+type PostTombstoneDoc struct {
 	AtURI     string `json:"at_uri"`
 	AuthorDID string `json:"author_did"`
 	DeletedAt string `json:"deleted_at"`
@@ -39,6 +39,21 @@ type LikeDoc struct {
 	SubjectURI string `json:"subject_uri"`
 	AuthorDID  string `json:"author_did"`
 	CreatedAt  string `json:"created_at"`
+	IndexedAt  string `json:"indexed_at"`
+}
+
+// LikeIdentifier holds the at_uri and author_did pair for looking up likes
+type LikeIdentifier struct {
+	AtURI     string
+	AuthorDID string
+}
+
+// LikeTombstoneDoc represents the document structure for like deletion tombstones
+type LikeTombstoneDoc struct {
+	AtURI      string `json:"at_uri"`
+	AuthorDID  string `json:"author_did"`
+	SubjectURI string `json:"subject_uri"`
+	DeletedAt  string `json:"deleted_at"`
 	IndexedAt  string `json:"indexed_at"`
 }
 
@@ -180,8 +195,8 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 	return nil
 }
 
-// BulkIndexTombstones indexes a batch of tombstone documents to Elasticsearch
-func BulkIndexTombstones(ctx context.Context, client *elasticsearch.Client, index string, docs []TombstoneDoc, dryRun bool, logger *IngestLogger) error {
+// BulkIndexPostTombstones indexes a batch of post tombstone documents to Elasticsearch
+func BulkIndexPostTombstones(ctx context.Context, client *elasticsearch.Client, index string, docs []PostTombstoneDoc, dryRun bool, logger *IngestLogger) error {
 	if len(docs) == 0 {
 		return nil
 	}
@@ -384,8 +399,8 @@ func CreateElasticsearchDoc(msg MegaStreamMessage) ElasticsearchDoc {
 	}
 }
 
-// CreateTombstoneDoc creates a TombstoneDoc from a MegaStreamMessage
-func CreateTombstoneDoc(msg MegaStreamMessage) TombstoneDoc {
+// CreatePostTombstoneDoc creates a PostTombstoneDoc from a MegaStreamMessage
+func CreatePostTombstoneDoc(msg MegaStreamMessage) PostTombstoneDoc {
 	now := time.Now().UTC()
 	deletedAt := now
 
@@ -393,7 +408,7 @@ func CreateTombstoneDoc(msg MegaStreamMessage) TombstoneDoc {
 		deletedAt = time.Unix(0, timeUs*1000)
 	}
 
-	return TombstoneDoc{
+	return PostTombstoneDoc{
 		AtURI:     msg.GetAtURI(),
 		AuthorDID: msg.GetAuthorDID(),
 		DeletedAt: deletedAt.Format(time.RFC3339),
@@ -409,6 +424,24 @@ func CreateLikeDoc(msg JetstreamMessage) LikeDoc {
 		AuthorDID:  msg.GetAuthorDID(),
 		CreatedAt:  msg.GetCreatedAt(),
 		IndexedAt:  time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+// CreateLikeTombstoneDoc creates a LikeTombstoneDoc from a JetstreamMessage and subject URI
+func CreateLikeTombstoneDoc(msg JetstreamMessage, subjectURI string) LikeTombstoneDoc {
+	now := time.Now().UTC()
+	deletedAt := now
+
+	if timeUs := msg.GetTimeUs(); timeUs > 0 {
+		deletedAt = time.Unix(0, timeUs*1000)
+	}
+
+	return LikeTombstoneDoc{
+		AtURI:      msg.GetAtURI(),
+		AuthorDID:  msg.GetAuthorDID(),
+		SubjectURI: subjectURI,
+		DeletedAt:  deletedAt.Format(time.RFC3339),
+		IndexedAt:  now.Format(time.RFC3339),
 	}
 }
 
@@ -502,4 +535,696 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 	}
 
 	return nil
+}
+
+// BulkGetLikes fetches multiple like documents from Elasticsearch by at_uri with routing
+func BulkGetLikes(ctx context.Context, client *elasticsearch.Client, index string, likeIDs []LikeIdentifier, logger *IngestLogger) (map[string]LikeDoc, error) {
+	if len(likeIDs) == 0 {
+		return make(map[string]LikeDoc), nil
+	}
+
+	// Build mget request with proper docs array structure
+	docs := make([]map[string]interface{}, 0, len(likeIDs))
+	for _, id := range likeIDs {
+		if id.AtURI == "" {
+			continue
+		}
+
+		doc := map[string]interface{}{
+			"_index": index,
+			"_id":    id.AtURI,
+		}
+
+		// Add routing if author_did is provided
+		if id.AuthorDID != "" {
+			doc["routing"] = id.AuthorDID
+		}
+
+		docs = append(docs, doc)
+	}
+
+	// Wrap docs in the required structure
+	requestBody := map[string]interface{}{
+		"docs": docs,
+	}
+
+	bodyJSON, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal mget request: %w", err)
+	}
+
+	// Execute mget request
+	res, err := client.Mget(
+		bytes.NewReader(bodyJSON),
+		client.Mget.WithContext(ctx),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("mget request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close mget response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return nil, fmt.Errorf("mget request returned error: %s", res.String())
+	}
+
+	// Parse response
+	var mgetResponse struct {
+		Docs []struct {
+			ID     string  `json:"_id"`
+			Found  bool    `json:"found"`
+			Source LikeDoc `json:"_source"`
+		} `json:"docs"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&mgetResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse mget response: %w", err)
+	}
+
+	// Build result map
+	result := make(map[string]LikeDoc)
+	for _, doc := range mgetResponse.Docs {
+		if doc.Found {
+			result[doc.ID] = doc.Source
+		} else {
+			logger.Error("Like document not found for deletion: at_uri=%s", doc.ID)
+		}
+	}
+
+	return result, nil
+}
+
+// BulkIndexLikeTombstones indexes a batch of like tombstone documents to Elasticsearch
+func BulkIndexLikeTombstones(ctx context.Context, client *elasticsearch.Client, index string, docs []LikeTombstoneDoc, dryRun bool, logger *IngestLogger) error {
+	if len(docs) == 0 {
+		return nil
+	}
+
+	if dryRun {
+		logger.Debug("Dry-run: Skipping bulk index of %d like tombstones to index '%s'", len(docs), index)
+		return nil
+	}
+
+	var buf bytes.Buffer
+	validDocCount := 0
+
+	for _, doc := range docs {
+		if doc.AtURI == "" {
+			logger.Error("Skipping like tombstone with empty at_uri (author_did: %s)", doc.AuthorDID)
+			continue
+		}
+
+		if doc.SubjectURI == "" {
+			logger.Error("Skipping like tombstone with empty subject_uri (at_uri: %s)", doc.AtURI)
+			continue
+		}
+
+		meta := map[string]interface{}{
+			"index": map[string]interface{}{
+				"_index":  index,
+				"_id":     doc.AtURI,
+				"routing": doc.AuthorDID,
+			},
+		}
+
+		validDocCount++
+
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			return fmt.Errorf("failed to marshal metadata: %w", err)
+		}
+
+		buf.Write(metaJSON)
+		buf.WriteByte('\n')
+
+		docJSON, err := json.Marshal(doc)
+		if err != nil {
+			return fmt.Errorf("failed to marshal like tombstone document: %w", err)
+		}
+
+		buf.Write(docJSON)
+		buf.WriteByte('\n')
+	}
+
+	if validDocCount == 0 {
+		logger.Error("No valid like tombstones to index (all had empty at_uri or subject_uri)")
+		return fmt.Errorf("no valid like tombstones in batch")
+	}
+
+	res, err := client.Bulk(
+		bytes.NewReader(buf.Bytes()),
+		client.Bulk.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("bulk like tombstone request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return fmt.Errorf("bulk like tombstone request returned error: %s", res.String())
+	}
+
+	var bulkResponse struct {
+		Errors bool `json:"errors"`
+		Items  []map[string]struct {
+			Error *struct {
+				Type   string `json:"type"`
+				Reason string `json:"reason"`
+			} `json:"error"`
+		} `json:"items"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
+		return fmt.Errorf("failed to parse bulk like tombstone response: %w", err)
+	}
+
+	if bulkResponse.Errors {
+		itemsJSON, _ := json.Marshal(bulkResponse.Items)
+		logger.Error("Bulk like tombstone indexing failed with errors. Response items: %s", string(itemsJSON))
+		return fmt.Errorf("bulk like tombstone indexing failed: some documents had errors (see logs for details)")
+	}
+
+	return nil
+}
+
+// SearchResponse represents the response from an Elasticsearch search query
+type SearchResponse struct {
+	Took     int        `json:"took"`
+	TimedOut bool       `json:"timed_out"`
+	Shards   ShardsInfo `json:"_shards"`
+	Hits     Hits       `json:"hits"`
+}
+
+// ShardsInfo contains information about the shards that were queried
+type ShardsInfo struct {
+	Total      int `json:"total"`
+	Successful int `json:"successful"`
+	Skipped    int `json:"skipped"`
+	Failed     int `json:"failed"`
+}
+
+// Hits contains the search results
+type Hits struct {
+	Total    TotalHits `json:"total"`
+	MaxScore float64   `json:"max_score"`
+	Hits     []Hit     `json:"hits"`
+}
+
+// TotalHits contains the total number of hits and their relation
+type TotalHits struct {
+	Value    int    `json:"value"`
+	Relation string `json:"relation"`
+}
+
+// Hit represents a single search hit
+type Hit struct {
+	Index  string        `json:"_index"`
+	ID     string        `json:"_id"`
+	Score  float64       `json:"_score"`
+	Sort   []interface{} `json:"sort,omitempty"`
+	Source PostData      `json:"_source"`
+}
+
+// PostData represents the _source field of a search hit
+type PostData struct {
+	AtURI            string               `json:"at_uri"`
+	AuthorDID        string               `json:"author_did"`
+	Content          string               `json:"content"`
+	CreatedAt        string               `json:"created_at"`
+	ThreadRootPost   string               `json:"thread_root_post,omitempty"`
+	ThreadParentPost string               `json:"thread_parent_post,omitempty"`
+	QuotePost        string               `json:"quote_post,omitempty"`
+	Embeddings       map[string][]float32 `json:"embeddings,omitempty"`
+	IndexedAt        string               `json:"indexed_at"`
+}
+
+// LikeData represents the _source field of a like search hit
+type LikeData struct {
+	AtURI      string `json:"at_uri"`
+	SubjectURI string `json:"subject_uri"`
+	AuthorDID  string `json:"author_did"`
+	CreatedAt  string `json:"created_at"`
+	IndexedAt  string `json:"indexed_at"`
+}
+
+// LikeHit represents a single like search hit
+type LikeHit struct {
+	Index  string        `json:"_index"`
+	ID     string        `json:"_id"`
+	Score  float64       `json:"_score"`
+	Sort   []interface{} `json:"sort,omitempty"`
+	Source LikeData      `json:"_source"`
+}
+
+// LikeHits contains the like search results
+type LikeHits struct {
+	Total    TotalHits `json:"total"`
+	MaxScore float64   `json:"max_score"`
+	Hits     []LikeHit `json:"hits"`
+}
+
+// LikeSearchResponse represents the response from an Elasticsearch like search query
+type LikeSearchResponse struct {
+	Took     int        `json:"took"`
+	TimedOut bool       `json:"timed_out"`
+	Shards   ShardsInfo `json:"_shards"`
+	Hits     LikeHits   `json:"hits"`
+}
+
+// FetchPosts queries Elasticsearch with pagination using search_after
+// Parameters:
+//   - client: Elasticsearch client
+//   - logger: Logger for debug/error messages
+//   - index: Index name to query
+//   - startTime, endTime: optional time range filter on created_at field (RFC3339 format)
+//   - afterCreatedAt, afterIndexedAt: pagination cursors (both required if either provided)
+//   - size: number of results to fetch (defaults to 1000 if 0)
+func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, size int) (SearchResponse, error) {
+	var response SearchResponse
+
+	if size <= 0 {
+		size = 1000
+	}
+
+	// Build query based on whether time range is specified
+	var queryClause map[string]interface{}
+	if startTime != "" || endTime != "" {
+		rangeQuery := map[string]interface{}{}
+		if startTime != "" {
+			rangeQuery["gte"] = startTime
+		}
+		if endTime != "" {
+			rangeQuery["lte"] = endTime
+		}
+		queryClause = map[string]interface{}{
+			"range": map[string]interface{}{
+				"created_at": rangeQuery,
+			},
+		}
+	} else {
+		queryClause = map[string]interface{}{
+			"match_all": map[string]interface{}{},
+		}
+	}
+
+	query := map[string]interface{}{
+		"query": queryClause,
+		"sort": []interface{}{
+			map[string]interface{}{"created_at": "asc"},
+			map[string]interface{}{"indexed_at": "asc"},
+		},
+		"size": size,
+	}
+
+	if afterCreatedAt != "" && afterIndexedAt != "" {
+		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt}
+	}
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return response, fmt.Errorf("failed to marshal query: %w", err)
+	}
+
+	logger.Debug("Executing search query on index '%s': %s", index, string(queryJSON))
+
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
+	)
+	if err != nil {
+		return response, fmt.Errorf("search request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close search response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return response, fmt.Errorf("search request returned error: %s", res.String())
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
+		return response, fmt.Errorf("failed to parse search response: %w", err)
+	}
+
+	logger.Debug("Search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
+
+	return response, nil
+}
+
+// FetchLikes queries Elasticsearch for likes with pagination using search_after
+// Parameters mirror FetchPosts but return LikeSearchResponse
+func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, size int) (LikeSearchResponse, error) {
+	var response LikeSearchResponse
+
+	if size <= 0 {
+		size = 1000
+	}
+
+	// Build query based on whether time range is specified
+	var queryClause map[string]interface{}
+	if startTime != "" || endTime != "" {
+		rangeQuery := map[string]interface{}{}
+		if startTime != "" {
+			rangeQuery["gte"] = startTime
+		}
+		if endTime != "" {
+			rangeQuery["lte"] = endTime
+		}
+		queryClause = map[string]interface{}{
+			"range": map[string]interface{}{
+				"created_at": rangeQuery,
+			},
+		}
+	} else {
+		queryClause = map[string]interface{}{
+			"match_all": map[string]interface{}{},
+		}
+	}
+
+	query := map[string]interface{}{
+		"query": queryClause,
+		"sort": []interface{}{
+			map[string]interface{}{"created_at": "asc"},
+			map[string]interface{}{"indexed_at": "asc"},
+		},
+		"size": size,
+	}
+
+	if afterCreatedAt != "" && afterIndexedAt != "" {
+		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt}
+	}
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return response, fmt.Errorf("failed to marshal query: %w", err)
+	}
+
+	logger.Debug("Executing like search query on index '%s': %s", index, string(queryJSON))
+
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
+	)
+	if err != nil {
+		return response, fmt.Errorf("like search request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close like search response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return response, fmt.Errorf("like search request returned error: %s", res.String())
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
+		return response, fmt.Errorf("failed to parse like search response: %w", err)
+	}
+
+	logger.Debug("Like search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
+
+	return response, nil
+}
+
+// QueryPostsByAuthorDID retrieves all post at_uris for a given author_did using scroll API
+func QueryPostsByAuthorDID(ctx context.Context, client *elasticsearch.Client, index string, authorDID string, logger *IngestLogger) ([]string, error) {
+	// Build search query
+	query := map[string]interface{}{
+		"query": map[string]interface{}{
+			"term": map[string]interface{}{
+				"author_did": authorDID,
+			},
+		},
+		"_source": []string{"at_uri"},
+		"size":    1000,
+	}
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query: %w", err)
+	}
+
+// Initial scroll request with routing
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
+		client.Search.WithScroll(time.Minute*5),
+		client.Search.WithRouting(authorDID),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initial scroll search failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return nil, fmt.Errorf("scroll search returned error: %s", res.String())
+	}
+
+	var searchResponse struct {
+		ScrollID string `json:"_scroll_id"`
+		Hits     struct {
+			Hits []struct {
+				Source struct {
+					AtURI string `json:"at_uri"`
+				} `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&searchResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse search response: %w", err)
+	}
+
+	// Collect all at_uris
+	var atURIs []string
+	for _, hit := range searchResponse.Hits.Hits {
+		if hit.Source.AtURI != "" {
+			atURIs = append(atURIs, hit.Source.AtURI)
+		}
+	}
+
+	scrollID := searchResponse.ScrollID
+	count := len(atURIs)
+
+	// Continue scrolling until no more results
+	for {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		// Get next batch
+		scrollRes, err := client.Scroll(
+			client.Scroll.WithContext(ctx),
+			client.Scroll.WithScrollID(scrollID),
+			client.Scroll.WithScroll(time.Minute*5),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scroll request failed: %w", err)
+		}
+
+		if scrollRes.IsError() {
+			_ = scrollRes.Body.Close()
+			return nil, fmt.Errorf("scroll request returned error: %s", scrollRes.String())
+		}
+
+		var scrollResponse struct {
+			ScrollID string `json:"_scroll_id"`
+			Hits     struct {
+				Hits []struct {
+					Source struct {
+						AtURI string `json:"at_uri"`
+					} `json:"_source"`
+				} `json:"hits"`
+			} `json:"hits"`
+		}
+
+		if err := json.NewDecoder(scrollRes.Body).Decode(&scrollResponse); err != nil {
+			_ = scrollRes.Body.Close()
+			return nil, fmt.Errorf("failed to parse scroll response: %w", err)
+		}
+		_ = scrollRes.Body.Close()
+
+		// No more results
+		if len(scrollResponse.Hits.Hits) == 0 {
+			break
+		}
+
+		// Collect at_uris from this batch
+		for _, hit := range scrollResponse.Hits.Hits {
+			if hit.Source.AtURI != "" {
+				atURIs = append(atURIs, hit.Source.AtURI)
+			}
+		}
+
+		scrollID = scrollResponse.ScrollID
+		count += len(scrollResponse.Hits.Hits)
+
+		// Log progress every 1000 documents
+		if count%1000 == 0 {
+			logger.Info("QueryPostsByAuthorDID progress: %d posts found for DID %s", count, authorDID)
+		}
+	}
+
+	// Clear scroll context
+	_, _ = client.ClearScroll(client.ClearScroll.WithScrollID(scrollID))
+
+	logger.Info("QueryPostsByAuthorDID complete: found %d posts for DID %s", len(atURIs), authorDID)
+	return atURIs, nil
+}
+
+// QueryLikesByAuthorDID retrieves all likes for a given author_did using scroll API
+// Returns map of at_uri -> subject_uri (subject_uri needed for tombstone creation)
+func QueryLikesByAuthorDID(ctx context.Context, client *elasticsearch.Client, index string, authorDID string, logger *IngestLogger) (map[string]string, error) {
+	// Build search query
+	query := map[string]interface{}{
+		"query": map[string]interface{}{
+			"term": map[string]interface{}{
+				"author_did": authorDID,
+			},
+		},
+		"_source": []string{"at_uri", "subject_uri"},
+		"size":    1000,
+	}
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query: %w", err)
+	}
+
+	// Initial scroll request with routing
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
+		client.Search.WithScroll(time.Minute*5),
+		client.Search.WithRouting(authorDID),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initial scroll search failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return nil, fmt.Errorf("scroll search returned error: %s", res.String())
+	}
+
+	var searchResponse struct {
+		ScrollID string `json:"_scroll_id"`
+		Hits     struct {
+			Hits []struct {
+				Source struct {
+					AtURI      string `json:"at_uri"`
+					SubjectURI string `json:"subject_uri"`
+				} `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&searchResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse search response: %w", err)
+	}
+
+	// Collect all likes
+	likes := make(map[string]string)
+	for _, hit := range searchResponse.Hits.Hits {
+		if hit.Source.AtURI != "" && hit.Source.SubjectURI != "" {
+			likes[hit.Source.AtURI] = hit.Source.SubjectURI
+		}
+	}
+
+	scrollID := searchResponse.ScrollID
+	count := len(likes)
+
+	// Continue scrolling until no more results
+	for {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		// Get next batch
+		scrollRes, err := client.Scroll(
+			client.Scroll.WithContext(ctx),
+			client.Scroll.WithScrollID(scrollID),
+			client.Scroll.WithScroll(time.Minute*5),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scroll request failed: %w", err)
+		}
+
+		if scrollRes.IsError() {
+			_ = scrollRes.Body.Close()
+			return nil, fmt.Errorf("scroll request returned error: %s", scrollRes.String())
+		}
+
+		var scrollResponse struct {
+			ScrollID string `json:"_scroll_id"`
+			Hits     struct {
+				Hits []struct {
+					Source struct {
+						AtURI      string `json:"at_uri"`
+						SubjectURI string `json:"subject_uri"`
+					} `json:"_source"`
+				} `json:"hits"`
+			} `json:"hits"`
+		}
+
+		if err := json.NewDecoder(scrollRes.Body).Decode(&scrollResponse); err != nil {
+			_ = scrollRes.Body.Close()
+			return nil, fmt.Errorf("failed to parse scroll response: %w", err)
+		}
+		_ = scrollRes.Body.Close()
+
+		// No more results
+		if len(scrollResponse.Hits.Hits) == 0 {
+			break
+		}
+
+		// Collect likes from this batch
+		for _, hit := range scrollResponse.Hits.Hits {
+			if hit.Source.AtURI != "" && hit.Source.SubjectURI != "" {
+				likes[hit.Source.AtURI] = hit.Source.SubjectURI
+			}
+		}
+
+		scrollID = scrollResponse.ScrollID
+		count += len(scrollResponse.Hits.Hits)
+
+		// Log progress every 1000 documents
+		if count%1000 == 0 {
+			logger.Info("QueryLikesByAuthorDID progress: %d likes found for DID %s", count, authorDID)
+		}
+	}
+
+	// Clear scroll context
+	_, _ = client.ClearScroll(client.ClearScroll.WithScrollID(scrollID))
+
+	logger.Info("QueryLikesByAuthorDID complete: found %d likes for DID %s", len(likes), authorDID)
+	return likes, nil
 }
