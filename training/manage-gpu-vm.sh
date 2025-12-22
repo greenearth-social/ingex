@@ -59,6 +59,7 @@ Commands:
 Options:
     --install-drivers          Include startup script to install NVIDIA drivers and CUDA toolkit
     --ssh-key <path>           Path to SSH public key file for direct SSH access (e.g., ~/.ssh/id_rsa.pub)
+    --data-disk <disk-name>    Attach existing persistent disk instead of creating new one
     --zone <zone>              Override default zone (default: us-east1-c)
     -h, --help                 Show this help message
 
@@ -66,9 +67,10 @@ Examples:
     $0 create                                    Create VM with Ops Agent only
     $0 create --install-drivers                  Create VM with Ops Agent and NVIDIA drivers
     $0 create --ssh-key ~/.ssh/id_rsa.pub        Create VM with SSH key for direct access
+    $0 create --data-disk my-training-data       Attach existing disk instead of creating new
     $0 create --zone us-east1-d                  Create VM in different zone
     $0 create --install-drivers --ssh-key ~/.ssh/id_rsa.pub   Create with all features
-    $0 destroy --zone us-east1-d                 Delete VM and all associated resources
+    $0 destroy --zone us-east1-d                 Delete VM (data disk preserved)
     $0 status                                    Show VM status
 
 Features:
@@ -76,7 +78,8 @@ Features:
     - HTTP/HTTPS firewall rules enabled by default
     - Google Cloud Ops Agent installed for logs and metrics
     - Daily backups at 3am UTC (7 day retention)
-    - 256GB SSD data disk attached
+    - 256GB SSD data disk attached (or use existing disk with --data-disk)
+    - Data disks are preserved when VM is destroyed
 
 Recommended zones for T4 GPU availability (US East Coast):
     - us-east1-d, us-east4-a, us-east4-b, us-central1-a
@@ -146,11 +149,43 @@ ensure_static_ip() {
     echo "${static_ip}"
 }
 
+validate_existing_disk() {
+    local disk_name="$1"
+
+    # Check if disk exists
+    if ! gcloud compute disks describe "${disk_name}" --zone="${ZONE}" &>/dev/null; then
+        echo "Error: Disk '${disk_name}' not found in zone ${ZONE}"
+        exit 1
+    fi
+
+    # Verify disk is not already attached
+    local attached_instances=$(gcloud compute disks describe "${disk_name}" \
+        --zone="${ZONE}" \
+        --format="value(users)")
+
+    if [[ -n "${attached_instances}" ]]; then
+        echo "Error: Disk '${disk_name}' is already attached to: ${attached_instances}"
+        exit 1
+    fi
+
+    echo "Validated existing disk: ${disk_name}"
+}
+
 create_vm() {
     local install_drivers="$1"
     local ssh_key_file="$2"
+    local data_disk_name="$3"
     local ssh_username=""
     local ssh_key_content=""
+
+    local use_existing_disk="false"
+    local disk_name="${DATA_DISK_NAME}"
+
+    if [[ -n "${data_disk_name}" ]]; then
+        use_existing_disk="true"
+        disk_name="${data_disk_name}"
+        validate_existing_disk "${disk_name}"
+    fi
 
     if [[ -n "${ssh_key_file}" ]]; then
         if [[ ! -f "${ssh_key_file}" ]]; then
@@ -173,7 +208,11 @@ create_vm() {
     echo "  GPU: ${GPU_COUNT}x ${GPU_TYPE}"
     echo "  Zone: ${ZONE}"
     echo "  Boot Disk: ${BOOT_DISK_SIZE}"
-    echo "  Data Disk: ${DATA_DISK_SIZE} (${DATA_DISK_TYPE})"
+    if [[ "${use_existing_disk}" == "true" ]]; then
+        echo "  Data Disk: ${disk_name} (existing)"
+    else
+        echo "  Data Disk: ${disk_name} (new ${DATA_DISK_SIZE} ${DATA_DISK_TYPE})"
+    fi
     echo "  Install Drivers: ${install_drivers}"
     echo "  SSH Key: ${ssh_key_file:-none}"
     echo "  Ops Agent: enabled"
@@ -198,6 +237,13 @@ create_vm() {
         echo "${NVIDIA_DRIVER_SCRIPT}" >> "${temp_script}"
     fi
 
+    local disk_arg=""
+    if [[ "${use_existing_disk}" == "true" ]]; then
+        disk_arg="--disk=name=${disk_name},mode=rw,boot=no,auto-delete=no"
+    else
+        disk_arg="--create-disk=name=${disk_name},size=${DATA_DISK_SIZE},type=${DATA_DISK_TYPE},mode=rw,auto-delete=no"
+    fi
+
     local create_cmd=(
         gcloud compute instances create "${VM_NAME}"
         --zone="${ZONE}"
@@ -207,7 +253,7 @@ create_vm() {
         --boot-disk-size="${BOOT_DISK_SIZE}"
         --image-family="${IMAGE_FAMILY}"
         --image-project="${IMAGE_PROJECT}"
-        --create-disk="name=${DATA_DISK_NAME},size=${DATA_DISK_SIZE},type=${DATA_DISK_TYPE},mode=rw,auto-delete=yes"
+        ${disk_arg}
         --tags=http-server,https-server
         --metadata-from-file=startup-script="${temp_script}"
         --address="${static_ip}"
@@ -232,7 +278,7 @@ create_vm() {
         fi
 
         echo "Attaching snapshot policy to data disk..."
-        if gcloud compute disks add-resource-policies "${DATA_DISK_NAME}" \
+        if gcloud compute disks add-resource-policies "${disk_name}" \
             --resource-policies="${SNAPSHOT_POLICY_NAME}" \
             --zone="${ZONE}"; then
             echo "Data disk snapshot policy attached successfully."
@@ -293,9 +339,11 @@ create_vm() {
 destroy_vm() {
     echo "This will destroy the following resources in zone ${ZONE}:"
     echo "  - VM: ${VM_NAME}"
-    echo "  - Data Disk: ${DATA_DISK_NAME}"
     echo "  - Snapshot Policy: ${SNAPSHOT_POLICY_NAME}"
     echo "  - Static IP: ${STATIC_IP_NAME}"
+    echo ""
+    echo "The following resources will be PRESERVED:"
+    echo "  - Data Disk (will be detached but not deleted)"
     echo ""
     read -p "Are you sure you want to continue? (yes/no): " confirmation
 
@@ -319,15 +367,19 @@ destroy_vm() {
             --zone="${ZONE}" &>/dev/null || echo "Boot disk policy already detached or disk deleted."
     fi
 
-    if gcloud compute disks describe "${DATA_DISK_NAME}" --zone="${ZONE}" &>/dev/null 2>&1; then
-        gcloud compute disks remove-resource-policies "${DATA_DISK_NAME}" \
-            --resource-policies="${SNAPSHOT_POLICY_NAME}" \
-            --zone="${ZONE}" &>/dev/null || echo "Data disk policy already detached or disk deleted."
+    local attached_disks=$(gcloud compute instances describe "${VM_NAME}" \
+        --zone="${ZONE}" \
+        --format="value(disks[].source.basename())" 2>/dev/null || echo "")
 
-        echo "Deleting orphaned data disk: ${DATA_DISK_NAME}..."
-        gcloud compute disks delete "${DATA_DISK_NAME}" --zone="${ZONE}" --quiet
-        echo "Data disk deleted."
-    fi
+    for disk in ${attached_disks}; do
+        if [[ "${disk}" != "${VM_NAME}" ]]; then
+            echo "Detaching snapshot policy from data disk: ${disk}..."
+            gcloud compute disks remove-resource-policies "${disk}" \
+                --resource-policies="${SNAPSHOT_POLICY_NAME}" \
+                --zone="${ZONE}" &>/dev/null || echo "  Policy already detached."
+            echo "Data disk '${disk}' preserved (not deleted)."
+        fi
+    done
 
     echo "Deleting static IP: ${STATIC_IP_NAME}..."
     if gcloud compute addresses describe "${STATIC_IP_NAME}" --region="${ZONE%-*}" &>/dev/null; then
@@ -345,7 +397,7 @@ destroy_vm() {
         echo "Snapshot policy does not exist."
     fi
 
-    echo "All resources destroyed successfully."
+    echo "VM destroyed successfully. Data disk(s) preserved."
 }
 
 show_status() {
@@ -380,6 +432,7 @@ main() {
         create)
             local install_drivers="false"
             local ssh_key_file=""
+            local data_disk_name=""
             local zone_override=""
             while [[ $# -gt 0 ]]; do
                 case "$1" in
@@ -393,6 +446,14 @@ main() {
                             exit 1
                         fi
                         ssh_key_file="$2"
+                        shift 2
+                        ;;
+                    --data-disk)
+                        if [[ -z "$2" || "$2" == --* ]]; then
+                            echo "Error: --data-disk requires a disk name argument"
+                            exit 1
+                        fi
+                        data_disk_name="$2"
                         shift 2
                         ;;
                     --zone)
@@ -419,7 +480,7 @@ main() {
                 ZONE="${zone_override}"
             fi
 
-            create_vm "${install_drivers}" "${ssh_key_file}"
+            create_vm "${install_drivers}" "${ssh_key_file}" "${data_disk_name}"
             ;;
         destroy)
             local zone_override=""
