@@ -444,7 +444,7 @@ while [[ $# -gt 0 ]]; do
             echo
             exit 0
             ;;
-        jetstream|megastream|expiry|all)
+        jetstream|megastream|expiry|extract|all)
             # Handle service as first positional argument
             break
             ;;
