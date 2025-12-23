@@ -4,6 +4,7 @@ package common
 // Field names match the expected parquet output format
 type ExtractPost struct {
 	DID             string            `json:"did" parquet:"did"`
+	AtURI           string            `json:"at_uri" parquet:"at_uri"`
 	EmbedQuoteURI   string            `json:"embed_quote_uri,omitempty" parquet:"embed_quote_uri,optional"`
 	InsertedAt      string            `json:"inserted_at" parquet:"inserted_at"`
 	RecordCreatedAt string            `json:"record_created_at" parquet:"record_created_at"`
@@ -17,6 +18,7 @@ type ExtractPost struct {
 func HitToExtractPost(hit Hit) ExtractPost {
 	extractPost := ExtractPost{
 		DID:             hit.Source.AuthorDID,
+		AtURI:           hit.Source.AtURI,
 		EmbedQuoteURI:   hit.Source.QuotePost,
 		InsertedAt:      hit.Source.IndexedAt,
 		RecordCreatedAt: hit.Source.CreatedAt,
