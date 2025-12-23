@@ -277,12 +277,10 @@ deploy_extract_job() {
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
-        --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-env-vars="GE_PARQUET_DESTINATION=gs://$destination_bucket/" \
         --set-env-vars="GE_PARQUET_MAX_RECORDS=$max_records" \
-        --set-env-vars="GE_EXTRACT_INDICES=$indices" \
-        --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
-        --set-env-vars="GE_LOGGING_ENABLED=true" \
+        --env-vars-file=./scripts/env-vars/extract-env-vars.yaml \
+        --
         --cpu=2 \
         --memory=2Gi \
         --task-timeout=7200 \
@@ -440,7 +438,7 @@ while [[ $# -gt 0 ]]; do
             echo
             exit 0
             ;;
-        jetstream|megastream|expiry|all)
+        jetstream|megastream|expiry|extract|all)
             # Handle service as first positional argument
             break
             ;;

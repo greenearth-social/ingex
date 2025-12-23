@@ -1,0 +1,19 @@
+# env-vars.yaml
+# Environment variables configuration for Google Cloud Run
+# 
+# Syntax: Standard YAML key-value pairs
+# - Keys: Environment variable names (alphanumeric + underscores)
+# - Values: Strings, numbers, or booleans (strings are recommended for consistency)
+# - Quotes: Use quotes for values with special characters, spaces, or that could be 
+#   interpreted as other YAML types (like "true", "123", etc.)
+#
+# Usage with gcloud:
+#   gcloud run jobs deploy JOB_NAME --env-vars-file=env-vars.yaml
+#   gcloud run services deploy SERVICE_NAME --env-vars-file=env-vars.yaml
+#
+# Note: This will SET (replace) all environment variables. To update/add without
+# replacing existing vars, use --update-env-vars or merge strategies.
+
+GE_ELASTICSEARCH_TLS_SKIP_VERIFY: true
+GE_LOGGING_ENABLED: true
+GE_EXTRACT_INDICES: "posts,likes"
