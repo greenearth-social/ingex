@@ -271,14 +271,14 @@ deploy_extract_job() {
     # Prepare env variables file
     local temp_var_dir=$(mktemp -d)
     trap "rm -rf $temp_var_dir" EXIT
-    cat > extract-env-vars.yaml <<EOF
-    GE_ELASTICSEARCH_TLS_SKIP_VERIFY: "true"
-    GE_LOGGING_ENABLED: "true"
-    GE_EXTRACT_INDICES: "posts,likes"
-    GE_ELASTICSEARCH_URL: "$ELASTICSEARCH_URL"
-    GE_PARQUET_DESTINATION: "gs://$destination_bucket/"
-    GE_PARQUET_MAX_RECORDS: "$max_records"
-    EOF
+    cat > "$temp_var_dir/extract-env-vars.yaml" <<EOF
+GE_ELASTICSEARCH_TLS_SKIP_VERIFY: "true"
+GE_LOGGING_ENABLED: "true"
+GE_EXTRACT_INDICES: "posts,likes"
+GE_ELASTICSEARCH_URL: "$ELASTICSEARCH_URL"
+GE_PARQUET_DESTINATION: "gs://$destination_bucket/"
+GE_PARQUET_MAX_RECORDS: "$max_records"
+EOF
 
     log_info "Deploying extract job with buildpacks..."
 
@@ -288,7 +288,7 @@ deploy_extract_job() {
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --env-vars-file=$temp_var_dir/extract-env-vars.yaml
+        --env-vars-file="$temp_var_dir/extract-env-vars.yaml" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --cpu=2 \
         --memory=2Gi \
