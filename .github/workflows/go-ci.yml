@@ -8,6 +8,11 @@ on:
       - '.github/workflows/go-ci.yml'
   pull_request:
     branches: [ main, develop ]
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
     paths:
       - 'ingest/**'
       - '.github/workflows/go-ci.yml'
