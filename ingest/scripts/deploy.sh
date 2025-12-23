@@ -289,7 +289,7 @@ EOF
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
         --env-vars-file="$temp_var_dir/extract-env-vars.yaml" \
-        --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
+        --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --cpu=2 \
         --memory=2Gi \
         --task-timeout=7200 \
