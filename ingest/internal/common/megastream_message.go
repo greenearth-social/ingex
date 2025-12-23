@@ -108,10 +108,8 @@ func (m *megaStreamMessage) parseRawPost(rawPostJSON string, logger *IngestLogge
 
 	m.content, _ = record["text"].(string) // This is blank on image posts
 
-	m.createdAt, _ = record["createdAt"].(string)
-	if m.createdAt == "" {
-		logger.Debug("Empty createdAt in record for %s", m.atURI)
-		return
+	if rawCreatedAt, ok := record["createdAt"].(string); ok {
+		m.createdAt = NormalizeTimestampToUTC(rawCreatedAt, logger)
 	}
 
 	hydratedMetadata, _ := rawPost["hydrated_metadata"].(map[string]interface{})
