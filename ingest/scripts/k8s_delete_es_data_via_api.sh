@@ -38,6 +38,34 @@ if [ "$confirm" != "yes" ]; then
   exit 0
 fi
 
+# Stop ingest services for stage/prod to prevent them from writing during recreation
+if [ "$ENVIRONMENT" = "stage" ] || [ "$ENVIRONMENT" = "prod" ]; then
+  echo ""
+  echo "Stopping ingest services to prevent writes during recreation..."
+
+  # Find ingestctl script
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  INGESTCTL="${SCRIPT_DIR}/ingestctl.sh"
+
+  if [ -f "$INGESTCTL" ]; then
+    # Stop all services
+    "$INGESTCTL" stop || {
+      echo "Warning: Failed to stop services. Continuing anyway..."
+    }
+    echo "Ingest services stopped. Waiting 10 seconds for in-flight requests to complete..."
+    sleep 10
+  else
+    echo "Warning: ingestctl.sh not found at ${INGESTCTL}"
+    echo "Services will not be stopped. This may cause alias conflicts."
+    read -p "Continue anyway? (type 'yes' to confirm): " continue_confirm
+    if [ "$continue_confirm" != "yes" ]; then
+      echo "Aborted."
+      exit 0
+    fi
+  fi
+  echo ""
+fi
+
 # Create a job that deletes and recreates the indices
 kubectl run es-index-recreation-$(date +%s) \
   --namespace="${NAMESPACE}" \
@@ -48,7 +76,7 @@ kubectl run es-index-recreation-$(date +%s) \
   --env="ES_USERNAME=${ES_USERNAME}" \
   --env="ES_PASSWORD=${ES_PASSWORD}" \
   -- sh -c '
-echo "Step 1: Removing read-only blocks from all indices..."
+echo "Removing read-only blocks from all indices..."
 curl -k -X PUT "${ES_HOST}/_all/_settings" \
   -u "${ES_USERNAME}:${ES_PASSWORD}" \
   -H "Content-Type: application/json" \
@@ -56,32 +84,32 @@ curl -k -X PUT "${ES_HOST}/_all/_settings" \
 
 echo ""
 echo ""
-echo "Step 2: Deleting posts_v1 index..."
+echo "Deleting posts_v1 index..."
 curl -k -X DELETE "${ES_HOST}/posts_v1" \
   -u "${ES_USERNAME}:${ES_PASSWORD}"
 
 echo ""
 echo ""
-echo "Step 3: Deleting likes_v1 index..."
+echo "Deleting likes_v1 index..."
 curl -k -X DELETE "${ES_HOST}/likes_v1" \
   -u "${ES_USERNAME}:${ES_PASSWORD}"
 
 echo ""
 echo ""
-echo "Step 4: Deleting post_tombstones_v1 index..."
+echo "Deleting post_tombstones_v1 index..."
 curl -k -X DELETE "${ES_HOST}/post_tombstones_v1" \
   -u "${ES_USERNAME}:${ES_PASSWORD}"
 
 echo ""
 echo ""
-echo "Step 5: Deleting like_tombstones_v1 index (if exists)..."
+echo "Deleting like_tombstones_v1 index (if exists)..."
 curl -k -X DELETE "${ES_HOST}/like_tombstones_v1" \
   -u "${ES_USERNAME}:${ES_PASSWORD}" \
   2>/dev/null || echo "like_tombstones_v1 does not exist, skipping"
 
 echo ""
 echo ""
-echo "Step 6: Resetting disk watermark settings to defaults..."
+echo "Resetting disk watermark settings to defaults..."
 curl -k -X PUT "${ES_HOST}/_cluster/settings" \
   -u "${ES_USERNAME}:${ES_PASSWORD}" \
   -H "Content-Type: application/json" \
@@ -100,7 +128,7 @@ curl -k -X PUT "${ES_HOST}/_cluster/settings" \
 
 echo ""
 echo ""
-echo "Step 7: Verifying cluster health..."
+echo "Verifying cluster health..."
 curl -k -X GET "${ES_HOST}/_cluster/health?pretty" \
   -u "${ES_USERNAME}:${ES_PASSWORD}"
 
@@ -110,7 +138,7 @@ echo "Deletion complete! Indices removed."
 '
 
 echo ""
-echo "Step 8: Recreating indices with bootstrap job..."
+echo "Recreating indices with bootstrap job..."
 
 # Find the git repository root
 GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
@@ -119,31 +147,23 @@ if [ -z "$GIT_ROOT" ]; then
   exit 1
 fi
 
-BOOTSTRAP_JOB_YAML="${GIT_ROOT}/index/deploy/k8s/base/bootstrap-job.yaml"
-TEMPLATES_DIR="${GIT_ROOT}/index/deploy/k8s/base/templates"
-
-if [ ! -f "$BOOTSTRAP_JOB_YAML" ]; then
-  echo "Warning: bootstrap job YAML not found at: ${BOOTSTRAP_JOB_YAML}"
-  echo "Cannot recreate indices automatically. You may need to apply the bootstrap job manually."
-  exit 1
+# Determine which environment overlay to use
+K8S_ENV_DIR="${GIT_ROOT}/index/deploy/k8s/environments/${ENVIRONMENT}"
+if [ ! -d "$K8S_ENV_DIR" ]; then
+  echo "Warning: Environment directory not found at: ${K8S_ENV_DIR}"
+  echo "Falling back to base configuration"
+  K8S_ENV_DIR="${GIT_ROOT}/index/deploy/k8s/base"
 fi
 
-if [ ! -d "$TEMPLATES_DIR" ]; then
-  echo "Warning: templates directory not found at: ${TEMPLATES_DIR}"
-  echo "Cannot apply index templates and aliases."
-  exit 1
-fi
-
-# Apply all index templates and aliases ConfigMaps
-echo "Applying index templates and aliases ConfigMaps..."
-kubectl apply -f "${TEMPLATES_DIR}/" -n "${NAMESPACE}"
+echo "Using Kubernetes configuration from: ${K8S_ENV_DIR}"
 
 # Delete existing bootstrap job if it exists (to allow recreation)
+echo "Deleting existing bootstrap job if present..."
 kubectl delete job elasticsearch-bootstrap -n "${NAMESPACE}" 2>/dev/null || true
 
-# Create new bootstrap job from the YAML file
-echo "Creating bootstrap job to recreate indices..."
-kubectl apply -f "$BOOTSTRAP_JOB_YAML" -n "$NAMESPACE"
+# Apply all templates using Kustomize to properly substitute variables
+echo "Applying index templates, aliases ConfigMaps, and bootstrap job using Kustomize..."
+kubectl apply -k "${K8S_ENV_DIR}" -n "${NAMESPACE}"
 
 echo ""
 echo "Waiting for bootstrap job to complete..."
@@ -155,6 +175,21 @@ kubectl wait --for=condition=complete --timeout=300s job/elasticsearch-bootstrap
 
 echo ""
 echo "Done! Indices have been recreated."
+
+# Restart ingest services for stage/prod
+if [ "$ENVIRONMENT" = "stage" ] || [ "$ENVIRONMENT" = "prod" ]; then
+  echo ""
+  echo "Restarting ingest services..."
+
+  if [ -f "$INGESTCTL" ]; then
+    "$INGESTCTL" start || {
+      echo "Warning: Failed to start services. You may need to start them manually."
+      echo "Run: ${INGESTCTL} start"
+    }
+    echo "Ingest services restarted."
+  fi
+fi
+
 echo ""
 echo "Check disk space with:"
 ES_POD=$(kubectl get pods -n "${NAMESPACE}" -l common.k8s.elastic.co/type=elasticsearch -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
