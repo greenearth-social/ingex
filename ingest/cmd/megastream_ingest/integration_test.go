@@ -88,13 +88,13 @@ func TestMegastreamIngestIntegration(t *testing.T) {
 
 		dstFile, err := os.Create(dstPath)
 		if err != nil {
-			srcFile.Close()
+			_ = srcFile.Close()
 			t.Fatalf("Failed to create dest file: %v", err)
 		}
 
 		_, err = io.Copy(dstFile, srcFile)
-		srcFile.Close()
-		dstFile.Close()
+		_ = srcFile.Close()
+		_ = dstFile.Close()
 		if err != nil {
 			t.Fatalf("Failed to copy file: %v", err)
 		}
@@ -222,7 +222,7 @@ func TestMegastreamIngestIntegration(t *testing.T) {
 			t.Logf("  content: %.80s...", doc.Content)
 			t.Logf("  created_at: %s", doc.CreatedAt)
 			t.Logf("  indexed_at: %s", doc.IndexedAt)
-			t.Logf("  has_embeddings: %v", doc.Embeddings != nil && len(doc.Embeddings) > 0)
+			t.Logf("  has_embeddings: %v", len(doc.Embeddings) > 0)
 			if doc.ThreadRootPost != "" {
 				t.Logf("  thread_root_post: %s", doc.ThreadRootPost)
 			}
@@ -268,7 +268,9 @@ func getSampleDocuments(ctx context.Context, esClient *elasticsearch.Client, ind
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() {
+		_ = res.Body.Close()
+	}()
 
 	if res.IsError() {
 		bodyBytes, _ := io.ReadAll(res.Body)
@@ -328,9 +330,7 @@ func countDocuments(esClient *elasticsearch.Client, index string) (int, error) {
 		return 0, err
 	}
 	defer func() {
-		if err := res.Body.Close(); err != nil {
-			// Error closing response body (non-fatal)
-		}
+		_ = res.Body.Close()
 	}()
 
 	var result map[string]interface{}
@@ -396,7 +396,9 @@ func cleanupTestData(ctx context.Context, esClient *elasticsearch.Client, testDa
 	if err != nil {
 		return 0, fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		_ = os.RemoveAll(tempDir)
+	}()
 
 	// Copy test files to temp directory
 	files, err := filepath.Glob(filepath.Join(testDataDir, "*.db*"))
@@ -413,13 +415,13 @@ func cleanupTestData(ctx context.Context, esClient *elasticsearch.Client, testDa
 
 		dstFile, err := os.Create(dstPath)
 		if err != nil {
-			srcFile.Close()
+			_ = srcFile.Close()
 			return 0, fmt.Errorf("failed to create dest file: %w", err)
 		}
 
 		_, err = io.Copy(dstFile, srcFile)
-		srcFile.Close()
-		dstFile.Close()
+		_ = srcFile.Close()
+		_ = dstFile.Close()
 		if err != nil {
 			return 0, fmt.Errorf("failed to copy file: %w", err)
 		}
@@ -523,7 +525,9 @@ func deleteByAtURIs(ctx context.Context, esClient *elasticsearch.Client, index s
 	if err != nil {
 		return 0, fmt.Errorf("delete_by_query failed: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() {
+		_ = res.Body.Close()
+	}()
 
 	if res.IsError() {
 		bodyBytes, _ := io.ReadAll(res.Body)
