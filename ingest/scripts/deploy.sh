@@ -281,12 +281,11 @@ deploy_extract_job() {
         --vpc-connector="ingex-vpc-connector-$ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
         --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
-        --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-env-vars="PARQUET_DESTINATION=gs://$destination_bucket/" \
         --set-env-vars="PARQUET_MAX_RECORDS=$max_records" \
-        --set-env-vars="EXTRACT_INDICES=$indices" \
+        --env-vars-file=./scripts/env-vars/extract-env-vars.yaml \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
-        --set-env-vars="LOGGING_ENABLED=true" \
+        --
         --cpu=2 \
         --memory=2Gi \
         --task-timeout=7200 \
