@@ -19,8 +19,8 @@ Configuration is done through environment variables:
 ### Required
 
 - `GE_JETSTREAM_URL` - WebSocket URL for Jetstream (default: `wss://jetstream2.us-east.bsky.network/subscribe`)
-- `ELASTICSEARCH_URL` - Elasticsearch cluster URL
-- `ELASTICSEARCH_API_KEY` - Elasticsearch API key (not required in dry-run mode)
+- `GE_ELASTICSEARCH_URL` - Elasticsearch cluster URL
+- `GE_ELASTICSEARCH_API_KEY` - Elasticsearch API key (not required in dry-run mode)
 
 ### Optional
 
@@ -90,8 +90,8 @@ go build -o jetstream_ingest cmd/jetstream_ingest/main.go
 
 ```bash
 export GE_JETSTREAM_URL="wss://jetstream2.us-east.bsky.network/subscribe"
-export ELASTICSEARCH_URL="https://localhost:9200"
-export ELASTICSEARCH_API_KEY="your-api-key"
+export GE_ELASTICSEARCH_URL="https://localhost:9200"
+export GE_ELASTICSEARCH_API_KEY="your-api-key"
 export GE_LOGGING_ENABLED="true"
 
 ./jetstream_ingest

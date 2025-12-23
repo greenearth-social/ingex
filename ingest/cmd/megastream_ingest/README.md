@@ -29,8 +29,8 @@ Configuration is done through environment variables and command line flags.
 
 **Required:**
 
-- `ELASTICSEARCH_URL` - Elasticsearch cluster endpoint
-- `ELASTICSEARCH_API_KEY` - Elasticsearch API key with permissions:
+- `GE_ELASTICSEARCH_URL` - Elasticsearch cluster endpoint
+- `GE_ELASTICSEARCH_API_KEY` - Elasticsearch API key with permissions:
 
   ```json
   {
@@ -45,18 +45,18 @@ Configuration is done through environment variables and command line flags.
 
 **For Local Source (`--source local`):**
 
-- `LOCAL_SQLITE_DB_PATH` - Directory containing `.db.zip` files to process
+- `GE_LOCAL_SQLITE_DB_PATH` - Directory containing `.db.zip` files to process
 
 **For S3 Source (`--source s3`):**
 
 - `GE_AWS_S3_BUCKET` - S3 bucket name containing SQLite files
 - `GE_AWS_S3_PREFIX` - S3 key prefix (folder path)
-- `AWS_REGION` - AWS region (default: `us-east-1`)
+- `GE_AWS_REGION` - AWS region (default: `us-east-1`)
 
 **Optional:**
 
 - `GE_LOGGING_ENABLED` - Enable/disable logging (default: `true`)
-- `SPOOL_INTERVAL_SEC` - Polling interval in seconds for spool mode (default: `60`)
+- `GE_SPOOL_INTERVAL_SEC` - Polling interval in seconds for spool mode (default: `60`)
 - `GE_MEGASTREAM_STATE_FILE` - Path to state file for cursor tracking (default: `.megastream_state.json`)
 
 ## Usage
@@ -154,9 +154,9 @@ The service responds to SIGINT and SIGTERM signals, completing the current batch
 
 ```bash
 # Set up environment
-export LOCAL_SQLITE_DB_PATH="./test_data"
-export ELASTICSEARCH_URL="https://localhost:9200"
-export ELASTICSEARCH_API_KEY="your-api-key"
+export GE_LOCAL_SQLITE_DB_PATH="./test_data"
+export GE_ELASTICSEARCH_URL="https://localhost:9200"
+export GE_ELASTICSEARCH_API_KEY="your-api-key"
 export GE_LOGGING_ENABLED="true"
 
 # Run against local ES cluster
@@ -169,9 +169,9 @@ export GE_LOGGING_ENABLED="true"
 # Set up environment
 export GE_AWS_S3_BUCKET="my-bucket"
 export GE_AWS_S3_PREFIX="megastream/databases/"
-export AWS_REGION="us-west-2"
-export ELASTICSEARCH_URL="https://my-cluster.es.amazonaws.com:9200"
-export ELASTICSEARCH_API_KEY="your-api-key"
+export GE_AWS_REGION="us-west-2"
+export GE_ELASTICSEARCH_URL="https://my-cluster.es.amazonaws.com:9200"
+export GE_ELASTICSEARCH_API_KEY="your-api-key"
 
 # Run once
 ./megastream_ingest --source s3 --mode once
@@ -181,10 +181,10 @@ export ELASTICSEARCH_API_KEY="your-api-key"
 
 ```bash
 # Monitor local directory every 5 minutes
-export SPOOL_INTERVAL_SEC="300"
-export LOCAL_SQLITE_DB_PATH="/data/megastream"
-export ELASTICSEARCH_URL="https://localhost:9200"
-export ELASTICSEARCH_API_KEY="your-api-key"
+export GE_SPOOL_INTERVAL_SEC="300"
+export GE_LOCAL_SQLITE_DB_PATH="/data/megastream"
+export GE_ELASTICSEARCH_URL="https://localhost:9200"
+export GE_ELASTICSEARCH_API_KEY="your-api-key"
 
 ./megastream_ingest --source local --mode spool
 ```
@@ -206,7 +206,7 @@ go run cmd/megastream_ingest/main.go --source local --mode once
 go test ./internal/common -v
 
 # Integration test with sample data (dry-run)
-export LOCAL_SQLITE_DB_PATH="./test_data"
+export GE_LOCAL_SQLITE_DB_PATH="./test_data"
 go run cmd/megastream_ingest/main.go --source local --mode once --dry-run
 ```
 

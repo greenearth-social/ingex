@@ -44,8 +44,8 @@ Default VPC Network (us-east1)
 Run the setup script before creating GKE clusters:
 
 ```bash
-export GKE_PROJECT_ID="greenearth-471522"
-export GKE_REGION="us-east1"
+export GE_GCP_PROJECT_ID="greenearth-471522"
+export GE_GCP_REGION="us-east1"
 
 ./network/setup.sh
 ```
@@ -65,8 +65,8 @@ The script is idempotent and will:
 
 ```bash
 gcloud compute routers describe greenearth-router \
-  --region=$GKE_REGION \
-  --project=$GKE_PROJECT_ID
+  --region=$GE_GCP_REGION \
+  --project=$GE_GCP_PROJECT_ID
 ```
 
 **Check Cloud NAT Status:**
@@ -74,8 +74,8 @@ gcloud compute routers describe greenearth-router \
 ```bash
 gcloud compute routers nats describe greenearth-nat \
   --router=greenearth-router \
-  --region=$GKE_REGION \
-  --project=$GKE_PROJECT_ID
+  --region=$GE_GCP_REGION \
+  --project=$GE_GCP_PROJECT_ID
 ```
 
 **List NAT IP Addresses:**
@@ -83,16 +83,16 @@ gcloud compute routers nats describe greenearth-nat \
 ```bash
 gcloud compute routers nats list \
   --router=greenearth-router \
-  --region=$GKE_REGION \
-  --project=$GKE_PROJECT_ID
+  --region=$GE_GCP_REGION \
+  --project=$GE_GCP_PROJECT_ID
 ```
 
 **View Subnet Configuration:**
 
 ```bash
 gcloud compute networks subnets describe default \
-  --region=$GKE_REGION \
-  --project=$GKE_PROJECT_ID \
+  --region=$GE_GCP_REGION \
+  --project=$GE_GCP_PROJECT_ID \
   --format="get(privateIpGoogleAccess,ipCidrRange)"
 ```
 
@@ -100,7 +100,7 @@ gcloud compute networks subnets describe default \
 
 ```bash
 gcloud compute firewall-rules list \
-  --project=$GKE_PROJECT_ID \
+  --project=$GE_GCP_PROJECT_ID \
   --filter="name~'eck-webhook'" \
   --format="table(name,network,direction,sourceRanges,allowed)"
 ```
@@ -146,7 +146,7 @@ If you need to create the firewall rules manually for troubleshooting:
 
 ```bash
 gcloud compute firewall-rules create allow-stage-master-to-eck-webhook \
-  --project=$GKE_PROJECT_ID \
+  --project=$GE_GCP_PROJECT_ID \
   --network=default \
   --allow=tcp:9443,tcp:8443 \
   --source-ranges=172.16.0.0/28 \
@@ -157,7 +157,7 @@ gcloud compute firewall-rules create allow-stage-master-to-eck-webhook \
 
 ```bash
 gcloud compute firewall-rules create allow-prod-master-to-eck-webhook \
-  --project=$GKE_PROJECT_ID \
+  --project=$GE_GCP_PROJECT_ID \
   --network=default \
   --allow=tcp:9443,tcp:8443 \
   --source-ranges=172.16.0.16/28 \

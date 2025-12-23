@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 K8S_DIR="$SCRIPT_DIR/deploy/k8s"
 
 # set default cluster, region, project id
-GKE_REGION="${GKE_REGION:-us-east1}"
-GKE_PROJECT_ID="${GKE_PROJECT_ID:-greenearth-471522}"
+GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
+GE_GCP_PROJECT_ID="${GE_GCP_PROJECT_ID:-greenearth-471522}"
 
 print_usage() {
     echo "Usage: $0 <environment> [options]"
@@ -184,20 +184,20 @@ setup_kubectl_context() {
             exit 1
         fi
 
-        if [ -z "$GE_K8S_CLUSTER" ] || [ -z "$GKE_REGION" ] || [ -z "$GKE_PROJECT_ID" ]; then
-            log_error "Required environment variables not set: GE_K8S_CLUSTER, GKE_REGION, GKE_PROJECT_ID"
+        if [ -z "$GE_K8S_CLUSTER" ] || [ -z "$GE_GCP_REGION" ] || [ -z "$GE_GCP_PROJECT_ID" ]; then
+            log_error "Required environment variables not set: GE_K8S_CLUSTER, GE_GCP_REGION, GE_GCP_PROJECT_ID"
             exit 1
         fi
 
         log_info "Checking if GKE cluster exists: $GE_K8S_CLUSTER"
         if ! gcloud container clusters describe "$GE_K8S_CLUSTER" \
-            --location="$GKE_REGION" \
-            --project="$GKE_PROJECT_ID" &> /dev/null; then
+            --location="$GE_GCP_REGION" \
+            --project="$GE_GCP_PROJECT_ID" &> /dev/null; then
 
             if [ "$create_if_missing" = true ]; then
                 echo ""
-                log_warning "GKE cluster $GE_K8S_CLUSTER does not exist in project $GKE_PROJECT_ID"
-                log_warning "Region: $GKE_REGION"
+                log_warning "GKE cluster $GE_K8S_CLUSTER does not exist in project $GE_GCP_PROJECT_ID"
+                log_warning "Region: $GE_GCP_REGION"
                 log_warning "This will create a new standard GKE cluster (this may incur costs)"
                 echo ""
                 read -p "Do you want to create the cluster? Type 'yes' to confirm: " confirmation
@@ -210,8 +210,8 @@ setup_kubectl_context() {
                 if [ "$environment" = "stage" ]; then
                     log_info "Creating standard GKE cluster for stage: $GE_K8S_CLUSTER"
                     gcloud container clusters create "$GE_K8S_CLUSTER" \
-                        --location="$GKE_REGION" \
-                        --project="$GKE_PROJECT_ID" \
+                        --location="$GE_GCP_REGION" \
+                        --project="$GE_GCP_PROJECT_ID" \
                         --machine-type="n2-highmem-2" \
                         --num-nodes=2 \
                         --disk-size=50 \
@@ -231,8 +231,8 @@ setup_kubectl_context() {
                     log_info "Creating standard GKE cluster for prod: $GE_K8S_CLUSTER"
 
                     gcloud container clusters create "$GE_K8S_CLUSTER" \
-                        --location="$GKE_REGION" \
-                        --project="$GKE_PROJECT_ID" \
+                        --location="$GE_GCP_REGION" \
+                        --project="$GE_GCP_PROJECT_ID" \
                         --machine-type="n2-standard-2" \
                         --num-nodes=2 \
                         --node-labels=workload=es-master \
@@ -251,8 +251,8 @@ setup_kubectl_context() {
                     log_info "Creating data node pool for prod..."
                     gcloud container node-pools create data-pool \
                         --cluster="$GE_K8S_CLUSTER" \
-                        --location="$GKE_REGION" \
-                        --project="$GKE_PROJECT_ID" \
+                        --location="$GE_GCP_REGION" \
+                        --project="$GE_GCP_PROJECT_ID" \
                         --machine-type="n2-highmem-2" \
                         --num-nodes=4 \
                         --node-labels=workload=es-data \
@@ -264,7 +264,7 @@ setup_kubectl_context() {
                     log_success "Prod cluster with node pools created successfully"
                 fi
             else
-                log_error "GKE cluster $GE_K8S_CLUSTER does not exist in project $GKE_PROJECT_ID"
+                log_error "GKE cluster $GE_K8S_CLUSTER does not exist in project $GE_GCP_PROJECT_ID"
                 exit 1
             fi
         else
@@ -273,8 +273,8 @@ setup_kubectl_context() {
 
         log_info "Getting credentials for GKE cluster..."
         gcloud container clusters get-credentials "$GE_K8S_CLUSTER" \
-            --location="$GKE_REGION" \
-            --project="$GKE_PROJECT_ID"
+            --location="$GE_GCP_REGION" \
+            --project="$GE_GCP_PROJECT_ID"
     fi
 
     local current_context=$(kubectl config current-context)

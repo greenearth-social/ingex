@@ -82,12 +82,12 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 	// Validate Elasticsearch configuration
 	if config.ElasticsearchURL == "" {
-		logger.Error("ELASTICSEARCH_URL environment variable is required")
+		logger.Error("GE_ELASTICSEARCH_URL environment variable is required")
 		os.Exit(1)
 	}
 
 	if !dryRun && config.ElasticsearchAPIKey == "" {
-		logger.Error("ELASTICSEARCH_API_KEY environment variable is required")
+		logger.Error("GE_ELASTICSEARCH_API_KEY environment variable is required")
 		os.Exit(1)
 	}
 
@@ -95,7 +95,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	switch source {
 	case "local":
 		if config.LocalSQLiteDBPath == "" {
-			logger.Error("LOCAL_SQLITE_DB_PATH environment variable is required for local source")
+			logger.Error("GE_LOCAL_SQLITE_DB_PATH environment variable is required for local source")
 			os.Exit(1)
 		}
 	case "s3":

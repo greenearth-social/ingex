@@ -8,8 +8,8 @@ print_usage() {
     echo "Usage: $0"
     echo ""
     echo "Required Environment Variables:"
-    echo "  GKE_PROJECT_ID      GCP project ID"
-    echo "  GKE_REGION          GCP region (e.g., us-east1)"
+    echo "  GE_GCP_PROJECT_ID      GCP project ID"
+    echo "  GE_GCP_REGION          GCP region (e.g., us-east1)"
     echo ""
     echo "Examples:"
     echo "  $0                  # Setup network"
@@ -39,13 +39,13 @@ verify_prerequisites() {
         exit 1
     fi
 
-    if [ -z "$GKE_PROJECT_ID" ]; then
-        log_error "GKE_PROJECT_ID environment variable is not set"
+    if [ -z "$GE_GCP_PROJECT_ID" ]; then
+        log_error "GE_GCP_PROJECT_ID environment variable is not set"
         exit 1
     fi
 
-    if [ -z "$GKE_REGION" ]; then
-        log_error "GKE_REGION environment variable is not set"
+    if [ -z "$GE_GCP_REGION" ]; then
+        log_error "GE_GCP_REGION environment variable is not set"
         exit 1
     fi
 
@@ -57,15 +57,15 @@ setup_cloud_router() {
 
     log_info "Checking if Cloud Router exists: $router_name"
     if gcloud compute routers describe "$router_name" \
-        --region="$GKE_REGION" \
-        --project="$GKE_PROJECT_ID" &> /dev/null; then
+        --region="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" &> /dev/null; then
         log_info "Cloud Router already exists: $router_name"
     else
         log_info "Creating Cloud Router: $router_name"
         gcloud compute routers create "$router_name" \
             --network=default \
-            --region="$GKE_REGION" \
-            --project="$GKE_PROJECT_ID"
+            --region="$GE_GCP_REGION" \
+            --project="$GE_GCP_PROJECT_ID"
         log_success "Cloud Router created successfully"
     fi
 }
@@ -77,15 +77,15 @@ setup_cloud_nat() {
     log_info "Checking if Cloud NAT exists: $nat_name"
     if gcloud compute routers nats describe "$nat_name" \
         --router="$router_name" \
-        --region="$GKE_REGION" \
-        --project="$GKE_PROJECT_ID" &> /dev/null; then
+        --region="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" &> /dev/null; then
         log_info "Cloud NAT already exists: $nat_name"
     else
         log_info "Creating Cloud NAT: $nat_name"
         gcloud compute routers nats create "$nat_name" \
             --router="$router_name" \
-            --region="$GKE_REGION" \
-            --project="$GKE_PROJECT_ID" \
+            --region="$GE_GCP_REGION" \
+            --project="$GE_GCP_PROJECT_ID" \
             --nat-all-subnet-ip-ranges \
             --auto-allocate-nat-external-ips
         log_success "Cloud NAT created successfully"
@@ -96,8 +96,8 @@ enable_private_google_access() {
     log_info "Enabling Private Google Access on default subnet..."
 
     gcloud compute networks subnets update default \
-        --region="$GKE_REGION" \
-        --project="$GKE_PROJECT_ID" \
+        --region="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" \
         --enable-private-ip-google-access
 
     log_success "Private Google Access enabled"
@@ -113,12 +113,12 @@ setup_eck_webhook_firewall() {
 
     log_info "Checking if stage firewall rule exists: $stage_rule"
     if gcloud compute firewall-rules describe "$stage_rule" \
-        --project="$GKE_PROJECT_ID" &> /dev/null; then
+        --project="$GE_GCP_PROJECT_ID" &> /dev/null; then
         log_info "Stage firewall rule already exists: $stage_rule"
     else
         log_info "Creating stage firewall rule: $stage_rule"
         gcloud compute firewall-rules create "$stage_rule" \
-            --project="$GKE_PROJECT_ID" \
+            --project="$GE_GCP_PROJECT_ID" \
             --network=default \
             --allow=tcp:9443,tcp:8443 \
             --source-ranges="$stage_cidr" \
@@ -128,12 +128,12 @@ setup_eck_webhook_firewall() {
 
     log_info "Checking if prod firewall rule exists: $prod_rule"
     if gcloud compute firewall-rules describe "$prod_rule" \
-        --project="$GKE_PROJECT_ID" &> /dev/null; then
+        --project="$GE_GCP_PROJECT_ID" &> /dev/null; then
         log_info "Prod firewall rule already exists: $prod_rule"
     else
         log_info "Creating prod firewall rule: $prod_rule"
         gcloud compute firewall-rules create "$prod_rule" \
-            --project="$GKE_PROJECT_ID" \
+            --project="$GE_GCP_PROJECT_ID" \
             --network=default \
             --allow=tcp:9443,tcp:8443 \
             --source-ranges="$prod_cidr" \
@@ -146,8 +146,8 @@ setup_eck_webhook_firewall() {
 
 main() {
     log_info "Setting up network..."
-    log_info "Project: $GKE_PROJECT_ID"
-    log_info "Region: $GKE_REGION"
+    log_info "Project: $GE_GCP_PROJECT_ID"
+    log_info "Region: $GE_GCP_REGION"
     echo ""
 
     verify_prerequisites
