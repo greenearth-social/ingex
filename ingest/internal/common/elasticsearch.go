@@ -12,17 +12,33 @@ import (
 	"github.com/elastic/go-elasticsearch/v9"
 )
 
+// Float32Array is a wrapper for []float32 that ensures values are always marshaled as floats
+type Float32Array []float32
+
+// MarshalJSON implements custom JSON marshaling to ensure floats are serialized with decimals
+func (f Float32Array) MarshalJSON() ([]byte, error) {
+	if f == nil {
+		return []byte("null"), nil
+	}
+	// Convert to []float64 which json.Marshal handles more reliably as floats
+	float64Array := make([]float64, len(f))
+	for i, v := range f {
+		float64Array[i] = float64(v)
+	}
+	return json.Marshal(float64Array)
+}
+
 // ElasticsearchDoc represents the document structure for indexing
 type ElasticsearchDoc struct {
-	AtURI            string               `json:"at_uri"`
-	AuthorDID        string               `json:"author_did"`
-	Content          string               `json:"content"`
-	CreatedAt        string               `json:"created_at"`
-	ThreadRootPost   string               `json:"thread_root_post,omitempty"`
-	ThreadParentPost string               `json:"thread_parent_post,omitempty"`
-	QuotePost        string               `json:"quote_post,omitempty"`
-	Embeddings       map[string][]float32 `json:"embeddings,omitempty"`
-	IndexedAt        string               `json:"indexed_at"`
+	AtURI            string                  `json:"at_uri"`
+	AuthorDID        string                  `json:"author_did"`
+	Content          string                  `json:"content"`
+	CreatedAt        string                  `json:"created_at"`
+	ThreadRootPost   string                  `json:"thread_root_post,omitempty"`
+	ThreadParentPost string                  `json:"thread_parent_post,omitempty"`
+	QuotePost        string                  `json:"quote_post,omitempty"`
+	Embeddings       map[string]Float32Array `json:"embeddings,omitempty"`
+	IndexedAt        string                  `json:"indexed_at"`
 }
 
 // PostTombstoneDoc represents the document structure for post deletion tombstones
@@ -386,6 +402,16 @@ func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string,
 
 // CreateElasticsearchDoc creates an ElasticsearchDoc from a MegaStreamMessage
 func CreateElasticsearchDoc(msg MegaStreamMessage) ElasticsearchDoc {
+	// Convert embeddings to Float32Array type for proper JSON marshaling
+	var embeddings map[string]Float32Array
+	rawEmbeddings := msg.GetEmbeddings()
+	if rawEmbeddings != nil {
+		embeddings = make(map[string]Float32Array, len(rawEmbeddings))
+		for key, value := range rawEmbeddings {
+			embeddings[key] = Float32Array(value)
+		}
+	}
+
 	return ElasticsearchDoc{
 		AtURI:            msg.GetAtURI(),
 		AuthorDID:        msg.GetAuthorDID(),
@@ -394,7 +420,7 @@ func CreateElasticsearchDoc(msg MegaStreamMessage) ElasticsearchDoc {
 		ThreadRootPost:   msg.GetThreadRootPost(),
 		ThreadParentPost: msg.GetThreadParentPost(),
 		QuotePost:        msg.GetQuotePost(),
-		Embeddings:       msg.GetEmbeddings(),
+		Embeddings:       embeddings,
 		IndexedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 }
