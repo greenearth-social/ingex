@@ -412,6 +412,7 @@ while [[ $# -gt 0 ]]; do
             echo "  jetstream                   Deploy jetstream-ingest service only"
             echo "  megastream                  Deploy megastream-ingest service only"
             echo "  expiry                      Deploy elasticsearch-expiry job only"
+            echo "  extract                     Deploy extract job only"
             echo "  all                         Deploy all services (default)"
             echo
             echo "Examples:"
