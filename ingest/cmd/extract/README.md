@@ -21,12 +21,12 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 
 - `GE_ELASTICSEARCH_URL`: ES cluster URL (required)
 - `GE_ELASTICSEARCH_API_KEY`: ES API key (optional, recommended for production)
-- `ELASTICSEARCH_TLS_SKIP_VERIFY`: Skip TLS verification (default: false)
+- `GE_ELASTICSEARCH_TLS_SKIP_VERIFY`: Skip TLS verification (default: false)
 - `GE_PARQUET_DESTINATION`: Output destination - supports local paths (./output) or GCS paths (gs://bucket/path)
 - `GE_PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
 - `GE_EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
 - `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts")
-- `LOGGING_ENABLED`: Enable logging (default: true)
+- `GE_LOGGING_ENABLED`: Enable logging (default: true)
 
 ## Examples
 

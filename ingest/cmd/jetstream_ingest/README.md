@@ -18,14 +18,14 @@ Configuration is done through environment variables:
 
 ### Required
 
-- `JETSTREAM_URL` - WebSocket URL for Jetstream (default: `wss://jetstream2.us-east.bsky.network/subscribe`)
+- `GE_JETSTREAM_URL` - WebSocket URL for Jetstream (default: `wss://jetstream2.us-east.bsky.network/subscribe`)
 - `ELASTICSEARCH_URL` - Elasticsearch cluster URL
 - `ELASTICSEARCH_API_KEY` - Elasticsearch API key (not required in dry-run mode)
 
 ### Optional
 
-- `LOGGING_ENABLED` - Enable detailed logging (default: `true`)
-- `JETSTREAM_STATE_FILE` - Path to state file for cursor tracking (default: `.jetstream_state.json`)
+- `GE_LOGGING_ENABLED` - Enable detailed logging (default: `true`)
+- `GE_JETSTREAM_STATE_FILE` - Path to state file for cursor tracking (default: `.jetstream_state.json`)
 
 ## Usage
 
@@ -89,10 +89,10 @@ go build -o jetstream_ingest cmd/jetstream_ingest/main.go
 ## Example
 
 ```bash
-export JETSTREAM_URL="wss://jetstream2.us-east.bsky.network/subscribe"
+export GE_JETSTREAM_URL="wss://jetstream2.us-east.bsky.network/subscribe"
 export ELASTICSEARCH_URL="https://localhost:9200"
 export ELASTICSEARCH_API_KEY="your-api-key"
-export LOGGING_ENABLED="true"
+export GE_LOGGING_ENABLED="true"
 
 ./jetstream_ingest
 ```

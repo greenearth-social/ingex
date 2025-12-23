@@ -128,11 +128,11 @@ deploy_jetstream_service() {
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest" \
-        --set-env-vars="JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
-        --set-env-vars="LOGGING_ENABLED=true" \
-        --set-env-vars="JETSTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/jetstream_state.json" \
+        --set-env-vars="GE_JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
+        --set-env-vars="GE_LOGGING_ENABLED=true" \
+        --set-env-vars="GE_JETSTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/jetstream_state.json" \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
-        --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
+        --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --scaling="$GE_JETSTREAM_INSTANCES" \
         --cpu=1 \
@@ -153,14 +153,14 @@ deploy_megastream_service() {
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest" \
-        --set-env-vars="LOGGING_ENABLED=true" \
+        --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_SPOOL_INTERVAL_SEC=60" \
         --set-env-vars="GE_AWS_REGION=us-east-1" \
-        --set-env-vars="MEGASTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/megastream_state.json" \
+        --set-env-vars="GE_MEGASTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/megastream_state.json" \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
-        --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
-        --set-env-vars="S3_SQLITE_DB_BUCKET=$GE_AWS_S3_BUCKET" \
-        --set-env-vars="S3_SQLITE_DB_PREFIX=$GE_AWS_S3_PREFIX" \
+        --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
+        --set-env-vars="GE_AWS_S3_BUCKET=$GE_AWS_S3_BUCKET" \
+        --set-env-vars="GE_AWS_S3_PREFIX=$GE_AWS_S3_PREFIX" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest,GE_AWS_S3_ACCESS_KEY=aws-s3-access-key:latest,GE_AWS_S3_SECRET_KEY=aws-s3-secret-key:latest" \
         --scaling="$GE_MEGASTREAM_INSTANCES" \
         --cpu=1 \
@@ -234,9 +234,9 @@ EOF
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
-        --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
+        --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
-        --set-env-vars="LOGGING_ENABLED=true" \
+        --set-env-vars="GE_LOGGING_ENABLED=true" \
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=3600 \
@@ -277,12 +277,12 @@ deploy_extract_job() {
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
-        --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
+        --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-env-vars="GE_PARQUET_DESTINATION=gs://$destination_bucket/" \
         --set-env-vars="GE_PARQUET_MAX_RECORDS=$max_records" \
         --set-env-vars="GE_EXTRACT_INDICES=$indices" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
-        --set-env-vars="LOGGING_ENABLED=true" \
+        --set-env-vars="GE_LOGGING_ENABLED=true" \
         --cpu=2 \
         --memory=2Gi \
         --task-timeout=7200 \

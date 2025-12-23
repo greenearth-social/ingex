@@ -23,7 +23,7 @@ Configuration is done through environment variables:
 
 ### Optional
 
-- `LOGGING_ENABLED` - Enable/disable detailed logging (default: `true`)
+- `GE_LOGGING_ENABLED` - Enable/disable detailed logging (default: `true`)
 
 ### Command Line Options
 
@@ -107,7 +107,7 @@ go build -o bin/elasticsearch_expiry ./cmd/elasticsearch_expiry
 # Test with dry-run (safe to run, won't delete anything)
 export GE_ELASTICSEARCH_URL="https://localhost:9200"
 export GE_ELASTICSEARCH_API_KEY="your-api-key-here"
-export LOGGING_ENABLED="true"
+export GE_LOGGING_ENABLED="true"
 
 ./bin/elasticsearch_expiry --dry-run --skip-tls-verify
 
@@ -121,7 +121,7 @@ export LOGGING_ENABLED="true"
 # Set environment variables
 export GE_ELASTICSEARCH_URL="https://your-cluster.es.amazonaws.com:9200"
 export GE_ELASTICSEARCH_API_KEY="your-production-api-key"
-export LOGGING_ENABLED="true"
+export GE_LOGGING_ENABLED="true"
 
 # Run the expiry process
 ./elasticsearch_expiry

@@ -45,7 +45,7 @@ func main() {
 
 	// Validate configuration
 	if config.JetstreamURL == "" {
-		logger.Error("JETSTREAM_URL environment variable is required")
+		logger.Error("GE_JETSTREAM_URL environment variable is required")
 		os.Exit(1)
 	}
 

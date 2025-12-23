@@ -49,15 +49,15 @@ Configuration is done through environment variables and command line flags.
 
 **For S3 Source (`--source s3`):**
 
-- `S3_SQLITE_DB_BUCKET` - S3 bucket name containing SQLite files
-- `S3_SQLITE_DB_PREFIX` - S3 key prefix (folder path)
+- `GE_AWS_S3_BUCKET` - S3 bucket name containing SQLite files
+- `GE_AWS_S3_PREFIX` - S3 key prefix (folder path)
 - `AWS_REGION` - AWS region (default: `us-east-1`)
 
 **Optional:**
 
-- `LOGGING_ENABLED` - Enable/disable logging (default: `true`)
+- `GE_LOGGING_ENABLED` - Enable/disable logging (default: `true`)
 - `SPOOL_INTERVAL_SEC` - Polling interval in seconds for spool mode (default: `60`)
-- `MEGASTREAM_STATE_FILE` - Path to state file for cursor tracking (default: `.megastream_state.json`)
+- `GE_MEGASTREAM_STATE_FILE` - Path to state file for cursor tracking (default: `.megastream_state.json`)
 
 ## Usage
 
@@ -157,7 +157,7 @@ The service responds to SIGINT and SIGTERM signals, completing the current batch
 export LOCAL_SQLITE_DB_PATH="./test_data"
 export ELASTICSEARCH_URL="https://localhost:9200"
 export ELASTICSEARCH_API_KEY="your-api-key"
-export LOGGING_ENABLED="true"
+export GE_LOGGING_ENABLED="true"
 
 # Run against local ES cluster
 ./megastream_ingest --source local --mode once --skip-tls-verify
@@ -167,8 +167,8 @@ export LOGGING_ENABLED="true"
 
 ```bash
 # Set up environment
-export S3_SQLITE_DB_BUCKET="my-bucket"
-export S3_SQLITE_DB_PREFIX="megastream/databases/"
+export GE_AWS_S3_BUCKET="my-bucket"
+export GE_AWS_S3_PREFIX="megastream/databases/"
 export AWS_REGION="us-west-2"
 export ELASTICSEARCH_URL="https://my-cluster.es.amazonaws.com:9200"
 export ELASTICSEARCH_API_KEY="your-api-key"

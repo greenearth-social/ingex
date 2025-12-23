@@ -100,11 +100,11 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		}
 	case "s3":
 		if config.S3SQLiteDBBucket == "" {
-			logger.Error("S3_SQLITE_DB_BUCKET environment variable is required for s3 source")
+			logger.Error("GE_AWS_S3_BUCKET environment variable is required for s3 source")
 			os.Exit(1)
 		}
 		if config.S3SQLiteDBPrefix == "" {
-			logger.Error("S3_SQLITE_DB_PREFIX environment variable is required for s3 source")
+			logger.Error("GE_AWS_S3_PREFIX environment variable is required for s3 source")
 			os.Exit(1)
 		}
 	}
