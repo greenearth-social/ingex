@@ -108,19 +108,24 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 	healthServer.SetHealthy(true, fmt.Sprintf("Expiring documents older than %d hours (%.1f days)", retentionHours, float64(retentionHours)/24.0))
 
 	// Define the collections to clean up
-	// Each collection has different date fields to check
+	// For now, always use the indexed_at field for expiry, since we care about how long the row has
+	// been in our database, not the time the original event occurred.
 	collections := []elasticsearch_expiry.Collection{
 		{
 			IndexAlias: "posts",
-			DateField:  "created_at", // Use created_at as the primary date for posts
+			DateField:  "indexed_at",
 		},
 		{
 			IndexAlias: "likes",
-			DateField:  "created_at", // Use created_at as the primary date for likes
+			DateField:  "indexed_at",
 		},
 		{
 			IndexAlias: "post_tombstones",
-			DateField:  "deleted_at", // Use deleted_at for tombstones (when they were deleted)
+			DateField:  "indexed_at",
+		},
+		{
+			IndexAlias: "like_tombstones",
+			DateField:  "indexed_at",
 		},
 	}
 

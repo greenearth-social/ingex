@@ -256,9 +256,19 @@ func (ls *LocalSpooler) processFile(ctx context.Context, filePath, filename stri
 		}
 	}()
 
-	dbPath, err := unzipFile(filePath, tmpDir)
-	if err != nil {
-		return fmt.Errorf("failed to unzip file: %w", err)
+	// Check if file is actually zipped or just a raw SQLite database
+	var dbPath string
+	if isZipFile(filePath) {
+		ls.logger.Debug("File is zipped, extracting %s", filePath)
+		dbPath, err = unzipFile(filePath, tmpDir)
+		if err != nil {
+			return fmt.Errorf("failed to unzip file: %w", err)
+		}
+		ls.logger.Debug("Successfully unzipped to %s", dbPath)
+	} else {
+		// File is not zipped, use it directly
+		ls.logger.Debug("File is not zipped, using directly: %s", filePath)
+		dbPath = filePath
 	}
 
 	if err := processDatabase(ctx, dbPath, filename, ls.rowChan, ls.logger); err != nil {
@@ -266,9 +276,9 @@ func (ls *LocalSpooler) processFile(ctx context.Context, filePath, filename stri
 	}
 
 	if err := os.Remove(filePath); err != nil {
-		ls.logger.Error("Failed to remove zip file %s: %v", filePath, err)
+		ls.logger.Error("Failed to remove processed file %s: %v", filePath, err)
 	} else {
-		ls.logger.Debug("Cleaned up zip file: %s", filePath)
+		ls.logger.Debug("Cleaned up processed file: %s", filePath)
 	}
 
 	return nil
