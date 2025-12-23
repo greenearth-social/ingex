@@ -102,7 +102,9 @@ func (m *megaStreamMessage) parseRawPost(rawPostJSON string, logger *IngestLogge
 	}
 
 	m.content, _ = record["text"].(string)
-	m.createdAt, _ = record["createdAt"].(string)
+	if rawCreatedAt, ok := record["createdAt"].(string); ok {
+		m.createdAt = NormalizeTimestampToUTC(rawCreatedAt, logger)
+	}
 
 	hydratedMetadata, _ := rawPost["hydrated_metadata"].(map[string]interface{})
 	if hydratedMetadata != nil {
