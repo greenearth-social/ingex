@@ -272,6 +272,18 @@ deploy_extract_job() {
     cp cmd/extract/main.go "$temp_dir/cmd/extract/"
     cp cmd/extract/main.go "$temp_dir/"
 
+    # Prepare env variables file
+    local temp_var_dir=$(mktemp -d)
+    trap "rm -rf $temp_var_dir" EXIT
+    cat > "$temp_var_dir/extract-env-vars.yaml" <<EOF
+ELASTICSEARCH_TLS_SKIP_VERIFY: "true"
+LOGGING_ENABLED: "true"
+EXTRACT_INDICES: "posts,likes"
+ELASTICSEARCH_URL: "$ELASTICSEARCH_URL"
+PARQUET_DESTINATION: "gs://$destination_bucket/"
+PARQUET_MAX_RECORDS: "$max_records"
+EOF
+
     log_info "Deploying extract job with buildpacks..."
 
     gcloud run jobs deploy extract \
@@ -280,12 +292,8 @@ deploy_extract_job() {
         --service-account="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
-        --set-env-vars="PARQUET_DESTINATION=gs://$destination_bucket/" \
-        --set-env-vars="PARQUET_MAX_RECORDS=$max_records" \
-        --env-vars-file=./scripts/env-vars/extract-env-vars.yaml \
+        --env-vars-file="$temp_var_dir/extract-env-vars.yaml" \
         --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
-        --
         --cpu=2 \
         --memory=2Gi \
         --task-timeout=7200 \
