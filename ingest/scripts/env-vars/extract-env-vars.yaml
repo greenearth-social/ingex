@@ -14,6 +14,6 @@
 # Note: This will SET (replace) all environment variables. To update/add without
 # replacing existing vars, use --update-env-vars or merge strategies.
 
-ELASTICSEARCH_TLS_SKIP_VERIFY: true
-LOGGING_ENABLED: true
+ELASTICSEARCH_TLS_SKIP_VERIFY: "true"
+LOGGING_ENABLED: "true"
 EXTRACT_INDICES: "posts,likes"
