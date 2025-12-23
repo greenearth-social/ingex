@@ -173,7 +173,7 @@ deploy_expiry_job() {
     # Prod: 720 hours = 30 days (standard retention)
     local retention_hours
     if [ "$ENVIRONMENT" = "stage" ]; then
-        retention_hours=4
+        retention_hours=3
         log_info "Stage environment: Using 2-hour retention period"
     else
         retention_hours=720
