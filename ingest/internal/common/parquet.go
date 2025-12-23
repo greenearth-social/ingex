@@ -52,10 +52,10 @@ func HitsToExtractPosts(hits []Hit) []ExtractPost {
 
 // ExtractLike represents the Like document structure for Parquet serialization
 type ExtractLike struct {
-	DID             string `json:"did"`
-	SubjectURI      string `json:"subject_uri"`
-	InsertedAt      string `json:"inserted_at"`
-	RecordCreatedAt string `json:"record_created_at"`
+	DID             string `json:"did" parquet:"did"`
+	SubjectURI      string `json:"subject_uri" parquet:"subject_uri"`
+	InsertedAt      string `json:"inserted_at" parquet:"inserted_at"`
+	RecordCreatedAt string `json:"record_created_at" parquet:"record_created_at"`
 }
 
 // LikeHitToExtractLike converts an Elasticsearch LikeHit to an ExtractLike
