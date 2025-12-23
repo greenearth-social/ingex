@@ -252,18 +252,14 @@ deploy_extract_job() {
     local indices
     local destination_bucket
 
+    max_records=1000000      # 1M records
+    window_minutes=65       # ~1 hours
+    indices="posts,likes"
+    log_info "$ENVIRONMENT environment: 1M max records, approx. 1-hour window, indices: posts,likes"
     if [ "$ENVIRONMENT" = "stage" ]; then
-        max_records=1000000      # 1M records
-        window_minutes=240       # 4 hours
-        indices="posts,likes"
         destination_bucket="$PROJECT_ID-ingex-extract-$ENVIRONMENT"
-        log_info "Stage environment: 1M max records, 4-hour window, indices: posts,likes"
     else
-        max_records=10000000     # 10M records for production
-        window_minutes=240       # 4 hours
-        indices="posts,likes"
         destination_bucket="$PROJECT_ID-ingex-extract-$ENVIRONMENT"
-        log_info "Production environment: 10M max records, 4-hour window, indices: posts,likes"
     fi
 
     # Prepare source directory (similar to expiry job)
