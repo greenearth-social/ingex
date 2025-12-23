@@ -169,12 +169,12 @@ deploy_expiry_job() {
     log_info "Deploying elasticsearch-expiry job from source..."
 
     # Set retention hours based on environment
-    # Stage: 5 hours (aggressive cleanup for limited 8-hour capacity)
+    # Stage: 2 hours (aggressive cleanup for limited 8-hour capacity)
     # Prod: 720 hours = 30 days (standard retention)
     local retention_hours
     if [ "$ENVIRONMENT" = "stage" ]; then
-        retention_hours=5
-        log_info "Stage environment: Using 5-hour retention period"
+        retention_hours=2
+        log_info "Stage environment: Using 2-hour retention period"
     else
         retention_hours=720
         log_info "Production environment: Using 720-hour (30-day) retention period"
