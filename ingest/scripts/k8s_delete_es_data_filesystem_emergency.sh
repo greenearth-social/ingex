@@ -4,12 +4,12 @@
 
 set -e
 
-ENVIRONMENT="${1:-stage}"
-K8S_NAMESPACE="greenearth-${ENVIRONMENT}"
+GE_ENVIRONMENT="${1:-stage}"
+K8S_NAMESPACE="greenearth-${GE_ENVIRONMENT}"
 K8S_POD="greenearth-es-data-only-0"
 
 echo "WARNING: This will delete index data directories directly from the filesystem!"
-echo "Environment: ${ENVIRONMENT}"
+echo "Environment: ${GE_ENVIRONMENT}"
 echo "Namespace: ${K8S_NAMESPACE}"
 echo "Pod: ${K8S_POD}"
 echo ""

@@ -31,7 +31,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 
 func TestLoadConfig_FromEnvironment(t *testing.T) {
 	// Set environment variables
-	setEnvForTest(t, "ELASTICSEARCH_URL", "http://test.example.com:9200")
+	setEnvForTest(t, "GE_ELASTICSEARCH_URL", "http://test.example.com:9200")
 	setEnvForTest(t, "WEBSOCKET_WORKERS", "10")
 	setEnvForTest(t, "ELASTICSEARCH_WORKERS", "15")
 	setEnvForTest(t, "WORKER_TIMEOUT", "45s")
@@ -94,7 +94,7 @@ func TestLoadConfig_InvalidValues(t *testing.T) {
 
 func clearEnvVars() {
 	envVars := []string{
-		"ELASTICSEARCH_URL",
+		"GE_ELASTICSEARCH_URL",
 		"WEBSOCKET_WORKERS",
 		"ELASTICSEARCH_WORKERS",
 		"WORKER_TIMEOUT",

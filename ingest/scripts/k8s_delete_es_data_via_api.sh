@@ -5,10 +5,10 @@
 
 set -e
 
-ENVIRONMENT="${1:-stage}"
-K8S_NAMESPACE="greenearth-${ENVIRONMENT}"
+GE_ENVIRONMENT="${1:-stage}"
+K8S_NAMESPACE="greenearth-${GE_ENVIRONMENT}"
 
-echo "Running ES index deletion and recreation in ${ENVIRONMENT} environment (namespace: ${K8S_NAMESPACE})"
+echo "Running ES index deletion and recreation in ${GE_ENVIRONMENT} environment (namespace: ${K8S_NAMESPACE})"
 echo ""
 
 # Get the elastic superuser credentials (needed for index deletion)
@@ -24,9 +24,9 @@ echo "Using elastic superuser (required for index deletion)"
 echo ""
 
 # The internal service name for Elasticsearch (HTTPS)
-ELASTICSEARCH_URL="https://greenearth-es-http:9200"
+GE_ELASTICSEARCH_URL="https://greenearth-es-http:9200"
 
-echo "Will connect to: ${ELASTICSEARCH_URL}"
+echo "Will connect to: ${GE_ELASTICSEARCH_URL}"
 echo "WARNING: This will DELETE and RECREATE all data indices!"
 echo "This deletes the indices behind aliases: posts, likes, post_tombstones, like_tombstones"
 echo "The indices will be recreated from templates automatically."
@@ -44,12 +44,12 @@ kubectl run es-index-recreation-$(date +%s) \
   --image=curlimages/curl:latest \
   --restart=Never \
   --rm -i --tty \
-  --env="ELASTICSEARCH_URL=${ELASTICSEARCH_URL}" \
+  --env="GE_ELASTICSEARCH_URL=${GE_ELASTICSEARCH_URL}" \
   --env="ELASTICSEARCH_USERNAME=${ELASTICSEARCH_USERNAME}" \
   --env="ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}" \
   -- sh -c '
 echo "Step 1: Removing read-only blocks from all indices..."
-curl -k -X PUT "${ELASTICSEARCH_URL}/_all/_settings" \
+curl -k -X PUT "${GE_ELASTICSEARCH_URL}/_all/_settings" \
   -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}" \
   -H "Content-Type: application/json" \
   -d "{\"index.blocks.read_only_allow_delete\": null}"
@@ -57,32 +57,32 @@ curl -k -X PUT "${ELASTICSEARCH_URL}/_all/_settings" \
 echo ""
 echo ""
 echo "Step 2: Deleting posts index (via alias)..."
-curl -k -X DELETE "${ELASTICSEARCH_URL}/posts" \
+curl -k -X DELETE "${GE_ELASTICSEARCH_URL}/posts" \
   -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}"
 
 echo ""
 echo ""
 echo "Step 3: Deleting likes index (via alias)..."
-curl -k -X DELETE "${ELASTICSEARCH_URL}/likes" \
+curl -k -X DELETE "${GE_ELASTICSEARCH_URL}/likes" \
   -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}"
 
 echo ""
 echo ""
 echo "Step 4: Deleting post_tombstones index (via alias)..."
-curl -k -X DELETE "${ELASTICSEARCH_URL}/post_tombstones" \
+curl -k -X DELETE "${GE_ELASTICSEARCH_URL}/post_tombstones" \
   -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}"
 
 echo ""
 echo ""
 echo "Step 5: Deleting like_tombstones index (via alias, if exists)..."
-curl -k -X DELETE "${ELASTICSEARCH_URL}/like_tombstones" \
+curl -k -X DELETE "${GE_ELASTICSEARCH_URL}/like_tombstones" \
   -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}" \
   2>/dev/null || echo "like_tombstones does not exist, skipping"
 
 echo ""
 echo ""
 echo "Step 6: Resetting disk watermark settings to defaults..."
-curl -k -X PUT "${ELASTICSEARCH_URL}/_cluster/settings" \
+curl -k -X PUT "${GE_ELASTICSEARCH_URL}/_cluster/settings" \
   -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}" \
   -H "Content-Type: application/json" \
   -d "{
@@ -101,7 +101,7 @@ curl -k -X PUT "${ELASTICSEARCH_URL}/_cluster/settings" \
 echo ""
 echo ""
 echo "Step 7: Verifying cluster health..."
-curl -k -X GET "${ELASTICSEARCH_URL}/_cluster/health?pretty" \
+curl -k -X GET "${GE_ELASTICSEARCH_URL}/_cluster/health?pretty" \
   -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}"
 
 echo ""

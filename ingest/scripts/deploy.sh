@@ -9,18 +9,18 @@
 set -e
 
 # Configuration
-GCP_PROJECT_ID="${GCP_PROJECT_ID:-greenearth-471522}"
-GCP_REGION="${GCP_REGION:-us-east1}"
-ENVIRONMENT="${ENVIRONMENT:-stage}"  # TODO: change default when we have more environments
+GE_GCP_PROJECT_ID="${GE_GCP_PROJECT_ID:-greenearth-471522}"
+GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
+GE_ENVIRONMENT="${GE_ENVIRONMENT:-stage}"  # TODO: change default when we have more environments
 
 # Non-secret configuration
-ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-INTERNAL_LB_PLACEHOLDER}"
-AWS_S3_BUCKET="${AWS_S3_BUCKET:-graze-mega-02}"
-AWS_S3_PREFIX="${AWS_S3_PREFIX:-mega/}"
+GE_ELASTICSEARCH_URL="${GE_ELASTICSEARCH_URL:-INTERNAL_LB_PLACEHOLDER}"
+GE_AWS_S3_BUCKET="${GE_AWS_S3_BUCKET:-graze-mega-02}"
+GE_AWS_S3_PREFIX="${GE_AWS_S3_PREFIX:-mega/}"
 
 # Service configuration
-JETSTREAM_INSTANCES="${JETSTREAM_INSTANCES:-1}"
-MEGASTREAM_INSTANCES="${MEGASTREAM_INSTANCES:-1}"
+GE_JETSTREAM_INSTANCES="${GE_JETSTREAM_INSTANCES:-1}"
+GE_MEGASTREAM_INSTANCES="${GE_MEGASTREAM_INSTANCES:-1}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -48,13 +48,13 @@ log_build() {
 validate_config() {
     log_info "Validating configuration..."
 
-    if [ "$GCP_PROJECT_ID" = "your-project-id" ]; then
-        log_error "Please set GCP_PROJECT_ID environment variable or use --project-id"
+    if [ "$GE_GCP_PROJECT_ID" = "your-project-id" ]; then
+        log_error "Please set GE_GCP_PROJECT_ID environment variable or use --project-id"
         exit 1
     fi
 
     # Set gcloud project
-    gcloud config set project "$GCP_PROJECT_ID"
+    gcloud config set project "$GE_GCP_PROJECT_ID"
 
     log_info "Configuration validation complete."
 }
@@ -63,8 +63,8 @@ get_elasticsearch_internal_lb_ip() {
     log_info "Getting Elasticsearch internal load balancer IP..."
 
     # If user has explicitly set a URL, use it
-    if [ "$ELASTICSEARCH_URL" != "INTERNAL_LB_PLACEHOLDER" ]; then
-        log_info "Using user-provided Elasticsearch URL: $ELASTICSEARCH_URL"
+    if [ "$GE_ELASTICSEARCH_URL" != "INTERNAL_LB_PLACEHOLDER" ]; then
+        log_info "Using user-provided Elasticsearch URL: $GE_ELASTICSEARCH_URL"
         return
     fi
 
@@ -72,24 +72,24 @@ get_elasticsearch_internal_lb_ip() {
     # This assumes the load balancer has been deployed and has an assigned IP
     if command -v kubectl &> /dev/null; then
         local lb_ip
-        lb_ip=$(kubectl get service greenearth-es-internal-lb -n "greenearth-$ENVIRONMENT" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+        lb_ip=$(kubectl get service greenearth-es-internal-lb -n "greenearth-$GE_ENVIRONMENT" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
 
         if [ -n "$lb_ip" ] && [ "$lb_ip" != "null" ]; then
             # Use the internal load balancer IP but note that certificate verification
             # may fail since the cert doesn't include this IP in SANs
-            ELASTICSEARCH_URL="https://$lb_ip:9200"
-            log_info "Using internal load balancer IP: $ELASTICSEARCH_URL"
+            GE_ELASTICSEARCH_URL="https://$lb_ip:9200"
+            log_info "Using internal load balancer IP: $GE_ELASTICSEARCH_URL"
             log_warn "Note: Certificate verification may fail for IP-based connections"
             log_warn "Services should be configured to skip certificate verification for internal LB"
         else
             log_warn "Could not get internal load balancer IP"
             log_warn "Make sure the Elasticsearch cluster is deployed with internal load balancer"
-            log_error "Please deploy Elasticsearch cluster first or set ELASTICSEARCH_URL manually"
+            log_error "Please deploy Elasticsearch cluster first or set GE_ELASTICSEARCH_URL manually"
             exit 1
         fi
     else
         log_error "kubectl not available - cannot determine Elasticsearch internal load balancer IP"
-        log_error "Please install kubectl or set ELASTICSEARCH_URL manually"
+        log_error "Please install kubectl or set GE_ELASTICSEARCH_URL manually"
         exit 1
     fi
 }
@@ -97,9 +97,9 @@ get_elasticsearch_internal_lb_ip() {
 verify_vpc_connector() {
     log_info "Verifying VPC connector exists..."
 
-    CONNECTOR_NAME="ingex-vpc-connector-$ENVIRONMENT"
+    CONNECTOR_NAME="ingex-vpc-connector-$GE_ENVIRONMENT"
 
-    if ! gcloud compute networks vpc-access connectors describe "$CONNECTOR_NAME" --region="$GCP_REGION" > /dev/null 2>&1; then
+    if ! gcloud compute networks vpc-access connectors describe "$CONNECTOR_NAME" --region="$GE_GCP_REGION" > /dev/null 2>&1; then
         log_error "VPC connector '$CONNECTOR_NAME' does not exist"
         log_error "Please run gcp_setup.sh first to create the VPC connector"
         log_error "Command: cd ingest && ./scripts/gcp_setup.sh"
@@ -107,12 +107,12 @@ verify_vpc_connector() {
     fi
 
     # Check connector status
-    local connector_status=$(gcloud compute networks vpc-access connectors describe "$CONNECTOR_NAME" --region="$GCP_REGION" --format="value(state)" 2>/dev/null || echo "UNKNOWN")
+    local connector_status=$(gcloud compute networks vpc-access connectors describe "$CONNECTOR_NAME" --region="$GE_GCP_REGION" --format="value(state)" 2>/dev/null || echo "UNKNOWN")
 
     if [ "$connector_status" != "READY" ]; then
         log_warn "VPC connector '$CONNECTOR_NAME' is not ready (status: $connector_status)"
         log_warn "This may cause deployment to fail. Wait a few minutes and try again."
-        log_warn "You can check status with: gcloud compute networks vpc-access connectors describe $CONNECTOR_NAME --region=$GCP_REGION"
+        log_warn "You can check status with: gcloud compute networks vpc-access connectors describe $CONNECTOR_NAME --region=$GE_GCP_REGION"
     else
         log_info "VPC connector '$CONNECTOR_NAME' is ready"
     fi
@@ -123,18 +123,18 @@ deploy_jetstream_service() {
 
     gcloud run deploy jetstream-ingest \
         --source=. \
-        --region="$GCP_REGION" \
-        --service-account="ingex-runner-$ENVIRONMENT@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
-        --vpc-connector="ingex-vpc-connector-$ENVIRONMENT" \
+        --region="$GE_GCP_REGION" \
+        --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
+        --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest" \
         --set-env-vars="JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
         --set-env-vars="LOGGING_ENABLED=true" \
-        --set-env-vars="JETSTREAM_STATE_FILE=gs://$GCP_PROJECT_ID-ingex-state-$ENVIRONMENT/jetstream_state.json" \
-        --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
+        --set-env-vars="JETSTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/jetstream_state.json" \
+        --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
-        --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
-        --scaling="$JETSTREAM_INSTANCES" \
+        --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
+        --scaling="$GE_JETSTREAM_INSTANCES" \
         --cpu=1 \
         --memory=512Mi \
         --timeout=3600 \
@@ -148,21 +148,21 @@ deploy_megastream_service() {
 
     gcloud run deploy megastream-ingest \
         --source=. \
-        --region="$GCP_REGION" \
-        --service-account="ingex-runner-$ENVIRONMENT@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
-        --vpc-connector="ingex-vpc-connector-$ENVIRONMENT" \
+        --region="$GE_GCP_REGION" \
+        --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
+        --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest" \
         --set-env-vars="LOGGING_ENABLED=true" \
-        --set-env-vars="SPOOL_INTERVAL_SEC=60" \
-        --set-env-vars="AWS_REGION=us-east-1" \
-        --set-env-vars="MEGASTREAM_STATE_FILE=gs://$GCP_PROJECT_ID-ingex-state-$ENVIRONMENT/megastream_state.json" \
-        --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
+        --set-env-vars="GE_SPOOL_INTERVAL_SEC=60" \
+        --set-env-vars="GE_AWS_REGION=us-east-1" \
+        --set-env-vars="MEGASTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/megastream_state.json" \
+        --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
-        --set-env-vars="S3_SQLITE_DB_BUCKET=$AWS_S3_BUCKET" \
-        --set-env-vars="S3_SQLITE_DB_PREFIX=$AWS_S3_PREFIX" \
-        --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest,AWS_S3_ACCESS_KEY=aws-s3-access-key:latest,AWS_S3_SECRET_KEY=aws-s3-secret-key:latest" \
-        --scaling="$MEGASTREAM_INSTANCES" \
+        --set-env-vars="S3_SQLITE_DB_BUCKET=$GE_AWS_S3_BUCKET" \
+        --set-env-vars="S3_SQLITE_DB_PREFIX=$GE_AWS_S3_PREFIX" \
+        --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest,GE_AWS_S3_ACCESS_KEY=aws-s3-access-key:latest,GE_AWS_S3_SECRET_KEY=aws-s3-secret-key:latest" \
+        --scaling="$GE_MEGASTREAM_INSTANCES" \
         --cpu=1 \
         --memory=1Gi \
         --timeout=3600 \
@@ -179,7 +179,7 @@ deploy_expiry_job() {
     # Stage: 5 hours (aggressive cleanup for limited 8-hour capacity)
     # Prod: 720 hours = 30 days (standard retention)
     local retention_hours
-    if [ "$ENVIRONMENT" = "stage" ]; then
+    if [ "$GE_ENVIRONMENT" = "stage" ]; then
         retention_hours=5
         log_info "Stage environment: Using 5-hour retention period"
     else
@@ -229,13 +229,13 @@ EOF
 
     gcloud run jobs deploy elasticsearch-expiry \
         --source="$temp_dir" \
-        --region="$GCP_REGION" \
-        --service-account="ingex-runner-$ENVIRONMENT@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
-        --vpc-connector="ingex-vpc-connector-$ENVIRONMENT" \
+        --region="$GE_GCP_REGION" \
+        --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
+        --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
+        --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
-        --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
+        --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --set-env-vars="LOGGING_ENABLED=true" \
         --cpu=1 \
         --memory=512Mi \
@@ -255,8 +255,8 @@ deploy_extract_job() {
     max_records=1000000      # 1M records
     window_minutes=65       # ~1 hours
     indices="posts,likes"
-    log_info "$ENVIRONMENT environment: 1M max records, approx. 1-hour window, indices: posts,likes"
-    destination_bucket="$GCP_PROJECT_ID-ingex-extract-$ENVIRONMENT"
+    log_info "$GE_ENVIRONMENT environment: 1M max records, approx. 1-hour window, indices: posts,likes"
+    destination_bucket="$GE_GCP_PROJECT_ID-ingex-extract-$GE_ENVIRONMENT"
 
     # Prepare source directory (similar to expiry job)
     local temp_dir=$(mktemp -d)
@@ -272,16 +272,16 @@ deploy_extract_job() {
 
     gcloud run jobs deploy extract \
         --source="$temp_dir" \
-        --region="$GCP_REGION" \
-        --service-account="ingex-runner-$ENVIRONMENT@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
-        --vpc-connector="ingex-vpc-connector-$ENVIRONMENT" \
+        --region="$GE_GCP_REGION" \
+        --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
+        --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-env-vars="ELASTICSEARCH_URL=$ELASTICSEARCH_URL" \
+        --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
-        --set-env-vars="PARQUET_DESTINATION=gs://$destination_bucket/" \
-        --set-env-vars="PARQUET_MAX_RECORDS=$max_records" \
-        --set-env-vars="EXTRACT_INDICES=$indices" \
-        --set-secrets="ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
+        --set-env-vars="GE_PARQUET_DESTINATION=gs://$destination_bucket/" \
+        --set-env-vars="GE_PARQUET_MAX_RECORDS=$max_records" \
+        --set-env-vars="GE_EXTRACT_INDICES=$indices" \
+        --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --set-env-vars="LOGGING_ENABLED=true" \
         --cpu=2 \
         --memory=2Gi \
@@ -305,24 +305,24 @@ show_service_status() {
 
     echo
     echo "=== Cloud Run Services ==="
-    gcloud run services list --region="$GCP_REGION" --filter="metadata.name:(jetstream-ingest OR megastream-ingest)"
+    gcloud run services list --region="$GE_GCP_REGION" --filter="metadata.name:(jetstream-ingest OR megastream-ingest)"
 
     echo
     echo "=== Cloud Run Jobs ==="
-    gcloud run jobs list --region="$GCP_REGION" --filter="metadata.name:(elasticsearch-expiry OR extract)"
+    gcloud run jobs list --region="$GE_GCP_REGION" --filter="metadata.name:(elasticsearch-expiry OR extract)"
 
     echo
     echo "=== Service URLs ==="
-    local jetstream_url=$(gcloud run services describe jetstream-ingest --region="$GCP_REGION" --format="value(status.url)" 2>/dev/null || echo "Not deployed")
-    local megastream_url=$(gcloud run services describe megastream-ingest --region="$GCP_REGION" --format="value(status.url)" 2>/dev/null || echo "Not deployed")
+    local jetstream_url=$(gcloud run services describe jetstream-ingest --region="$GE_GCP_REGION" --format="value(status.url)" 2>/dev/null || echo "Not deployed")
+    local megastream_url=$(gcloud run services describe megastream-ingest --region="$GE_GCP_REGION" --format="value(status.url)" 2>/dev/null || echo "Not deployed")
 
     echo "Jetstream Ingest: $jetstream_url"
     echo "Megastream Ingest: $megastream_url"
     echo
 
-    log_info "Use 'gcloud run services logs read SERVICE_NAME --region=$GCP_REGION' to view logs"
-    log_info "Use 'gcloud run jobs execute elasticsearch-expiry --region=$GCP_REGION' to manually run expiry"
-    log_info "Use 'gcloud run jobs execute extract --region=$GCP_REGION' to manually run extract"
+    log_info "Use 'gcloud run services logs read SERVICE_NAME --region=$GE_GCP_REGION' to view logs"
+    log_info "Use 'gcloud run jobs execute elasticsearch-expiry --region=$GE_GCP_REGION' to manually run expiry"
+    log_info "Use 'gcloud run jobs execute extract --region=$GE_GCP_REGION' to manually run extract"
 }
 
 main() {
@@ -330,9 +330,9 @@ main() {
 
     echo "=================================================="
     echo "Green Earth Ingex - Cloud Run Source Deployment"
-    echo "Environment: $ENVIRONMENT"
-    echo "Project: $GCP_PROJECT_ID"
-    echo "Region: $GCP_REGION"
+    echo "Environment: $GE_ENVIRONMENT"
+    echo "Project: $GE_GCP_PROJECT_ID"
+    echo "Region: $GE_GCP_REGION"
     echo "=================================================="
     echo
 
@@ -382,23 +382,23 @@ main() {
 while [[ $# -gt 0 ]]; do
     case $1 in
         --project-id)
-            GCP_PROJECT_ID="$2"
+            GE_GCP_PROJECT_ID="$2"
             shift 2
             ;;
         --region)
-            GCP_REGION="$2"
+            GE_GCP_REGION="$2"
             shift 2
             ;;
         --environment)
-            ENVIRONMENT="$2"
+            GE_ENVIRONMENT="$2"
             shift 2
             ;;
         --jetstream-instances)
-            JETSTREAM_INSTANCES="$2"
+            GE_JETSTREAM_INSTANCES="$2"
             shift 2
             ;;
         --megastream-instances)
-            MEGASTREAM_INSTANCES="$2"
+            GE_MEGASTREAM_INSTANCES="$2"
             shift 2
             ;;
         --help)
@@ -428,14 +428,14 @@ while [[ $# -gt 0 ]]; do
             echo "  --help                      Show this help message"
             echo
             echo "Environment variables:"
-            echo "  GCP_PROJECT_ID              GCP project ID"
-            echo "  GCP_REGION                  GCP region"
-            echo "  ENVIRONMENT                 Environment name"
-            echo "  JETSTREAM_INSTANCES         Number of jetstream instances (default: 1)"
-            echo "  MEGASTREAM_INSTANCES        Number of megastream instances (default: 1)"
-            echo "  ELASTICSEARCH_URL           Elasticsearch URL (auto-detect internal LB)"
-            echo "  AWS_S3_BUCKET               S3 bucket name (default: graze-mega-02)"
-            echo "  AWS_S3_PREFIX               S3 prefix (default: mega/)"
+            echo "  GE_GCP_PROJECT_ID              GCP project ID"
+            echo "  GE_GCP_REGION                  GCP region"
+            echo "  GE_ENVIRONMENT                 Environment name"
+            echo "  GE_JETSTREAM_INSTANCES         Number of jetstream instances (default: 1)"
+            echo "  GE_MEGASTREAM_INSTANCES        Number of megastream instances (default: 1)"
+            echo "  GE_ELASTICSEARCH_URL           Elasticsearch URL (auto-detect internal LB)"
+            echo "  GE_AWS_S3_BUCKET               S3 bucket name (default: graze-mega-02)"
+            echo "  GE_AWS_S3_PREFIX               S3 prefix (default: mega/)"
             echo
             exit 0
             ;;

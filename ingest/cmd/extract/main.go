@@ -20,7 +20,7 @@ import (
 func main() {
 	dryRun := flag.Bool("dry-run", false, "Run in dry-run mode (no file writes)")
 	skipTLSVerify := flag.Bool("skip-tls-verify", false, "Skip TLS certificate verification (use for local development only)")
-	outputPath := flag.String("output-path", "", "Override PARQUET_DESTINATION env var")
+	outputPath := flag.String("output-path", "", "Override GE_PARQUET_DESTINATION env var")
 	windowSizeMin := flag.Int("window-size-min", 0, "Time window in minutes from now (e.g., 240 for 4-hour lookback). Overrides start-time and end-time if set.")
 	startTime := flag.String("start-time", "", "Start time for export window (RFC3339 format, e.g., 2025-01-01T00:00:00Z)")
 	endTime := flag.String("end-time", "", "End time for export window (RFC3339 format, e.g., 2025-12-31T23:59:59Z)")
@@ -64,8 +64,18 @@ func main() {
 
 	if *startTime != "" || *endTime != "" {
 		logger.Info("Time window filter: %s to %s",
-			func() string { if *startTime != "" { return *startTime }; return "beginning" }(),
-			func() string { if *endTime != "" { return *endTime }; return "end" }())
+			func() string {
+				if *startTime != "" {
+					return *startTime
+				}
+				return "beginning"
+			}(),
+			func() string {
+				if *endTime != "" {
+					return *endTime
+				}
+				return "end"
+			}())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -81,7 +91,7 @@ func main() {
 
 	indices := parseIndices(config.ExtractIndices)
 	if len(indices) == 0 {
-		logger.Error("No indices specified in EXTRACT_INDICES environment variable")
+		logger.Error("No indices specified in GE_EXTRACT_INDICES environment variable")
 		os.Exit(1)
 	}
 
@@ -98,15 +108,15 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 	dryRun, skipTLSVerify bool, outputPath string, indices []string, startTime, endTime string) error {
 
 	if config.ElasticsearchURL == "" {
-		return fmt.Errorf("ELASTICSEARCH_URL environment variable is required")
+		return fmt.Errorf("GE_ELASTICSEARCH_URL environment variable is required")
 	}
 
-	// Determine output destination (priority: flag > PARQUET_DESTINATION)
+	// Determine output destination (priority: flag > GE_PARQUET_DESTINATION)
 	if outputPath == "" && config.ParquetDestination != "" {
 		outputPath = config.ParquetDestination
 	}
 	if outputPath == "" {
-		return fmt.Errorf("output path not specified (use --output-path, PARQUET_DESTINATION)")
+		return fmt.Errorf("output path not specified (use --output-path, GE_PARQUET_DESTINATION)")
 	}
 
 	// Check if GCS destination
@@ -375,8 +385,8 @@ func generateFilename(indexName, lastPostTimestamp string, logger *common.Ingest
 type IndexType string
 
 const (
-	IndexTypePosts IndexType = "posts"
-	IndexTypeLikes IndexType = "likes"
+	IndexTypePosts   IndexType = "posts"
+	IndexTypeLikes   IndexType = "likes"
 	IndexTypeUnknown IndexType = ""
 )
 

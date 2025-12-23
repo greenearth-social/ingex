@@ -54,7 +54,7 @@ Deploy to your environment with a single command:
 fc -p
 
 # Set the service user password
-export ES_SERVICE_USER_PASSWORD="your-secure-password"
+export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 
 # Deploy to local environment
 ./deploy.sh local
@@ -92,7 +92,7 @@ The simplest way to deploy is using the automated deployment script:
 
 ```bash
 # Set required environment variable
-export ES_SERVICE_USER_PASSWORD="your-secure-password"
+export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 
 # Deploy to local environment
 ./deploy.sh local
@@ -117,35 +117,35 @@ If you prefer manual deployment or need to customize the process:
 
 ```bash
 # 1. Set environment variables
-export ENVIRONMENT=local  # or stage
-export NAMESPACE=greenearth-$ENVIRONMENT
-export ES_SERVICE_USER_PASSWORD="your-secure-password"
+export GE_ENVIRONMENT=local  # or stage
+export GE_K8S_NAMESPACE=greenearth-$GE_ENVIRONMENT
+export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 
 # 2. Create namespace
-kubectl create namespace $NAMESPACE
+kubectl create namespace $GE_K8S_NAMESPACE
 
 # 3. For stage only: Deploy DaemonSet
 kubectl apply -f deploy/k8s/environments/stage/max-map-count-daemonset.yaml
 
 # 4. Deploy all resources using Kustomize
-kubectl apply -k deploy/k8s/environments/$ENVIRONMENT
+kubectl apply -k deploy/k8s/environments/$GE_ENVIRONMENT
 
 # 5. Wait for resources to be ready
-kubectl get elasticsearch,kibana -n $NAMESPACE -w
+kubectl get elasticsearch,kibana -n $GE_K8S_NAMESPACE -w
 
 # 6. Create service user secret
 kubectl create secret generic es-service-user-secret \
   --from-literal=username="es-service-user" \
-  --from-literal=password="$ES_SERVICE_USER_PASSWORD" \
-  -n $NAMESPACE
+  --from-literal=password="$GE_ELASTICSEARCH_SERVICE_USER_PWD" \
+  -n $GE_K8S_NAMESPACE
 
 # 7. Deploy and wait for service user setup job
-kubectl apply -f deploy/k8s/base/es-service-user-setup-job.yaml -n $NAMESPACE
-kubectl wait --for=condition=complete --timeout=180s job/es-service-user-setup -n $NAMESPACE
+kubectl apply -f deploy/k8s/base/es-service-user-setup-job.yaml -n $GE_K8S_NAMESPACE
+kubectl wait --for=condition=complete --timeout=180s job/es-service-user-setup -n $GE_K8S_NAMESPACE
 
 # 8. Deploy and wait for bootstrap job
-kubectl apply -f deploy/k8s/base/bootstrap-job.yaml -n $NAMESPACE
-kubectl wait --for=condition=complete --timeout=180s job/elasticsearch-bootstrap -n $NAMESPACE
+kubectl apply -f deploy/k8s/base/bootstrap-job.yaml -n $GE_K8S_NAMESPACE
+kubectl wait --for=condition=complete --timeout=180s job/elasticsearch-bootstrap -n $GE_K8S_NAMESPACE
 ```
 
 ### Kustomize Configuration
@@ -168,7 +168,7 @@ This structure eliminates configuration duplication and makes it easy to add new
 
 ```bash
 # Port-forward to access Kibana (works for any environment)
-kubectl port-forward service/greenearth-kb-http 5601 -n $NAMESPACE
+kubectl port-forward service/greenearth-kb-http 5601 -n $GE_K8S_NAMESPACE
 ```
 
 Browse to: **<https://localhost:5601>**
@@ -178,7 +178,7 @@ Browse to: **<https://localhost:5601>**
 **Get the elastic superuser password:**
 
 ```bash
-kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
+kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $GE_K8S_NAMESPACE
 ```
 
 **Login with:**
@@ -198,17 +198,17 @@ Kibana provides:
 **Port-forward Elasticsearch:**
 
 ```bash
-kubectl port-forward service/greenearth-es-http 9200 -n $NAMESPACE
+kubectl port-forward service/greenearth-es-http 9200 -n $GE_K8S_NAMESPACE
 ```
 
 **Get credentials:**
 
 ```bash
 # Elastic superuser (full access)
-kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE
+kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $GE_K8S_NAMESPACE
 
 # Service user (limited to posts indices)
-kubectl get secret es-service-user-secret -o go-template='{{.data.password | base64decode}}' -n $NAMESPACE
+kubectl get secret es-service-user-secret -o go-template='{{.data.password | base64decode}}' -n $GE_K8S_NAMESPACE
 ```
 
 **Test API:**
@@ -238,7 +238,7 @@ With Elasticsearch running and accessible via port-forward:
 
 ```bash
 # Get the elastic password first
-ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $NAMESPACE)
+ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $GE_K8S_NAMESPACE)
 
 # Create the API key (no expiration for operational simplicity)
 curl -k -X POST "https://localhost:9200/_security/api_key" \

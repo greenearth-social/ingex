@@ -128,8 +128,8 @@ Each command has its own configuration requirements. See the individual command 
 
 **All commands require:**
 
-- `ELASTICSEARCH_URL` - Elasticsearch cluster endpoint
-- `ELASTICSEARCH_API_KEY` - Elasticsearch API key with appropriate index permissions
+- `GE_ELASTICSEARCH_URL` - Elasticsearch cluster endpoint
+- `GE_ELASTICSEARCH_API_KEY` - Elasticsearch API key with appropriate index permissions
 - `LOGGING_ENABLED` - Enable/disable logging (default: `true`)
 
 ### Getting an Elasticsearch API Key
@@ -176,18 +176,18 @@ Use the `encoded` value from the response.
 
 **For Local Source (`--source local`):**
 
-- `LOCAL_SQLITE_DB_PATH` - Directory containing `.db.zip` files to process
+- `GE_LOCAL_SQLITE_DB_PATH` - Directory containing `.db.zip` files to process
 
 **For S3 Source (`--source s3`):**
 
 - `S3_SQLITE_DB_BUCKET` - S3 bucket name containing SQLite files
 - `S3_SQLITE_DB_PREFIX` - S3 key prefix (folder path)
-- `AWS_REGION` - AWS region (default: "us-east-1")
+- `GE_AWS_REGION` - AWS region (default: "us-east-1")
 
 **Optional:**
 
 - `LOGGING_ENABLED` - Enable/disable logging (default: true)
-- `SPOOL_INTERVAL_SEC` - Polling interval in seconds for spool mode (default: 60)
+- `GE_SPOOL_INTERVAL_SEC` - Polling interval in seconds for spool mode (default: 60)
 - `SPOOL_STATE_FILE` - Path to state file for tracking processed files (default: ".processed_files.json")
 
 ### Example Configuration
@@ -195,9 +195,9 @@ Use the `encoded` value from the response.
 **Local Source:**
 
 ```bash
-export LOCAL_SQLITE_DB_PATH="/path/to/megastream/"
-export ELASTICSEARCH_URL="https://localhost:9200"
-export ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
+export GE_LOCAL_SQLITE_DB_PATH="/path/to/megastream/"
+export GE_ELASTICSEARCH_URL="https://localhost:9200"
+export GE_ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
 export LOGGING_ENABLED="true"
 
 ./megastream_ingest --source local --mode once --skip-tls-verify
@@ -208,9 +208,9 @@ export LOGGING_ENABLED="true"
 ```bash
 export S3_SQLITE_DB_BUCKET="my-bucket"
 export S3_SQLITE_DB_PREFIX="megastream/databases/"
-export AWS_REGION="us-west-2"
-export ELASTICSEARCH_URL="https://my-cluster.es.amazonaws.com:9200"
-export ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
+export GE_AWS_REGION="us-west-2"
+export GE_ELASTICSEARCH_URL="https://my-cluster.es.amazonaws.com:9200"
+export GE_ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
 
 ./megastream_ingest --source s3 --mode spool
 ```

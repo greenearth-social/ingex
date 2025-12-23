@@ -3,11 +3,11 @@
 
 set -e
 
-ENVIRONMENT="${1:-stage}"
-K8S_NAMESPACE="greenearth-${ENVIRONMENT}"
+GE_ENVIRONMENT="${1:-stage}"
+K8S_NAMESPACE="greenearth-${GE_ENVIRONMENT}"
 
 echo "Creating new Elasticsearch API key..."
-echo "Environment: ${ENVIRONMENT}"
+echo "Environment: ${GE_ENVIRONMENT}"
 echo "Namespace: ${K8S_NAMESPACE}"
 echo ""
 
