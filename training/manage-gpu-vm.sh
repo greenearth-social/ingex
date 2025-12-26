@@ -339,11 +339,11 @@ create_vm() {
 destroy_vm() {
     echo "This will destroy the following resources in zone ${ZONE}:"
     echo "  - VM: ${VM_NAME}"
-    echo "  - Snapshot Policy: ${SNAPSHOT_POLICY_NAME}"
-    echo "  - Static IP: ${STATIC_IP_NAME}"
     echo ""
     echo "The following resources will be PRESERVED:"
     echo "  - Data Disk (will be detached but not deleted)"
+    echo "  - Snapshot Policy: ${SNAPSHOT_POLICY_NAME}"
+    echo "  - Static IP: ${STATIC_IP_NAME}"
     echo ""
     read -p "Are you sure you want to continue? (yes/no): " confirmation
 
@@ -380,22 +380,6 @@ destroy_vm() {
             echo "Data disk '${disk}' preserved (not deleted)."
         fi
     done
-
-    echo "Deleting static IP: ${STATIC_IP_NAME}..."
-    if gcloud compute addresses describe "${STATIC_IP_NAME}" --region="${ZONE%-*}" &>/dev/null; then
-        gcloud compute addresses delete "${STATIC_IP_NAME}" --region="${ZONE%-*}" --quiet
-        echo "Static IP deleted."
-    else
-        echo "Static IP does not exist."
-    fi
-
-    echo "Deleting snapshot policy: ${SNAPSHOT_POLICY_NAME}..."
-    if gcloud compute resource-policies describe "${SNAPSHOT_POLICY_NAME}" --region="${ZONE%-*}" &>/dev/null; then
-        gcloud compute resource-policies delete "${SNAPSHOT_POLICY_NAME}" --region="${ZONE%-*}" --quiet
-        echo "Snapshot policy deleted."
-    else
-        echo "Snapshot policy does not exist."
-    fi
 
     echo "VM destroyed successfully. Data disk(s) preserved."
 }
