@@ -21,9 +21,9 @@ To download a sample archive file for local development:
 1. **Configure AWS credentials** (if not already set up):
 
    ```bash
-   export AWS_ACCESS_KEY_ID="your-access-key"
-   export AWS_SECRET_ACCESS_KEY="your-secret-key"
-   export AWS_DEFAULT_REGION="us-east-1"
+   export GE_AWS_S3_ACCESS_KEY="your-access-key"
+   export GE_AWS_S3_SECRET_KEY="your-secret-key"
+   export GE_AWS_REGION="us-east-1"
    ```
 
    **Troubleshooting:**
@@ -60,7 +60,7 @@ Once you have a sample archive in this directory, you can use it with the `megas
 
 ```bash
 # Set the local directory as the source
-export LOCAL_SQLITE_DB_PATH="./test_data"
+export GE_LOCAL_SQLITE_DB_PATH="./test_data"
 
 # Run the ingest service in "once" mode
 ./bin/megastream_ingest --source=local --mode=once

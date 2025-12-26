@@ -7,18 +7,18 @@
 set -e
 
 # Configuration
-PROJECT_ID="${PROJECT_ID:-greenearth-471522}"
-REGION="${REGION:-us-east1}"
-ENVIRONMENT="${ENVIRONMENT:-stage}"  # TODO: change default when we have more environments
+GE_GCP_PROJECT_ID="${GE_GCP_PROJECT_ID:-greenearth-471522}"
+GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
+GE_ENVIRONMENT="${GE_ENVIRONMENT:-stage}"  # TODO: change default when we have more environments
 
 # Elasticsearch configuration - only API key is secret, URL is public
-ELASTICSEARCH_URL="${ELASTICSEARCH_URL:-INTERNAL_LB_PLACEHOLDER}"
-ELASTICSEARCH_API_KEY="${ELASTICSEARCH_API_KEY:-your-api-key}"
+GE_ELASTICSEARCH_URL="${GE_ELASTICSEARCH_URL:-INTERNAL_LB_PLACEHOLDER}"
+GE_ELASTICSEARCH_API_KEY="${GE_ELASTICSEARCH_API_KEY:-your-api-key}"
 
 # S3 configuration for Megastream data
 # TODO: actual s3 bucket name
-S3_BUCKET="${S3_BUCKET:-greenearth-megastream-data}"
-S3_PREFIX="${S3_PREFIX:-megastream/databases/}"
+GE_AWS_S3_BUCKET="${GE_AWS_S3_BUCKET:-greenearth-megastream-data}"
+GE_AWS_S3_PREFIX="${GE_AWS_S3_PREFIX:-megastream/databases/}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -62,22 +62,22 @@ check_prerequisites() {
 validate_config() {
     log_info "Validating configuration..."
 
-    if [ "$PROJECT_ID" = "your-project-id" ]; then
-        log_error "Please set PROJECT_ID environment variable or update the script"
+    if [ "$GE_GCP_PROJECT_ID" = "your-project-id" ]; then
+        log_error "Please set GE_GCP_PROJECT_ID environment variable or update the script"
         exit 1
     fi
 
     log_info "Configuration validation complete."
-    log_info "Using Elasticsearch URL: $ELASTICSEARCH_URL"
-    log_info "Using S3 bucket: $S3_BUCKET with prefix: $S3_PREFIX"
+    log_info "Using Elasticsearch URL: $GE_ELASTICSEARCH_URL"
+    log_info "Using S3 bucket: $GE_AWS_S3_BUCKET with prefix: $GE_AWS_S3_PREFIX"
 
-    if [ -n "$ELASTICSEARCH_API_KEY" ] && [ "$ELASTICSEARCH_API_KEY" != "your-api-key" ]; then
+    if [ -n "$GE_ELASTICSEARCH_API_KEY" ] && [ "$GE_ELASTICSEARCH_API_KEY" != "your-api-key" ]; then
         log_info "Elasticsearch API key provided - will be stored/updated in Secret Manager"
     else
         log_warn "Elasticsearch API key not provided - skipping secret creation (assuming it already exists)"
     fi
 
-    if [ -n "$AWS_S3_ACCESS_KEY" ] && [ -n "$AWS_S3_SECRET_KEY" ]; then
+    if [ -n "$GE_AWS_S3_ACCESS_KEY" ] && [ -n "$GE_AWS_S3_SECRET_KEY" ]; then
         log_info "AWS S3 credentials provided - will be stored in Secret Manager"
     else
         log_warn "AWS S3 credentials not provided - skipping secret creation"
@@ -85,10 +85,10 @@ validate_config() {
 }
 
 setup_gcp_project() {
-    log_info "Setting up GCP project: $PROJECT_ID"
+    log_info "Setting up GCP project: $GE_GCP_PROJECT_ID"
 
     # Set the project
-    gcloud config set project "$PROJECT_ID"
+    gcloud config set project "$GE_GCP_PROJECT_ID"
 
     # Enable required APIs
     log_info "Enabling required GCP APIs..."
@@ -109,10 +109,10 @@ create_artifact_registry() {
     log_info "Creating Artifact Registry repository..."
 
     # Create repository for container images
-    if ! gcloud artifacts repositories describe ingex --location="$REGION" > /dev/null 2>&1; then
+    if ! gcloud artifacts repositories describe ingex --location="$GE_GCP_REGION" > /dev/null 2>&1; then
         gcloud artifacts repositories create ingex \
             --repository-format=docker \
-            --location="$REGION" \
+            --location="$GE_GCP_REGION" \
             --description="Green Earth Ingex container images"
         log_info "Artifact Registry repository created."
     else
@@ -123,14 +123,14 @@ create_artifact_registry() {
 create_service_account() {
     log_info "Creating service account for Cloud Run services..."
 
-    SA_NAME="ingex-runner-$ENVIRONMENT"
-    SA_EMAIL="$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
+    SA_NAME="ingex-runner-$GE_ENVIRONMENT"
+    SA_EMAIL="$SA_NAME@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
 
     # Create service account
     if ! gcloud iam service-accounts describe "$SA_EMAIL" > /dev/null 2>&1; then
         gcloud iam service-accounts create "$SA_NAME" \
-            --display-name="Ingex Cloud Run Service Account ($ENVIRONMENT)" \
-            --description="Service account for running ingex services in $ENVIRONMENT"
+            --display-name="Ingex Cloud Run Service Account ($GE_ENVIRONMENT)" \
+            --description="Service account for running ingex services in $GE_ENVIRONMENT"
         log_info "Service account created: $SA_EMAIL"
     else
         log_info "Service account already exists: $SA_EMAIL"
@@ -140,22 +140,22 @@ create_service_account() {
     log_info "Granting permissions to service account..."
 
     # Permission to read from Cloud Storage (for S3-compatible access)
-    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
         --member="serviceAccount:$SA_EMAIL" \
         --role="roles/storage.objectViewer"
 
     # Permission to access secrets
-    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
         --member="serviceAccount:$SA_EMAIL" \
         --role="roles/secretmanager.secretAccessor"
 
     # Permission for Cloud Run to run jobs
-    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
         --member="serviceAccount:$SA_EMAIL" \
         --role="roles/run.invoker"
 
     # Permission to use VPC connectors
-    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
         --member="serviceAccount:$SA_EMAIL" \
         --role="roles/vpcaccess.user"
 
@@ -165,16 +165,16 @@ create_service_account() {
 create_secrets() {
     log_info "Creating secrets in Secret Manager..."
 
-    SA_EMAIL="ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com"
+    SA_EMAIL="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
 
     # Elasticsearch API key
-    if [ -n "$ELASTICSEARCH_API_KEY" ] && [ "$ELASTICSEARCH_API_KEY" != "your-api-key" ]; then
+    if [ -n "$GE_ELASTICSEARCH_API_KEY" ] && [ "$GE_ELASTICSEARCH_API_KEY" != "your-api-key" ]; then
         if ! gcloud secrets describe elasticsearch-api-key > /dev/null 2>&1; then
-            echo -n "$ELASTICSEARCH_API_KEY" | gcloud secrets create elasticsearch-api-key --data-file=-
+            echo -n "$GE_ELASTICSEARCH_API_KEY" | gcloud secrets create elasticsearch-api-key --data-file=-
             log_info "Elasticsearch API key secret created."
         else
             log_info "Elasticsearch API key secret already exists. Updating..."
-            echo -n "$ELASTICSEARCH_API_KEY" | gcloud secrets versions add elasticsearch-api-key --data-file=-
+            echo -n "$GE_ELASTICSEARCH_API_KEY" | gcloud secrets versions add elasticsearch-api-key --data-file=-
             log_info "Elasticsearch API key secret updated."
         fi
 
@@ -198,13 +198,13 @@ create_secrets() {
     fi
 
     # AWS S3 Access Key
-    if [ -n "$AWS_S3_ACCESS_KEY" ]; then
+    if [ -n "$GE_AWS_S3_ACCESS_KEY" ]; then
         if ! gcloud secrets describe aws-s3-access-key > /dev/null 2>&1; then
-            echo -n "$AWS_S3_ACCESS_KEY" | gcloud secrets create aws-s3-access-key --data-file=-
+            echo -n "$GE_AWS_S3_ACCESS_KEY" | gcloud secrets create aws-s3-access-key --data-file=-
             log_info "AWS S3 access key secret created."
         else
             log_info "AWS S3 access key secret already exists. Updating..."
-            echo -n "$AWS_S3_ACCESS_KEY" | gcloud secrets versions add aws-s3-access-key --data-file=-
+            echo -n "$GE_AWS_S3_ACCESS_KEY" | gcloud secrets versions add aws-s3-access-key --data-file=-
             log_info "AWS S3 access key secret updated."
         fi
 
@@ -214,18 +214,18 @@ create_secrets() {
             --role="roles/secretmanager.secretAccessor" \
             --condition=None
     else
-        log_warn "AWS_S3_ACCESS_KEY not set. Skipping AWS S3 access key secret creation."
+        log_warn "GE_AWS_S3_ACCESS_KEY not set. Skipping AWS S3 access key secret creation."
         log_warn "Set this if you need megastream-ingest to access S3 data."
     fi
 
     # AWS S3 Secret Key
-    if [ -n "$AWS_S3_SECRET_KEY" ]; then
+    if [ -n "$GE_AWS_S3_SECRET_KEY" ]; then
         if ! gcloud secrets describe aws-s3-secret-key > /dev/null 2>&1; then
-            echo -n "$AWS_S3_SECRET_KEY" | gcloud secrets create aws-s3-secret-key --data-file=-
+            echo -n "$GE_AWS_S3_SECRET_KEY" | gcloud secrets create aws-s3-secret-key --data-file=-
             log_info "AWS S3 secret key secret created."
         else
             log_info "AWS S3 secret key secret already exists. Updating..."
-            echo -n "$AWS_S3_SECRET_KEY" | gcloud secrets versions add aws-s3-secret-key --data-file=-
+            echo -n "$GE_AWS_S3_SECRET_KEY" | gcloud secrets versions add aws-s3-secret-key --data-file=-
             log_info "AWS S3 secret key secret updated."
         fi
 
@@ -235,7 +235,7 @@ create_secrets() {
             --role="roles/secretmanager.secretAccessor" \
             --condition=None
     else
-        log_warn "AWS_S3_SECRET_KEY not set. Skipping AWS S3 secret key secret creation."
+        log_warn "GE_AWS_S3_SECRET_KEY not set. Skipping AWS S3 secret key secret creation."
         log_warn "Set this if you need megastream-ingest to access S3 data."
     fi
 
@@ -246,55 +246,55 @@ create_ingest_state_storage() {
     log_info "Setting up storage for ingest state files..."
 
     # Create a Cloud Storage bucket for ingest state files
-    BUCKET_NAME="$PROJECT_ID-ingex-state-$ENVIRONMENT"
+    BUCKET_NAME="$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT"
 
     if ! gsutil ls -b gs://"$BUCKET_NAME" > /dev/null 2>&1; then
-        gsutil mb -l "$REGION" gs://"$BUCKET_NAME"
+        gsutil mb -l "$GE_GCP_REGION" gs://"$BUCKET_NAME"
         log_info "Storage bucket created: $BUCKET_NAME"
     else
         log_info "Storage bucket already exists: $BUCKET_NAME"
     fi
 
     # Set appropriate permissions
-    gsutil iam ch serviceAccount:"ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com":objectAdmin gs://"$BUCKET_NAME"
+    gsutil iam ch serviceAccount:"ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com":objectAdmin gs://"$BUCKET_NAME"
 }
 
 create_extract_storage() {
     log_info "Setting up storage bucket for extracted parquet files..."
 
-    BUCKET_NAME="$PROJECT_ID-ingex-extract-$ENVIRONMENT"
+    BUCKET_NAME="$GE_GCP_PROJECT_ID-ingex-extract-$GE_ENVIRONMENT"
 
     if ! gsutil ls -b gs://"$BUCKET_NAME" > /dev/null 2>&1; then
-        gsutil mb -l "$REGION" gs://"$BUCKET_NAME"
+        gsutil mb -l "$GE_GCP_REGION" gs://"$BUCKET_NAME"
         log_info "Extract storage bucket created: $BUCKET_NAME"
     else
         log_info "Extract storage bucket already exists: $BUCKET_NAME"
     fi
 
     # Grant service account objectAdmin permission
-    gsutil iam ch serviceAccount:"ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com":objectAdmin gs://"$BUCKET_NAME"
+    gsutil iam ch serviceAccount:"ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com":objectAdmin gs://"$BUCKET_NAME"
     log_info "Granted objectAdmin to service account for bucket: $BUCKET_NAME"
 }
 
 create_vpc_connector() {
     log_info "Creating VPC connector for Cloud Run services..."
 
-    CONNECTOR_NAME="ingex-vpc-connector-$ENVIRONMENT"
+    CONNECTOR_NAME="ingex-vpc-connector-$GE_ENVIRONMENT"
 
     # Check if VPC connector already exists
-    if gcloud compute networks vpc-access connectors describe "$CONNECTOR_NAME" --region="$REGION" > /dev/null 2>&1; then
+    if gcloud compute networks vpc-access connectors describe "$CONNECTOR_NAME" --region="$GE_GCP_REGION" > /dev/null 2>&1; then
         log_info "VPC connector already exists: $CONNECTOR_NAME"
         return
     fi
 
     # Create VPC connector service account if it doesn't exist
-    CONNECTOR_SA_NAME="vpc-connector-sa-$ENVIRONMENT"
-    CONNECTOR_SA_EMAIL="$CONNECTOR_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
+    CONNECTOR_SA_NAME="vpc-connector-sa-$GE_ENVIRONMENT"
+    CONNECTOR_SA_EMAIL="$CONNECTOR_SA_NAME@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
 
     if ! gcloud iam service-accounts describe "$CONNECTOR_SA_EMAIL" > /dev/null 2>&1; then
         gcloud iam service-accounts create "$CONNECTOR_SA_NAME" \
-            --display-name="VPC Connector Service Account ($ENVIRONMENT)" \
-            --description="Service account for VPC connector in $ENVIRONMENT"
+            --display-name="VPC Connector Service Account ($GE_ENVIRONMENT)" \
+            --description="Service account for VPC connector in $GE_ENVIRONMENT"
         log_info "VPC connector service account created: $CONNECTOR_SA_EMAIL"
     fi
 
@@ -303,7 +303,7 @@ create_vpc_connector() {
     # Using 192.168.1.0/28 to avoid conflicts with existing subnets
     gcloud compute networks vpc-access connectors create "$CONNECTOR_NAME" \
         --network=default \
-        --region="$REGION" \
+        --region="$GE_GCP_REGION" \
         --range=192.168.1.0/28 \
         --min-instances=2 \
         --max-instances=10 \
@@ -312,8 +312,8 @@ create_vpc_connector() {
     log_info "VPC connector created: $CONNECTOR_NAME"
 
     # Grant the default Cloud Run service account permission to use VPC connectors
-    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-        --member="serviceAccount:$PROJECT_ID-compute@developer.gserviceaccount.com" \
+    gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
+        --member="serviceAccount:$GE_GCP_PROJECT_ID-compute@developer.gserviceaccount.com" \
         --role="roles/vpcaccess.user"
 
     log_info "VPC connector permissions configured"
@@ -323,14 +323,14 @@ setup_firewall_rules() {
     log_info "Setting up firewall rules for VPC access..."
 
     # Allow Cloud Run services to access Elasticsearch through internal load balancer
-    FIREWALL_RULE_NAME="allow-cloud-run-to-elasticsearch-$ENVIRONMENT"
+    FIREWALL_RULE_NAME="allow-cloud-run-to-elasticsearch-$GE_ENVIRONMENT"
 
     if ! gcloud compute firewall-rules describe "$FIREWALL_RULE_NAME" > /dev/null 2>&1; then
         gcloud compute firewall-rules create "$FIREWALL_RULE_NAME" \
             --network=default \
             --allow=tcp:9200,tcp:9300 \
             --source-ranges=192.168.1.0/28 \
-            --target-tags=gke-greenearth-$ENVIRONMENT \
+            --target-tags=gke-greenearth-$GE_ENVIRONMENT \
             --description="Allow Cloud Run services to access Elasticsearch internal load balancer"
         log_info "Firewall rule created: $FIREWALL_RULE_NAME"
     else
@@ -338,14 +338,14 @@ setup_firewall_rules() {
     fi
 
     # Allow internal load balancer health checks
-    HEALTH_CHECK_RULE="allow-internal-lb-health-checks-$ENVIRONMENT"
+    HEALTH_CHECK_RULE="allow-internal-lb-health-checks-$GE_ENVIRONMENT"
 
     if ! gcloud compute firewall-rules describe "$HEALTH_CHECK_RULE" > /dev/null 2>&1; then
         gcloud compute firewall-rules create "$HEALTH_CHECK_RULE" \
             --network=default \
             --allow=tcp:9200 \
             --source-ranges=130.211.0.0/22,35.191.0.0/16 \
-            --target-tags=gke-greenearth-$ENVIRONMENT \
+            --target-tags=gke-greenearth-$GE_ENVIRONMENT \
             --description="Allow Google Cloud load balancer health checks"
         log_info "Health check firewall rule created: $HEALTH_CHECK_RULE"
     else
@@ -357,15 +357,15 @@ setup_expiry_cloud_scheduler() {
     log_info "Setting up Cloud Scheduler for elasticsearch-expiry..."
 
     # Get project number for default compute service account
-    PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+    PROJECT_NUMBER=$(gcloud projects describe "$GE_GCP_PROJECT_ID" --format="value(projectNumber)")
     COMPUTE_SERVICE_ACCOUNT="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
 
     # Use Cloud Run v2 API endpoint format
-    JOB_URI="https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/elasticsearch-expiry:run"
+    JOB_URI="https://run.googleapis.com/v2/projects/$GE_GCP_PROJECT_ID/locations/$GE_GCP_REGION/jobs/elasticsearch-expiry:run"
 
     # Only configure for stage environment (hourly cleanup for limited capacity cluster)
-    if [ "$ENVIRONMENT" != "stage" ]; then
-        log_info "Skipping Cloud Scheduler setup for $ENVIRONMENT (only stage is configured)"
+    if [ "$GE_ENVIRONMENT" != "stage" ]; then
+        log_info "Skipping Cloud Scheduler setup for $GE_ENVIRONMENT (only stage is configured)"
         return 0
     fi
 
@@ -377,16 +377,16 @@ setup_expiry_cloud_scheduler() {
     # Grant the default compute service account permission to invoke the Cloud Run job
     log_info "Granting default compute service account permission to invoke Cloud Run job..."
     gcloud run jobs add-iam-policy-binding elasticsearch-expiry \
-        --region="$REGION" \
+        --region="$GE_GCP_REGION" \
         --member="serviceAccount:$COMPUTE_SERVICE_ACCOUNT" \
         --role="roles/run.invoker" \
         2>/dev/null || log_info "Service account already has run.invoker permission"
 
     # Create or update the scheduler job
     # Note: Uses OAuth (not OIDC) as documented in https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule#command-line
-    if ! gcloud scheduler jobs describe "$job_name" --location="$REGION" > /dev/null 2>&1; then
+    if ! gcloud scheduler jobs describe "$job_name" --location="$GE_GCP_REGION" > /dev/null 2>&1; then
         gcloud scheduler jobs create http "$job_name" \
-            --location="$REGION" \
+            --location="$GE_GCP_REGION" \
             --schedule="$schedule" \
             --uri="$JOB_URI" \
             --http-method=POST \
@@ -396,7 +396,7 @@ setup_expiry_cloud_scheduler() {
     else
         # Update existing job to ensure schedule and other settings are current
         gcloud scheduler jobs update http "$job_name" \
-            --location="$REGION" \
+            --location="$GE_GCP_REGION" \
             --schedule="$schedule" \
             --uri="$JOB_URI" \
             --http-method=POST \
@@ -410,15 +410,15 @@ setup_extract_cloud_scheduler() {
     log_info "Setting up Cloud Scheduler for extract job..."
 
     # Get project number for default compute service account
-    PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+    PROJECT_NUMBER=$(gcloud projects describe "$GE_GCP_PROJECT_ID" --format="value(projectNumber)")
     COMPUTE_SERVICE_ACCOUNT="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
 
     # Use Cloud Run v2 API endpoint format
-    JOB_URI="https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/extract:run"
+    JOB_URI="https://run.googleapis.com/v2/projects/$GE_GCP_PROJECT_ID/locations/$GE_GCP_REGION/jobs/extract:run"
 
     # Only configure for stage environment
-    if [ "$ENVIRONMENT" != "stage" ]; then
-        log_info "Skipping extract Cloud Scheduler setup for $ENVIRONMENT (only stage is configured)"
+    if [ "$GE_ENVIRONMENT" != "stage" ]; then
+        log_info "Skipping extract Cloud Scheduler setup for $GE_ENVIRONMENT (only stage is configured)"
         return 0
     fi
 
@@ -430,15 +430,15 @@ setup_extract_cloud_scheduler() {
     # Grant the default compute service account permission to invoke the Cloud Run job
     log_info "Granting default compute service account permission to invoke extract job..."
     gcloud run jobs add-iam-policy-binding extract \
-        --region="$REGION" \
+        --region="$GE_GCP_REGION" \
         --member="serviceAccount:$COMPUTE_SERVICE_ACCOUNT" \
         --role="roles/run.invoker" \
         2>/dev/null || log_info "Service account already has run.invoker permission"
 
     # Create or update the scheduler job
-    if ! gcloud scheduler jobs describe "$job_name" --location="$REGION" > /dev/null 2>&1; then
+    if ! gcloud scheduler jobs describe "$job_name" --location="$GE_GCP_REGION" > /dev/null 2>&1; then
         gcloud scheduler jobs create http "$job_name" \
-            --location="$REGION" \
+            --location="$GE_GCP_REGION" \
             --schedule="$schedule" \
             --uri="$JOB_URI" \
             --http-method=POST \
@@ -447,7 +447,7 @@ setup_extract_cloud_scheduler() {
         log_info "Cloud Scheduler job created: $job_name"
     else
         gcloud scheduler jobs update http "$job_name" \
-            --location="$REGION" \
+            --location="$GE_GCP_REGION" \
             --schedule="$schedule" \
             --uri="$JOB_URI" \
             --http-method=POST \
@@ -460,9 +460,9 @@ setup_extract_cloud_scheduler() {
 main() {
     echo "=================================================="
     echo "Green Earth Ingex - GCP Environment Setup"
-    echo "Environment: $ENVIRONMENT"
-    echo "Project: $PROJECT_ID"
-    echo "Region: $REGION"
+    echo "Environment: $GE_ENVIRONMENT"
+    echo "Project: $GE_GCP_PROJECT_ID"
+    echo "Region: $GE_GCP_REGION"
     echo "=================================================="
     echo
 
@@ -488,8 +488,8 @@ main() {
     echo
     echo "Important notes:"
     echo "- Elasticsearch expiry runs daily at 2 AM UTC"
-    echo "- State files are stored in: gs://$PROJECT_ID-ingex-state-$ENVIRONMENT"
-    echo "- Service account: ingex-runner-$ENVIRONMENT@$PROJECT_ID.iam.gserviceaccount.com"
+    echo "- State files are stored in: gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT"
+    echo "- Service account: ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
     echo
 }
 
@@ -497,39 +497,39 @@ main() {
 while [[ $# -gt 0 ]]; do
     case $1 in
         --project-id)
-            PROJECT_ID="$2"
+            GE_GCP_PROJECT_ID="$2"
             shift 2
             ;;
         --region)
-            REGION="$2"
+            GE_GCP_REGION="$2"
             shift 2
             ;;
         --environment)
-            ENVIRONMENT="$2"
+            GE_ENVIRONMENT="$2"
             shift 2
             ;;
         --elasticsearch-url)
-            ELASTICSEARCH_URL="$2"
+            GE_ELASTICSEARCH_URL="$2"
             shift 2
             ;;
         --elasticsearch-api-key)
-            ELASTICSEARCH_API_KEY="$2"
+            GE_ELASTICSEARCH_API_KEY="$2"
             shift 2
             ;;
         --s3-bucket)
-            S3_BUCKET="$2"
+            GE_AWS_S3_BUCKET="$2"
             shift 2
             ;;
         --s3-prefix)
-            S3_PREFIX="$2"
+            GE_AWS_S3_PREFIX="$2"
             shift 2
             ;;
         --aws-access-key)
-            AWS_S3_ACCESS_KEY="$2"
+            GE_AWS_S3_ACCESS_KEY="$2"
             shift 2
             ;;
         --aws-secret-key)
-            AWS_S3_SECRET_KEY="$2"
+            GE_AWS_S3_SECRET_KEY="$2"
             shift 2
             ;;
         --help)
@@ -551,9 +551,9 @@ while [[ $# -gt 0 ]]; do
             echo "The script is idempotent and safe to re-run to ensure correct configuration."
             echo
             echo "Environment variables:"
-            echo "  PROJECT_ID, REGION, ENVIRONMENT, ELASTICSEARCH_URL"
-            echo "  ELASTICSEARCH_API_KEY, S3_BUCKET, S3_PREFIX"
-            echo "  AWS_S3_ACCESS_KEY, AWS_S3_SECRET_KEY"
+            echo "  GE_GCP_PROJECT_ID, GE_GCP_REGION, GE_ENVIRONMENT, GE_ELASTICSEARCH_URL"
+            echo "  GE_ELASTICSEARCH_API_KEY, GE_AWS_S3_BUCKET, GE_AWS_S3_PREFIX"
+            echo "  GE_AWS_S3_ACCESS_KEY, GE_AWS_S3_SECRET_KEY"
             echo
             exit 0
             ;;

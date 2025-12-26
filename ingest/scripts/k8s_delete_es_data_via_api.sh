@@ -5,17 +5,17 @@
 
 set -e
 
-ENVIRONMENT="${ENVIRONMENT:-local}"
-NAMESPACE="greenearth-${ENVIRONMENT}"
+GE_ENVIRONMENT="${GE_ENVIRONMENT:-local}"
+GE_K8S_NAMESPACE="greenearth-${GE_ENVIRONMENT}"
 
-echo "Running ES index deletion and recreation in ${ENVIRONMENT} environment (namespace: ${NAMESPACE})"
+echo "Running ES index deletion and recreation in ${GE_ENVIRONMENT} environment (namespace: ${GE_K8S_NAMESPACE})"
 echo ""
 
 # Get the elastic superuser credentials (needed for index deletion)
-ES_USERNAME="elastic"
-ES_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n "${NAMESPACE}" -o jsonpath='{.data.elastic}' | base64 -d)
+ELASTICSEARCH_USERNAME="elastic"
+ELASTICSEARCH_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n "${GE_K8S_NAMESPACE}" -o jsonpath='{.data.elastic}' | base64 -d)
 
-if [ -z "$ES_PASSWORD" ]; then
+if [ -z "$ELASTICSEARCH_PASSWORD" ]; then
   echo "Error: Could not retrieve elastic superuser password"
   exit 1
 fi
@@ -24,9 +24,9 @@ echo "Using elastic superuser (required for index deletion)"
 echo ""
 
 # The internal service name for Elasticsearch (HTTPS)
-ES_HOST="https://greenearth-es-http:9200"
+GE_ELASTICSEARCH_URL="https://greenearth-es-http:9200"
 
-echo "Will connect to: ${ES_HOST}"
+echo "Will connect to: ${GE_ELASTICSEARCH_URL}"
 echo "WARNING: This will DELETE and RECREATE all data indices!"
 echo "This deletes the actual indices: posts_v1, likes_v1, post_tombstones_v1, like_tombstones_v1"
 echo "The indices will be recreated from templates automatically."
@@ -39,7 +39,7 @@ if [ "$confirm" != "yes" ]; then
 fi
 
 # Stop ingest services for stage/prod to prevent them from writing during recreation
-if [ "$ENVIRONMENT" = "stage" ] || [ "$ENVIRONMENT" = "prod" ]; then
+if [ "$GE_ENVIRONMENT" = "stage" ] || [ "$GE_ENVIRONMENT" = "prod" ]; then
   echo ""
   echo "Stopping ingest services to prevent writes during recreation..."
 
@@ -68,50 +68,50 @@ fi
 
 # Create a job that deletes and recreates the indices
 kubectl run es-index-recreation-$(date +%s) \
-  --namespace="${NAMESPACE}" \
+  --namespace="${GE_K8S_NAMESPACE}" \
   --image=curlimages/curl:latest \
   --restart=Never \
   --rm -i --tty \
-  --env="ES_HOST=${ES_HOST}" \
-  --env="ES_USERNAME=${ES_USERNAME}" \
-  --env="ES_PASSWORD=${ES_PASSWORD}" \
+  --env="GE_ELASTICSEARCH_URL=${GE_ELASTICSEARCH_URL}" \
+  --env="ELASTICSEARCH_USERNAME=${ELASTICSEARCH_USERNAME}" \
+  --env="ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}" \
   -- sh -c '
 echo "Removing read-only blocks from all indices..."
-curl -k -X PUT "${ES_HOST}/_all/_settings" \
-  -u "${ES_USERNAME}:${ES_PASSWORD}" \
+curl -k -X PUT "${GE_ELASTICSEARCH_URL}/_all/_settings" \
+  -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}" \
   -H "Content-Type: application/json" \
   -d "{\"index.blocks.read_only_allow_delete\": null}"
 
 echo ""
 echo ""
 echo "Deleting posts_v1 index..."
-curl -k -X DELETE "${ES_HOST}/posts_v1" \
-  -u "${ES_USERNAME}:${ES_PASSWORD}"
+curl -k -X DELETE "${GE_ELASTICSEARCH_URL}/posts_v1" \
+  -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}"
 
 echo ""
 echo ""
 echo "Deleting likes_v1 index..."
-curl -k -X DELETE "${ES_HOST}/likes_v1" \
-  -u "${ES_USERNAME}:${ES_PASSWORD}"
+curl -k -X DELETE "${GE_ELASTICSEARCH_URL}/likes_v1" \
+  -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}"
 
 echo ""
 echo ""
 echo "Deleting post_tombstones_v1 index..."
-curl -k -X DELETE "${ES_HOST}/post_tombstones_v1" \
-  -u "${ES_USERNAME}:${ES_PASSWORD}"
+curl -k -X DELETE "${GE_ELASTICSEARCH_URL}/post_tombstones_v1" \
+  -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}"
 
 echo ""
 echo ""
 echo "Deleting like_tombstones_v1 index (if exists)..."
-curl -k -X DELETE "${ES_HOST}/like_tombstones_v1" \
-  -u "${ES_USERNAME}:${ES_PASSWORD}" \
+curl -k -X DELETE "${GE_ELASTICSEARCH_URL}/like_tombstones_v1" \
+  -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}" \
   2>/dev/null || echo "like_tombstones_v1 does not exist, skipping"
 
 echo ""
 echo ""
 echo "Resetting disk watermark settings to defaults..."
-curl -k -X PUT "${ES_HOST}/_cluster/settings" \
-  -u "${ES_USERNAME}:${ES_PASSWORD}" \
+curl -k -X PUT "${GE_ELASTICSEARCH_URL}/_cluster/settings" \
+  -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}" \
   -H "Content-Type: application/json" \
   -d "{
     \"persistent\": {
@@ -129,8 +129,8 @@ curl -k -X PUT "${ES_HOST}/_cluster/settings" \
 echo ""
 echo ""
 echo "Verifying cluster health..."
-curl -k -X GET "${ES_HOST}/_cluster/health?pretty" \
-  -u "${ES_USERNAME}:${ES_PASSWORD}"
+curl -k -X GET "${GE_ELASTICSEARCH_URL}/_cluster/health?pretty" \
+  -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}"
 
 echo ""
 echo ""
@@ -148,7 +148,7 @@ if [ -z "$GIT_ROOT" ]; then
 fi
 
 # Determine which environment overlay to use
-K8S_ENV_DIR="${GIT_ROOT}/index/deploy/k8s/environments/${ENVIRONMENT}"
+K8S_ENV_DIR="${GIT_ROOT}/index/deploy/k8s/environments/${GE_ENVIRONMENT}"
 if [ ! -d "$K8S_ENV_DIR" ]; then
   echo "Warning: Environment directory not found at: ${K8S_ENV_DIR}"
   echo "Falling back to base configuration"
@@ -159,35 +159,35 @@ echo "Using Kubernetes configuration from: ${K8S_ENV_DIR}"
 
 # Delete existing bootstrap job if it exists (to allow recreation)
 echo "Deleting existing bootstrap job if present..."
-kubectl delete job elasticsearch-bootstrap -n "${NAMESPACE}" 2>/dev/null || true
+kubectl delete job elasticsearch-bootstrap -n "${GE_K8S_NAMESPACE}" 2>/dev/null || true
 
 # Apply all templates using Kustomize to properly substitute variables
 echo "Applying index templates, aliases ConfigMaps, and bootstrap job using Kustomize..."
-kubectl apply -k "${K8S_ENV_DIR}" -n "${NAMESPACE}"
+kubectl apply -k "${K8S_ENV_DIR}" -n "${GE_K8S_NAMESPACE}"
 
 echo ""
 echo "Waiting for bootstrap job to complete..."
-kubectl wait --for=condition=complete --timeout=300s job/elasticsearch-bootstrap -n "${NAMESPACE}" || {
+kubectl wait --for=condition=complete --timeout=300s job/elasticsearch-bootstrap -n "${GE_K8S_NAMESPACE}" || {
   echo "Warning: Bootstrap job did not complete within timeout. Check job status:"
-  echo "  kubectl get jobs -n ${NAMESPACE}"
-  echo "  kubectl logs -n ${NAMESPACE} job/elasticsearch-bootstrap"
+  echo "  kubectl get jobs -n ${GE_K8S_NAMESPACE}"
+  echo "  kubectl logs -n ${GE_K8S_NAMESPACE} job/elasticsearch-bootstrap"
 }
 
 echo ""
 echo "Done! Indices have been recreated."
 
 # Restart ingest services for stage/prod
-if [ "$ENVIRONMENT" = "stage" ] || [ "$ENVIRONMENT" = "prod" ]; then
+if [ "$GE_ENVIRONMENT" = "stage" ] || [ "$GE_ENVIRONMENT" = "prod" ]; then
   echo ""
   echo "To restart ingest services, run ingetsctl.sh start"
 fi
 
 echo ""
 echo "Check disk space with:"
-ES_POD=$(kubectl get pods -n "${NAMESPACE}" -l common.k8s.elastic.co/type=elasticsearch -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+ES_POD=$(kubectl get pods -n "${GE_K8S_NAMESPACE}" -l common.k8s.elastic.co/type=elasticsearch -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
 if [ -n "$ES_POD" ]; then
-  echo "kubectl exec -n ${NAMESPACE} ${ES_POD} -- df -h /usr/share/elasticsearch/data"
+  echo "kubectl exec -n ${GE_K8S_NAMESPACE} ${ES_POD} -- df -h /usr/share/elasticsearch/data"
 else
-  echo "kubectl exec -n ${NAMESPACE} <elasticsearch-pod-name> -- df -h /usr/share/elasticsearch/data"
-  echo "(Run 'kubectl get pods -n ${NAMESPACE}' to find the Elasticsearch pod name)"
+  echo "kubectl exec -n ${GE_K8S_NAMESPACE} <elasticsearch-pod-name> -- df -h /usr/share/elasticsearch/data"
+  echo "(Run 'kubectl get pods -n ${GE_K8S_NAMESPACE}' to find the Elasticsearch pod name)"
 fi

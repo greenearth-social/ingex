@@ -46,17 +46,17 @@ func main() {
 
 	// Validate configuration
 	if config.JetstreamURL == "" {
-		logger.Error("JETSTREAM_URL environment variable is required")
+		logger.Error("GE_JETSTREAM_URL environment variable is required")
 		os.Exit(1)
 	}
 
 	if config.ElasticsearchURL == "" {
-		logger.Error("ELASTICSEARCH_URL environment variable is required")
+		logger.Error("GE_ELASTICSEARCH_URL environment variable is required")
 		os.Exit(1)
 	}
 
 	if !*dryRun && config.ElasticsearchAPIKey == "" {
-		logger.Error("ELASTICSEARCH_API_KEY environment variable is required")
+		logger.Error("GE_ELASTICSEARCH_API_KEY environment variable is required")
 		os.Exit(1)
 	}
 

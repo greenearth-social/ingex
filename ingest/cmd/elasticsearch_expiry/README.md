@@ -18,12 +18,12 @@ Configuration is done through environment variables:
 
 ### Required
 
-- `ELASTICSEARCH_URL` - Elasticsearch cluster endpoint (e.g., `https://localhost:9200`)
-- `ELASTICSEARCH_API_KEY` - Elasticsearch API key with delete permissions (not required in dry-run mode)
+- `GE_ELASTICSEARCH_URL` - Elasticsearch cluster endpoint (e.g., `https://localhost:9200`)
+- `GE_ELASTICSEARCH_API_KEY` - Elasticsearch API key with delete permissions (not required in dry-run mode)
 
 ### Optional
 
-- `LOGGING_ENABLED` - Enable/disable detailed logging (default: `true`)
+- `GE_LOGGING_ENABLED` - Enable/disable detailed logging (default: `true`)
 
 ### Command Line Options
 
@@ -105,9 +105,9 @@ cd /Users/raindrift/src/ingex/ingest
 go build -o bin/elasticsearch_expiry ./cmd/elasticsearch_expiry
 
 # Test with dry-run (safe to run, won't delete anything)
-export ELASTICSEARCH_URL="https://localhost:9200"
-export ELASTICSEARCH_API_KEY="your-api-key-here"
-export LOGGING_ENABLED="true"
+export GE_ELASTICSEARCH_URL="https://localhost:9200"
+export GE_ELASTICSEARCH_API_KEY="your-api-key-here"
+export GE_LOGGING_ENABLED="true"
 
 ./bin/elasticsearch_expiry --dry-run --skip-tls-verify
 
@@ -119,9 +119,9 @@ export LOGGING_ENABLED="true"
 
 ```bash
 # Set environment variables
-export ELASTICSEARCH_URL="https://your-cluster.es.amazonaws.com:9200"
-export ELASTICSEARCH_API_KEY="your-production-api-key"
-export LOGGING_ENABLED="true"
+export GE_ELASTICSEARCH_URL="https://your-cluster.es.amazonaws.com:9200"
+export GE_ELASTICSEARCH_API_KEY="your-production-api-key"
+export GE_LOGGING_ENABLED="true"
 
 # Run the expiry process
 ./elasticsearch_expiry
@@ -133,7 +133,7 @@ export LOGGING_ENABLED="true"
 
 If you see authentication or permission errors:
 
-1. Verify the `ELASTICSEARCH_API_KEY` is correctly set
+1. Verify the `GE_ELASTICSEARCH_API_KEY` is correctly set
 2. Ensure the API key has `read` and `delete` permissions on all relevant indices
 3. Check that the Elasticsearch cluster is accessible from your deployment environment
 

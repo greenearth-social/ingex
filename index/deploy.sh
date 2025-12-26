@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 K8S_DIR="$SCRIPT_DIR/deploy/k8s"
 
 # set default cluster, region, project id
-GKE_REGION="${GKE_REGION:-us-east1}"
-GKE_PROJECT_ID="${GKE_PROJECT_ID:-greenearth-471522}"
+GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
+GE_GCP_PROJECT_ID="${GE_GCP_PROJECT_ID:-greenearth-471522}"
 
 print_usage() {
     echo "Usage: $0 <environment> [options]"
@@ -24,7 +24,7 @@ print_usage() {
     echo "  -h, --help          Show this help message"
     echo ""
     echo "Required Environment Variables:"
-    echo "  ES_SERVICE_USER_PASSWORD    Password for the Elasticsearch service user"
+    echo "  GE_ELASTICSEARCH_SERVICE_USER_PWD    Password for the Elasticsearch service user"
     echo ""
     echo "Examples:"
     echo "  $0 local                    # Deploy to local environment"
@@ -53,7 +53,7 @@ cleanup_on_failure() {
     local namespace=$1
     log_error "Deployment failed. Cleaning up resources..."
 
-    kubectl delete -k "$K8S_DIR/environments/$ENVIRONMENT" -n "$namespace" --ignore-not-found=true 2>/dev/null || true
+    kubectl delete -k "$K8S_DIR/environments/$GE_ENVIRONMENT" -n "$namespace" --ignore-not-found=true 2>/dev/null || true
     kubectl delete secret es-service-user-secret -n "$namespace" --ignore-not-found=true 2>/dev/null || true
     kubectl delete job elasticsearch-bootstrap -n "$namespace" --ignore-not-found=true 2>/dev/null || true
     kubectl delete job es-service-user-setup -n "$namespace" --ignore-not-found=true 2>/dev/null || true
@@ -97,8 +97,8 @@ wait_for_resource() {
             # Elasticsearch and other resources may have both health and phase
             local phase=$(kubectl get $resource_type $resource_name -n $namespace -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
             # Accept yellow health for non-prod environments (staging with limited nodes)
-            if [ "$ENVIRONMENT" != "prod" ] && [ "$health" = "yellow" ] && [ "$phase" = "Ready" ]; then
-                log_success "$resource_type/$resource_name is ready (yellow health acceptable for $ENVIRONMENT)"
+            if [ "$GE_ENVIRONMENT" != "prod" ] && [ "$health" = "yellow" ] && [ "$phase" = "Ready" ]; then
+                log_success "$resource_type/$resource_name is ready (yellow health acceptable for $GE_ENVIRONMENT)"
                 return 0
             elif [ "$health" = "green" ] && [ "$phase" = "Ready" ]; then
                 log_success "$resource_type/$resource_name is ready"
@@ -184,20 +184,20 @@ setup_kubectl_context() {
             exit 1
         fi
 
-        if [ -z "$GKE_CLUSTER" ] || [ -z "$GKE_REGION" ] || [ -z "$GKE_PROJECT_ID" ]; then
-            log_error "Required environment variables not set: GKE_CLUSTER, GKE_REGION, GKE_PROJECT_ID"
+        if [ -z "$GE_K8S_CLUSTER" ] || [ -z "$GE_GCP_REGION" ] || [ -z "$GE_GCP_PROJECT_ID" ]; then
+            log_error "Required environment variables not set: GE_K8S_CLUSTER, GE_GCP_REGION, GE_GCP_PROJECT_ID"
             exit 1
         fi
 
-        log_info "Checking if GKE cluster exists: $GKE_CLUSTER"
-        if ! gcloud container clusters describe "$GKE_CLUSTER" \
-            --location="$GKE_REGION" \
-            --project="$GKE_PROJECT_ID" &> /dev/null; then
+        log_info "Checking if GKE cluster exists: $GE_K8S_CLUSTER"
+        if ! gcloud container clusters describe "$GE_K8S_CLUSTER" \
+            --location="$GE_GCP_REGION" \
+            --project="$GE_GCP_PROJECT_ID" &> /dev/null; then
 
             if [ "$create_if_missing" = true ]; then
                 echo ""
-                log_warning "GKE cluster $GKE_CLUSTER does not exist in project $GKE_PROJECT_ID"
-                log_warning "Region: $GKE_REGION"
+                log_warning "GKE cluster $GE_K8S_CLUSTER does not exist in project $GE_GCP_PROJECT_ID"
+                log_warning "Region: $GE_GCP_REGION"
                 log_warning "This will create a new standard GKE cluster (this may incur costs)"
                 echo ""
                 read -p "Do you want to create the cluster? Type 'yes' to confirm: " confirmation
@@ -208,10 +208,10 @@ setup_kubectl_context() {
                 fi
 
                 if [ "$environment" = "stage" ]; then
-                    log_info "Creating standard GKE cluster for stage: $GKE_CLUSTER"
-                    gcloud container clusters create "$GKE_CLUSTER" \
-                        --location="$GKE_REGION" \
-                        --project="$GKE_PROJECT_ID" \
+                    log_info "Creating standard GKE cluster for stage: $GE_K8S_CLUSTER"
+                    gcloud container clusters create "$GE_K8S_CLUSTER" \
+                        --location="$GE_GCP_REGION" \
+                        --project="$GE_GCP_PROJECT_ID" \
                         --machine-type="n2-highmem-2" \
                         --num-nodes=2 \
                         --disk-size=50 \
@@ -228,11 +228,11 @@ setup_kubectl_context() {
                     log_success "Stage cluster created successfully"
 
                 elif [ "$environment" = "prod" ]; then
-                    log_info "Creating standard GKE cluster for prod: $GKE_CLUSTER"
+                    log_info "Creating standard GKE cluster for prod: $GE_K8S_CLUSTER"
 
-                    gcloud container clusters create "$GKE_CLUSTER" \
-                        --location="$GKE_REGION" \
-                        --project="$GKE_PROJECT_ID" \
+                    gcloud container clusters create "$GE_K8S_CLUSTER" \
+                        --location="$GE_GCP_REGION" \
+                        --project="$GE_GCP_PROJECT_ID" \
                         --machine-type="n2-standard-2" \
                         --num-nodes=2 \
                         --node-labels=workload=es-master \
@@ -250,9 +250,9 @@ setup_kubectl_context() {
 
                     log_info "Creating data node pool for prod..."
                     gcloud container node-pools create data-pool \
-                        --cluster="$GKE_CLUSTER" \
-                        --location="$GKE_REGION" \
-                        --project="$GKE_PROJECT_ID" \
+                        --cluster="$GE_K8S_CLUSTER" \
+                        --location="$GE_GCP_REGION" \
+                        --project="$GE_GCP_PROJECT_ID" \
                         --machine-type="n2-highmem-2" \
                         --num-nodes=4 \
                         --node-labels=workload=es-data \
@@ -264,7 +264,7 @@ setup_kubectl_context() {
                     log_success "Prod cluster with node pools created successfully"
                 fi
             else
-                log_error "GKE cluster $GKE_CLUSTER does not exist in project $GKE_PROJECT_ID"
+                log_error "GKE cluster $GE_K8S_CLUSTER does not exist in project $GE_GCP_PROJECT_ID"
                 exit 1
             fi
         else
@@ -272,9 +272,9 @@ setup_kubectl_context() {
         fi
 
         log_info "Getting credentials for GKE cluster..."
-        gcloud container clusters get-credentials "$GKE_CLUSTER" \
-            --location="$GKE_REGION" \
-            --project="$GKE_PROJECT_ID"
+        gcloud container clusters get-credentials "$GE_K8S_CLUSTER" \
+            --location="$GE_GCP_REGION" \
+            --project="$GE_GCP_PROJECT_ID"
     fi
 
     local current_context=$(kubectl config current-context)
@@ -289,8 +289,8 @@ verify_prerequisites() {
         exit 1
     fi
 
-    if [ -z "$ES_SERVICE_USER_PASSWORD" ]; then
-        log_error "ES_SERVICE_USER_PASSWORD environment variable is not set"
+    if [ -z "$GE_ELASTICSEARCH_SERVICE_USER_PWD" ]; then
+        log_error "GE_ELASTICSEARCH_SERVICE_USER_PWD environment variable is not set"
         exit 1
     fi
 
@@ -318,7 +318,7 @@ teardown_environment() {
     local namespace=$1
 
     echo ""
-    log_warning "WARNING: This will DELETE the entire $ENVIRONMENT environment!"
+    log_warning "WARNING: This will DELETE the entire $GE_ENVIRONMENT environment!"
     log_warning "Namespace: $namespace"
     log_warning "All data will be permanently lost."
     echo ""
@@ -329,18 +329,18 @@ teardown_environment() {
         exit 0
     fi
 
-    log_info "Tearing down $ENVIRONMENT environment..."
+    log_info "Tearing down $GE_ENVIRONMENT environment..."
 
     kubectl delete namespace $namespace --ignore-not-found=true
 
-    log_success "Environment $ENVIRONMENT has been deleted"
+    log_success "Environment $GE_ENVIRONMENT has been deleted"
 }
 
 deploy_environment() {
     local environment=$1
     local namespace="greenearth-$environment"
 
-    GKE_CLUSTER="${GKE_CLUSTER:-greenearth-$environment-cluster}"
+    GE_K8S_CLUSTER="${GE_K8S_CLUSTER:-greenearth-$environment-cluster}"
 
     if [ "$TEARDOWN" = true ]; then
         setup_kubectl_context "$environment" false
@@ -402,7 +402,7 @@ deploy_environment() {
     log_info "Creating service user secret..."
     kubectl create secret generic es-service-user-secret \
         --from-literal=username="es-service-user" \
-        --from-literal=password="$ES_SERVICE_USER_PASSWORD" \
+        --from-literal=password="$GE_ELASTICSEARCH_SERVICE_USER_PWD" \
         -n "$namespace" \
         --dry-run=client -o yaml | kubectl apply -f -
 
@@ -432,7 +432,7 @@ deploy_environment() {
     log_info "  - Get elastic password: kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $namespace"
 }
 
-ENVIRONMENT=""
+GE_ENVIRONMENT=""
 INSTALL_ECK=false
 SKIP_TEMPLATES=false
 DRY_RUN=false
@@ -442,7 +442,7 @@ TEARDOWN=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         local|stage|prod)
-            ENVIRONMENT="$1"
+            GE_ENVIRONMENT="$1"
             shift
             ;;
         --install-eck)
@@ -477,14 +477,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ -z "$ENVIRONMENT" ]; then
+if [ -z "$GE_ENVIRONMENT" ]; then
     log_error "Environment argument is required"
     print_usage
     exit 1
 fi
 
-if [ "$ENVIRONMENT" != "local" ] && [ "$ENVIRONMENT" != "stage" ] && [ "$ENVIRONMENT" != "prod" ]; then
-    log_error "Invalid environment: $ENVIRONMENT (must be local, stage, or prod)"
+if [ "$GE_ENVIRONMENT" != "local" ] && [ "$GE_ENVIRONMENT" != "stage" ] && [ "$GE_ENVIRONMENT" != "prod" ]; then
+    log_error "Invalid environment: $GE_ENVIRONMENT (must be local, stage, or prod)"
     exit 1
 fi
 
@@ -492,4 +492,4 @@ if [ "$TEARDOWN" != true ]; then
     verify_prerequisites
 fi
 
-deploy_environment "$ENVIRONMENT"
+deploy_environment "$GE_ENVIRONMENT"

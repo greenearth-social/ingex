@@ -29,8 +29,8 @@ Set the required environment variables and run the test:
 
 ```bash
 # Set Elasticsearch connection details
-export ELASTICSEARCH_URL="https://localhost:9200"
-export ELASTICSEARCH_API_KEY="your-api-key-here"
+export GE_ELASTICSEARCH_URL="https://localhost:9200"
+export GE_ELASTICSEARCH_API_KEY="your-api-key-here"
 
 # Run integration tests
 cd ingex/ingest
@@ -49,7 +49,7 @@ The `TestMegastreamIngestIntegration` test:
 ### Test Behavior
 
 - **Automatically skipped if:**
-  - `ELASTICSEARCH_URL` or `ELASTICSEARCH_API_KEY` are not set
+  - `GE_ELASTICSEARCH_URL` or `GE_ELASTICSEARCH_API_KEY` are not set
   - Elasticsearch is not reachable
   - No test data files exist in `test_data/megastream/`
   - No documents are processed (e.g., all already indexed)
@@ -65,7 +65,7 @@ Integration tests are designed to be skipped in CI environments where Elasticsea
 To run integration tests in CI:
 
 1. Set up Elasticsearch in the CI environment
-2. Export `ELASTICSEARCH_URL` and `ELASTICSEARCH_API_KEY`
+2. Export `GE_ELASTICSEARCH_URL` and `GE_ELASTICSEARCH_API_KEY`
 3. Ensure test data files are available
 4. Run: `go test ./cmd/megastream_ingest -v`
 
@@ -76,12 +76,12 @@ The integration test creates real documents in Elasticsearch. To clean up after 
 ```bash
 # Delete all posts and tombstones (use with caution!)
 curl -k -X POST "https://localhost:9200/posts/_delete_by_query" \
-  -H "Authorization: ApiKey $ELASTICSEARCH_API_KEY" \
+  -H "Authorization: ApiKey $GE_ELASTICSEARCH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"query": {"match_all": {}}}'
 
 curl -k -X POST "https://localhost:9200/post_tombstones/_delete_by_query" \
-  -H "Authorization: ApiKey $ELASTICSEARCH_API_KEY" \
+  -H "Authorization: ApiKey $GE_ELASTICSEARCH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"query": {"match_all": {}}}'
 ```
@@ -97,8 +97,8 @@ Or use the helper script:
 To quickly verify Elasticsearch connectivity without processing data:
 
 ```bash
-export ELASTICSEARCH_URL="https://localhost:9200"
-export ELASTICSEARCH_API_KEY="your-api-key-here"
+export GE_ELASTICSEARCH_URL="https://localhost:9200"
+export GE_ELASTICSEARCH_API_KEY="your-api-key-here"
 
 go test ./cmd/megastream_ingest -v -run TestElasticsearchConnection
 ```

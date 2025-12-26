@@ -93,25 +93,25 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 	// Validate Elasticsearch configuration
 	if config.ElasticsearchURL == "" {
-		return fmt.Errorf("ELASTICSEARCH_URL environment variable is required")
+		return fmt.Errorf("GE_ELASTICSEARCH_URL environment variable is required")
 	}
 
 	if !dryRun && config.ElasticsearchAPIKey == "" {
-		return fmt.Errorf("ELASTICSEARCH_API_KEY environment variable is required")
+		return fmt.Errorf("GE_ELASTICSEARCH_API_KEY environment variable is required")
 	}
 
 	// Validate source-specific configuration
 	switch source {
 	case "local":
 		if config.LocalSQLiteDBPath == "" {
-			return fmt.Errorf("LOCAL_SQLITE_DB_PATH environment variable is required for local source")
+			return fmt.Errorf("GE_LOCAL_SQLITE_DB_PATH environment variable is required for local source")
 		}
 	case "s3":
 		if config.S3SQLiteDBBucket == "" {
-			return fmt.Errorf("S3_SQLITE_DB_BUCKET environment variable is required for s3 source")
+			return fmt.Errorf("GE_AWS_S3_BUCKET environment variable is required for s3 source")
 		}
 		if config.S3SQLiteDBPrefix == "" {
-			return fmt.Errorf("S3_SQLITE_DB_PREFIX environment variable is required for s3 source")
+			return fmt.Errorf("GE_AWS_S3_PREFIX environment variable is required for s3 source")
 		}
 	}
 
@@ -135,7 +135,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			currentTime := time.Now().UnixMicro()
 			maxRewindUs := int64(maxRewindMinutes) * 60 * 1000000 // Convert minutes to microseconds
 			minAllowedTime := currentTime - maxRewindUs
-			
+
 			if cursor.LastTimeUs < minAllowedTime {
 				logger.Info("Cursor %d is older than max-rewind limit (%d minutes), clamping to %d", cursor.LastTimeUs, maxRewindMinutes, minAllowedTime)
 				if err := stateManager.UpdateCursor(minAllowedTime); err != nil {

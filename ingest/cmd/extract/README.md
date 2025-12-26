@@ -12,38 +12,38 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 
 - `--dry-run`: Preview export without writing files (default: false)
 - `--skip-tls-verify`: Skip TLS verification (local development only, default: false)
-- `--output-path PATH`: Override output directory (default: from PARQUET_DESTINATION)
+- `--output-path PATH`: Override output directory (default: from GE_PARQUET_DESTINATION)
 - `--window-size-min MINUTES`: Time window in minutes from now (e.g., 240 for 4-hour lookback). Overrides start-time and end-time if set.
 - `--start-time TIME`: Start time for export window in RFC3339 format (e.g., 2025-01-01T00:00:00Z)
 - `--end-time TIME`: End time for export window in RFC3339 format (e.g., 2025-12-31T23:59:59Z)
 
 ## Environment Variables
 
-- `ELASTICSEARCH_URL`: ES cluster URL (required)
-- `ELASTICSEARCH_API_KEY`: ES API key (optional, recommended for production)
-- `ELASTICSEARCH_TLS_SKIP_VERIFY`: Skip TLS verification (default: false)
-- `PARQUET_DESTINATION`: Output destination - supports local paths (./output) or GCS paths (gs://bucket/path)
-- `PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
-- `EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
-- `EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts")
-- `LOGGING_ENABLED`: Enable logging (default: true)
+- `GE_ELASTICSEARCH_URL`: ES cluster URL (required)
+- `GE_ELASTICSEARCH_API_KEY`: ES API key (optional, recommended for production)
+- `GE_ELASTICSEARCH_TLS_SKIP_VERIFY`: Skip TLS verification (default: false)
+- `GE_PARQUET_DESTINATION`: Output destination - supports local paths (./output) or GCS paths (gs://bucket/path)
+- `GE_PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
+- `GE_EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
+- `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts")
+- `GE_LOGGING_ENABLED`: Enable logging (default: true)
 
 ## Examples
 
 ### Export full posts index to local directory
 
 ```bash
-export ELASTICSEARCH_URL="https://es.example.com:9200"
-export ELASTICSEARCH_API_KEY="your-api-key"
+export GE_ELASTICSEARCH_URL="https://es.example.com:9200"
+export GE_ELASTICSEARCH_API_KEY="your-api-key"
 ./extract --output-path ./exports
 ```
 
 ### Export to Google Cloud Storage
 
 ```bash
-export ELASTICSEARCH_URL="https://es.example.com:9200"
-export ELASTICSEARCH_API_KEY="your-api-key"
-export PARQUET_DESTINATION="gs://my-bucket/exports/"
+export GE_ELASTICSEARCH_URL="https://es.example.com:9200"
+export GE_ELASTICSEARCH_API_KEY="your-api-key"
+export GE_PARQUET_DESTINATION="gs://my-bucket/exports/"
 ./extract
 ```
 
@@ -56,7 +56,7 @@ export PARQUET_DESTINATION="gs://my-bucket/exports/"
 ### Export multiple indices with rolling time window
 
 ```bash
-EXTRACT_INDICES="posts,likes" ./extract --window-size-min 240
+GE_EXTRACT_INDICES="posts,likes" ./extract --window-size-min 240
 ```
 
 ### Export with fixed time window
@@ -80,7 +80,7 @@ EXTRACT_INDICES="posts,likes" ./extract --window-size-min 240
 ### Export from different indices with time range
 
 ```bash
-EXTRACT_INDICES="posts_v2,likes_v2" ./extract --output-path ./v2_exports --start-time "2025-10-01T00:00:00Z"
+GE_EXTRACT_INDICES="posts_v2,likes_v2" ./extract --output-path ./v2_exports --start-time "2025-10-01T00:00:00Z"
 ```
 
 ### Export only posts after a specific date

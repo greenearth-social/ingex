@@ -4,16 +4,16 @@
 
 set -e
 
-ES_HOST="${ES_HOST:-http://localhost:9200}"
-ES_API_KEY="${ES_API_KEY}"
+GE_ELASTICSEARCH_URL="${GE_ELASTICSEARCH_URL:-http://localhost:9200}"
+GE_ELASTICSEARCH_API_KEY="${GE_ELASTICSEARCH_API_KEY}"
 
-if [ -z "$ES_API_KEY" ]; then
-  echo "Error: ES_API_KEY environment variable not set"
+if [ -z "$GE_ELASTICSEARCH_API_KEY" ]; then
+  echo "Error: GE_ELASTICSEARCH_API_KEY environment variable not set"
   exit 1
 fi
 
 echo "WARNING: This will delete ALL data from Elasticsearch indices!"
-echo "ES_HOST: ${ES_HOST}"
+echo "GE_ELASTICSEARCH_URL: ${GE_ELASTICSEARCH_URL}"
 echo ""
 read -p "Are you sure you want to continue? (type 'yes' to confirm): " confirm
 
@@ -25,8 +25,8 @@ fi
 # First, remove any read-only blocks
 echo ""
 echo "Removing read-only blocks..."
-curl -X PUT "${ES_HOST}/_all/_settings" \
-  -H "Authorization: ApiKey ${ES_API_KEY}" \
+curl -X PUT "${GE_ELASTICSEARCH_URL}/_all/_settings" \
+  -H "Authorization: ApiKey ${GE_ELASTICSEARCH_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "index.blocks.read_only_allow_delete": null
@@ -35,8 +35,8 @@ curl -X PUT "${ES_HOST}/_all/_settings" \
 echo ""
 echo ""
 echo "Deleting all documents from posts index..."
-curl -X POST "${ES_HOST}/posts/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
-  -H "Authorization: ApiKey ${ES_API_KEY}" \
+curl -X POST "${GE_ELASTICSEARCH_URL}/posts/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
+  -H "Authorization: ApiKey ${GE_ELASTICSEARCH_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "query": {
@@ -47,8 +47,8 @@ curl -X POST "${ES_HOST}/posts/_delete_by_query?conflicts=proceed&wait_for_compl
 echo ""
 echo ""
 echo "Deleting all documents from likes index..."
-curl -X POST "${ES_HOST}/likes/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
-  -H "Authorization: ApiKey ${ES_API_KEY}" \
+curl -X POST "${GE_ELASTICSEARCH_URL}/likes/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
+  -H "Authorization: ApiKey ${GE_ELASTICSEARCH_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "query": {
@@ -59,8 +59,8 @@ curl -X POST "${ES_HOST}/likes/_delete_by_query?conflicts=proceed&wait_for_compl
 echo ""
 echo ""
 echo "Deleting all documents from post-tombstones index..."
-curl -X POST "${ES_HOST}/post-tombstones/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
-  -H "Authorization: ApiKey ${ES_API_KEY}" \
+curl -X POST "${GE_ELASTICSEARCH_URL}/post-tombstones/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
+  -H "Authorization: ApiKey ${GE_ELASTICSEARCH_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "query": {
@@ -73,10 +73,10 @@ echo ""
 echo "Deletion tasks started asynchronously."
 echo ""
 echo "Check progress with:"
-echo "curl -X GET \"${ES_HOST}/_tasks?detailed=true&actions=*delete/byquery\" -H \"Authorization: ApiKey \${ES_API_KEY}\""
+echo "curl -X GET \"${GE_ELASTICSEARCH_URL}/_tasks?detailed=true&actions=*delete/byquery\" -H \"Authorization: ApiKey \${GE_ELASTICSEARCH_API_KEY}\""
 echo ""
 echo "Check disk usage with:"
-echo "curl -X GET \"${ES_HOST}/_cat/allocation?v\" -H \"Authorization: ApiKey \${ES_API_KEY}\""
+echo "curl -X GET \"${GE_ELASTICSEARCH_URL}/_cat/allocation?v\" -H \"Authorization: ApiKey \${GE_ELASTICSEARCH_API_KEY}\""
 echo ""
 echo "Check index sizes with:"
-echo "curl -X GET \"${ES_HOST}/_cat/indices?v\" -H \"Authorization: ApiKey \${ES_API_KEY}\""
+echo "curl -X GET \"${GE_ELASTICSEARCH_URL}/_cat/indices?v\" -H \"Authorization: ApiKey \${GE_ELASTICSEARCH_API_KEY}\""

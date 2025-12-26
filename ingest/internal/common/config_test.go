@@ -31,11 +31,11 @@ func TestLoadConfig_Defaults(t *testing.T) {
 
 func TestLoadConfig_FromEnvironment(t *testing.T) {
 	// Set environment variables
-	setEnvForTest(t, "ELASTICSEARCH_URL", "http://test.example.com:9200")
-	setEnvForTest(t, "WEBSOCKET_WORKERS", "10")
-	setEnvForTest(t, "ELASTICSEARCH_WORKERS", "15")
-	setEnvForTest(t, "WORKER_TIMEOUT", "45s")
-	setEnvForTest(t, "LOGGING_ENABLED", "false")
+	setEnvForTest(t, "GE_ELASTICSEARCH_URL", "http://test.example.com:9200")
+	setEnvForTest(t, "GE_WEBSOCKET_WORKERS", "10")
+	setEnvForTest(t, "GE_ELASTICSEARCH_WORKERS", "15")
+	setEnvForTest(t, "GE_WORKER_TIMEOUT", "45s")
+	setEnvForTest(t, "GE_LOGGING_ENABLED", "false")
 	setEnvForTest(t, "PORT", "3000")
 
 	defer clearEnvVars()
@@ -65,10 +65,10 @@ func TestLoadConfig_FromEnvironment(t *testing.T) {
 
 func TestLoadConfig_InvalidValues(t *testing.T) {
 	// Set invalid environment variables that should fall back to defaults
-	setEnvForTest(t, "WEBSOCKET_WORKERS", "invalid")
-	setEnvForTest(t, "ELASTICSEARCH_WORKERS", "invalid")
-	setEnvForTest(t, "WORKER_TIMEOUT", "invalid")
-	setEnvForTest(t, "LOGGING_ENABLED", "invalid")
+	setEnvForTest(t, "GE_WEBSOCKET_WORKERS", "invalid")
+	setEnvForTest(t, "GE_ELASTICSEARCH_WORKERS", "invalid")
+	setEnvForTest(t, "GE_WORKER_TIMEOUT", "invalid")
+	setEnvForTest(t, "GE_LOGGING_ENABLED", "invalid")
 
 	defer clearEnvVars()
 
@@ -94,11 +94,11 @@ func TestLoadConfig_InvalidValues(t *testing.T) {
 
 func clearEnvVars() {
 	envVars := []string{
-		"ELASTICSEARCH_URL",
-		"WEBSOCKET_WORKERS",
-		"ELASTICSEARCH_WORKERS",
-		"WORKER_TIMEOUT",
-		"LOGGING_ENABLED",
+		"GE_ELASTICSEARCH_URL",
+		"GE_WEBSOCKET_WORKERS",
+		"GE_ELASTICSEARCH_WORKERS",
+		"GE_WORKER_TIMEOUT",
+		"GE_LOGGING_ENABLED",
 		"PORT",
 	}
 

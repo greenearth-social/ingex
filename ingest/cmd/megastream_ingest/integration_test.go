@@ -22,11 +22,11 @@ import (
 // 3. Verifies the data was indexed in Elasticsearch
 func TestMegastreamIngestIntegration(t *testing.T) {
 	// Check for required environment variables
-	esURL := os.Getenv("ELASTICSEARCH_URL")
-	esAPIKey := os.Getenv("ELASTICSEARCH_API_KEY")
+	esURL := os.Getenv("GE_ELASTICSEARCH_URL")
+	esAPIKey := os.Getenv("GE_ELASTICSEARCH_API_KEY")
 
 	if esURL == "" || esAPIKey == "" {
-		t.Skip("Skipping integration test: ELASTICSEARCH_URL and ELASTICSEARCH_API_KEY must be set")
+		t.Skip("Skipping integration test: GE_ELASTICSEARCH_URL and GE_ELASTICSEARCH_API_KEY must be set")
 	}
 
 	// Create logger
@@ -348,11 +348,11 @@ func countDocuments(esClient *elasticsearch.Client, index string) (int, error) {
 
 // TestElasticsearchConnection is a simple test to verify ES connection
 func TestElasticsearchConnection(t *testing.T) {
-	esURL := os.Getenv("ELASTICSEARCH_URL")
-	esAPIKey := os.Getenv("ELASTICSEARCH_API_KEY")
+	esURL := os.Getenv("GE_ELASTICSEARCH_URL")
+	esAPIKey := os.Getenv("GE_ELASTICSEARCH_API_KEY")
 
 	if esURL == "" || esAPIKey == "" {
-		t.Skip("Skipping: ELASTICSEARCH_URL and ELASTICSEARCH_API_KEY must be set")
+		t.Skip("Skipping: GE_ELASTICSEARCH_URL and GE_ELASTICSEARCH_API_KEY must be set")
 	}
 
 	logger := common.NewLogger(false)
