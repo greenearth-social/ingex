@@ -29,6 +29,7 @@ func main() {
 	mode := flag.String("mode", "once", "Ingestion mode: 'once' or 'spool'")
 	noRewind := flag.Bool("no-rewind", false, "Do not rewind to last processed timestamp on startup (drops intervening data)")
 	startupWithLastFile := flag.Bool("startup-with-last-file", false, "Process the most recent file on startup, even if before the default cursor")
+	maxRewindMinutes := flag.Int("max-rewind", 0, "Maximum number of minutes to rewind cursor on startup (0 = unlimited)")
 	flag.Parse()
 
 	// Load configuration
@@ -73,13 +74,13 @@ func main() {
 	}()
 
 	logger.Info("Starting SQLite ingestion (source: %s, mode: %s)", *source, *mode)
-	if err := runIngestion(ctx, config, logger, healthServer, *source, *mode, *dryRun, *skipTLSVerify, *noRewind, *startupWithLastFile); err != nil {
+	if err := runIngestion(ctx, config, logger, healthServer, *source, *mode, *dryRun, *skipTLSVerify, *noRewind, *startupWithLastFile, *maxRewindMinutes); err != nil {
 		logger.Error("%v", err)
 		os.Exit(1)
 	}
 }
 
-func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, source, mode string, dryRun, skipTLSVerify, noRewind, startupWithLastFile bool) error {
+func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, source, mode string, dryRun, skipTLSVerify, noRewind, startupWithLastFile bool, maxRewindMinutes int) error {
 	// Validate source parameter
 	if source != "local" && source != "s3" {
 		return fmt.Errorf("invalid source: %s (must be 'local' or 's3')", source)
@@ -128,6 +129,20 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			return fmt.Errorf("failed to update cursor for no-rewind mode: %w", err)
 		}
 		logger.Info("No-rewind mode: set cursor to service start time: %d", currentTime)
+	} else if maxRewindMinutes > 0 {
+		// Apply max-rewind limit if specified
+		if cursor := stateManager.GetCursor(); cursor != nil {
+			currentTime := time.Now().UnixMicro()
+			maxRewindUs := int64(maxRewindMinutes) * 60 * 1000000 // Convert minutes to microseconds
+			minAllowedTime := currentTime - maxRewindUs
+			
+			if cursor.LastTimeUs < minAllowedTime {
+				logger.Info("Cursor %d is older than max-rewind limit (%d minutes), clamping to %d", cursor.LastTimeUs, maxRewindMinutes, minAllowedTime)
+				if err := stateManager.UpdateCursor(minAllowedTime); err != nil {
+					return fmt.Errorf("failed to update cursor for max-rewind limit: %w", err)
+				}
+			}
+		}
 	} else if startupWithLastFile {
 		// If startup-with-last-file is enabled, find and set cursor to process the most recent file
 		var mostRecentFileTime int64

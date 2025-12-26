@@ -114,6 +114,16 @@ verify_vpc_connector() {
 deploy_jetstream_service() {
     log_info "Deploying jetstream-ingest service from source..."
 
+    # Set max-rewind based on environment
+    # Stage: 15 minutes (prevent disk overflow on restart)
+    # Prod: 0 (unlimited rewind for data integrity)
+    local max_rewind
+    if [ "$ENVIRONMENT" = "stage" ]; then
+        max_rewind=15
+    else
+        max_rewind=0
+    fi
+
     gcloud run deploy jetstream-ingest \
         --source=. \
         --region="$REGION" \
@@ -133,11 +143,22 @@ deploy_jetstream_service() {
         --timeout=3600 \
         --concurrency=1000 \
         --no-cpu-throttling \
-        --allow-unauthenticated
+        --allow-unauthenticated \
+        --args="--max-rewind,$max_rewind"
 }
 
 deploy_megastream_service() {
     log_info "Deploying megastream-ingest service from source..."
+
+    # Set max-rewind based on environment
+    # Stage: 15 minutes (prevent disk overflow on restart)
+    # Prod: 0 (unlimited rewind for data integrity)
+    local max_rewind
+    if [ "$ENVIRONMENT" = "stage" ]; then
+        max_rewind=15
+    else
+        max_rewind=0
+    fi
 
     gcloud run deploy megastream-ingest \
         --source=. \
@@ -162,7 +183,7 @@ deploy_megastream_service() {
         --concurrency=1000 \
         --no-cpu-throttling \
         --allow-unauthenticated \
-        --args="--source,s3,--mode,spool"
+        --args="--source,s3,--mode,spool,--max-rewind,$max_rewind"
 }
 
 deploy_expiry_job() {
@@ -173,7 +194,7 @@ deploy_expiry_job() {
     # Prod: 720 hours = 30 days (standard retention)
     local retention_hours
     if [ "$ENVIRONMENT" = "stage" ]; then
-        retention_hours=3
+        retention_hours=2
         log_info "Stage environment: Using 2-hour retention period"
     else
         retention_hours=720

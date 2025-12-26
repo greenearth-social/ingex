@@ -158,7 +158,7 @@ func TestMegastreamIngestIntegration(t *testing.T) {
 	t.Logf("Document count before ingestion: %d", countBefore)
 
 	// Run the actual ingestion using runIngestion from main.go
-	if err := runIngestion(ctx, config, logger, healthServer, "local", "once", false, true, false, false); err != nil {
+	if err := runIngestion(ctx, config, logger, healthServer, "local", "once", false, true, false, false, 0); err != nil {
 		t.Fatalf("runIngestion failed: %v", err)
 	}
 
