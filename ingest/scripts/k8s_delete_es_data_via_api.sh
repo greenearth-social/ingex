@@ -6,14 +6,14 @@
 set -e
 
 GE_ENVIRONMENT="${GE_ENVIRONMENT:-local}"
-K8S_NAMESPACE="greenearth-${GE_ENVIRONMENT}"
+GE_K8S_NAMESPACE="greenearth-${GE_ENVIRONMENT}"
 
-echo "Running ES index deletion and recreation in ${GE_ENVIRONMENT} environment (namespace: ${K8S_NAMESPACE})"
+echo "Running ES index deletion and recreation in ${GE_ENVIRONMENT} environment (namespace: ${GE_K8S_NAMESPACE})"
 echo ""
 
 # Get the elastic superuser credentials (needed for index deletion)
 ELASTICSEARCH_USERNAME="elastic"
-ELASTICSEARCH_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n "${K8S_NAMESPACE}" -o jsonpath='{.data.elastic}' | base64 -d)
+ELASTICSEARCH_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n "${GE_K8S_NAMESPACE}" -o jsonpath='{.data.elastic}' | base64 -d)
 
 if [ -z "$ELASTICSEARCH_PASSWORD" ]; then
   echo "Error: Could not retrieve elastic superuser password"
@@ -68,7 +68,7 @@ fi
 
 # Create a job that deletes and recreates the indices
 kubectl run es-index-recreation-$(date +%s) \
-  --namespace="${K8S_NAMESPACE}" \
+  --namespace="${GE_K8S_NAMESPACE}" \
   --image=curlimages/curl:latest \
   --restart=Never \
   --rm -i --tty \
@@ -159,18 +159,18 @@ echo "Using Kubernetes configuration from: ${K8S_ENV_DIR}"
 
 # Delete existing bootstrap job if it exists (to allow recreation)
 echo "Deleting existing bootstrap job if present..."
-kubectl delete job elasticsearch-bootstrap -n "${K8S_NAMESPACE}" 2>/dev/null || true
+kubectl delete job elasticsearch-bootstrap -n "${GE_K8S_NAMESPACE}" 2>/dev/null || true
 
 # Apply all templates using Kustomize to properly substitute variables
 echo "Applying index templates, aliases ConfigMaps, and bootstrap job using Kustomize..."
-kubectl apply -k "${K8S_ENV_DIR}" -n "${K8S_NAMESPACE}"
+kubectl apply -k "${K8S_ENV_DIR}" -n "${GE_K8S_NAMESPACE}"
 
 echo ""
 echo "Waiting for bootstrap job to complete..."
-kubectl wait --for=condition=complete --timeout=300s job/elasticsearch-bootstrap -n "${K8S_NAMESPACE}" || {
+kubectl wait --for=condition=complete --timeout=300s job/elasticsearch-bootstrap -n "${GE_K8S_NAMESPACE}" || {
   echo "Warning: Bootstrap job did not complete within timeout. Check job status:"
-  echo "  kubectl get jobs -n ${K8S_NAMESPACE}"
-  echo "  kubectl logs -n ${K8S_NAMESPACE} job/elasticsearch-bootstrap"
+  echo "  kubectl get jobs -n ${GE_K8S_NAMESPACE}"
+  echo "  kubectl logs -n ${GE_K8S_NAMESPACE} job/elasticsearch-bootstrap"
 }
 
 echo ""
@@ -184,10 +184,10 @@ fi
 
 echo ""
 echo "Check disk space with:"
-ES_POD=$(kubectl get pods -n "${K8S_NAMESPACE}" -l common.k8s.elastic.co/type=elasticsearch -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+ES_POD=$(kubectl get pods -n "${GE_K8S_NAMESPACE}" -l common.k8s.elastic.co/type=elasticsearch -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
 if [ -n "$ES_POD" ]; then
-  echo "kubectl exec -n ${K8S_NAMESPACE} ${ES_POD} -- df -h /usr/share/elasticsearch/data"
+  echo "kubectl exec -n ${GE_K8S_NAMESPACE} ${ES_POD} -- df -h /usr/share/elasticsearch/data"
 else
-  echo "kubectl exec -n ${K8S_NAMESPACE} <elasticsearch-pod-name> -- df -h /usr/share/elasticsearch/data"
-  echo "(Run 'kubectl get pods -n ${K8S_NAMESPACE}' to find the Elasticsearch pod name)"
+  echo "kubectl exec -n ${GE_K8S_NAMESPACE} <elasticsearch-pod-name> -- df -h /usr/share/elasticsearch/data"
+  echo "(Run 'kubectl get pods -n ${GE_K8S_NAMESPACE}' to find the Elasticsearch pod name)"
 fi
