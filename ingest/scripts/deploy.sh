@@ -11,10 +11,9 @@ set -e
 # Configuration
 GE_GCP_PROJECT_ID="${GE_GCP_PROJECT_ID:-greenearth-471522}"
 GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
-GE_ENVIRONMENT="${GE_ENVIRONMENT:-stage}"  # TODO: change default when we have more environments
+GE_ENVIRONMENT="${GE_ENVIRONMENT:-stage}"  # you can override with --environment
 
 # Non-secret configuration
-GE_ELASTICSEARCH_URL="${GE_ELASTICSEARCH_URL:-INTERNAL_LB_PLACEHOLDER}"
 GE_AWS_S3_BUCKET="${GE_AWS_S3_BUCKET:-graze-mega-02}"
 GE_AWS_S3_PREFIX="${GE_AWS_S3_PREFIX:-mega/}"
 
@@ -61,12 +60,6 @@ validate_config() {
 
 get_elasticsearch_internal_lb_ip() {
     log_info "Getting Elasticsearch internal load balancer IP..."
-
-    # If user has explicitly set a URL, use it
-    if [ "$GE_ELASTICSEARCH_URL" != "INTERNAL_LB_PLACEHOLDER" ]; then
-        log_info "Using user-provided Elasticsearch URL: $GE_ELASTICSEARCH_URL"
-        return
-    fi
 
     # Try to get the internal load balancer IP from the Kubernetes service
     # This assumes the load balancer has been deployed and has an assigned IP
@@ -121,6 +114,16 @@ verify_vpc_connector() {
 deploy_jetstream_service() {
     log_info "Deploying jetstream-ingest service from source..."
 
+    # Set max-rewind based on environment
+    # Stage: 15 minutes (prevent disk overflow on restart)
+    # Prod: 0 (unlimited rewind for data integrity)
+    local max_rewind
+    if [ "$GE_ENVIRONMENT" = "stage" ]; then
+        max_rewind=15
+    else
+        max_rewind=0
+    fi
+
     gcloud run deploy jetstream-ingest \
         --source=. \
         --region="$GE_GCP_REGION" \
@@ -140,11 +143,22 @@ deploy_jetstream_service() {
         --timeout=3600 \
         --concurrency=1000 \
         --no-cpu-throttling \
-        --allow-unauthenticated
+        --allow-unauthenticated \
+        --args="--max-rewind,$max_rewind"
 }
 
 deploy_megastream_service() {
     log_info "Deploying megastream-ingest service from source..."
+
+    # Set max-rewind based on environment
+    # Stage: 15 minutes (prevent disk overflow on restart)
+    # Prod: 0 (unlimited rewind for data integrity)
+    local max_rewind
+    if [ "$GE_ENVIRONMENT" = "stage" ]; then
+        max_rewind=15
+    else
+        max_rewind=0
+    fi
 
     gcloud run deploy megastream-ingest \
         --source=. \
@@ -169,19 +183,19 @@ deploy_megastream_service() {
         --concurrency=1000 \
         --no-cpu-throttling \
         --allow-unauthenticated \
-        --args="--source,s3,--mode,spool"
+        --args="--source,s3,--mode,spool,--max-rewind,$max_rewind"
 }
 
 deploy_expiry_job() {
     log_info "Deploying elasticsearch-expiry job from source..."
 
     # Set retention hours based on environment
-    # Stage: 5 hours (aggressive cleanup for limited 8-hour capacity)
+    # Stage: 2 hours (aggressive cleanup for limited 8-hour capacity)
     # Prod: 720 hours = 30 days (standard retention)
     local retention_hours
     if [ "$GE_ENVIRONMENT" = "stage" ]; then
-        retention_hours=5
-        log_info "Stage environment: Using 5-hour retention period"
+        retention_hours=2
+        log_info "Stage environment: Using 2-hour retention period"
     else
         retention_hours=720
         log_info "Production environment: Using 720-hour (30-day) retention period"

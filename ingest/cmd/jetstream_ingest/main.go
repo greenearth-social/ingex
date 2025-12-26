@@ -29,6 +29,7 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "Run in dry-run mode (no writes to Elasticsearch)")
 	skipTLSVerify := flag.Bool("skip-tls-verify", false, "Skip TLS certificate verification (use for local development only)")
 	noRewind := flag.Bool("no-rewind", false, "Do not rewind to last processed timestamp on startup (drops intervening data)")
+	maxRewindMinutes := flag.Int("max-rewind", 0, "Maximum number of minutes to rewind cursor on startup (0 = unlimited)")
 	flag.Parse()
 
 	// Load configuration
@@ -86,10 +87,10 @@ func main() {
 	}()
 
 	logger.Info("Starting Jetstream likes ingestion")
-	runIngestion(ctx, config, logger, healthServer, *dryRun, *skipTLSVerify, *noRewind)
+	runIngestion(ctx, config, logger, healthServer, *dryRun, *skipTLSVerify, *noRewind, *maxRewindMinutes)
 }
 
-func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify, noRewind bool) {
+func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify, noRewind bool, maxRewindMinutes int) {
 	stateManager, err := common.NewStateManager(config.JetstreamStateFile, logger)
 	if err != nil {
 		logger.Error("Failed to initialize state manager: %v", err)
@@ -115,8 +116,22 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	// Apply cursor if rewind is enabled and we have a saved cursor
 	if !noRewind {
 		if cursor := stateManager.GetCursor(); cursor != nil {
-			client.SetCursor(cursor.LastTimeUs)
-			logger.Info("Rewinding to last processed timestamp: %d", cursor.LastTimeUs)
+			cursorTime := cursor.LastTimeUs
+			
+			// Apply max-rewind limit if specified
+			if maxRewindMinutes > 0 {
+				currentTime := time.Now().UnixMicro()
+				maxRewindUs := int64(maxRewindMinutes) * 60 * 1000000 // Convert minutes to microseconds
+				minAllowedTime := currentTime - maxRewindUs
+				
+				if cursorTime < minAllowedTime {
+					logger.Info("Cursor %d is older than max-rewind limit (%d minutes), clamping to %d", cursorTime, maxRewindMinutes, minAllowedTime)
+					cursorTime = minAllowedTime
+				}
+			}
+			
+			client.SetCursor(cursorTime)
+			logger.Info("Rewinding to last processed timestamp: %d", cursorTime)
 		}
 	}
 

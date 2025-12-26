@@ -369,10 +369,10 @@ setup_expiry_cloud_scheduler() {
         return 0
     fi
 
-    local schedule="0 * * * *"  # Every hour at minute 0
-    local job_name="elasticsearch-expiry-hourly-stage"
-    local description="Hourly Elasticsearch data expiry for stage (limited capacity)"
-    log_info "Stage environment: Configuring hourly expiry schedule"
+    local schedule="*/30 * * * *"  # Every 30 minutes
+    local job_name="elasticsearch-expiry-halfhourly-stage"
+    local description="Half-hourly Elasticsearch data expiry for stage (limited capacity)"
+    log_info "Stage environment: Configuring 30-minute expiry schedule"
 
     # Grant the default compute service account permission to invoke the Cloud Run job
     log_info "Granting default compute service account permission to invoke Cloud Run job..."

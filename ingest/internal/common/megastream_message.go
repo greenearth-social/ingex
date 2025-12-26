@@ -83,9 +83,14 @@ func (m *megaStreamMessage) parseRawPost(rawPostJSON string, logger *IngestLogge
 		}
 	}
 
+	if m.atURI == "" {
+		logger.Debug("Empty atURI in message for DID %s", m.did)
+		return
+	}
+
 	commit, ok := message["commit"].(map[string]interface{})
 	if !ok {
-		logger.Debug("No commit field in message for %s", m.atURI)
+		logger.Debug("No commit field in message for %v", m.atURI)
 		return
 	}
 
@@ -101,7 +106,8 @@ func (m *megaStreamMessage) parseRawPost(rawPostJSON string, logger *IngestLogge
 		return
 	}
 
-	m.content, _ = record["text"].(string)
+	m.content, _ = record["text"].(string) // This is blank on image posts
+
 	if rawCreatedAt, ok := record["createdAt"].(string); ok {
 		m.createdAt = NormalizeTimestampToUTC(rawCreatedAt, logger)
 	}
@@ -183,6 +189,11 @@ func (m *megaStreamMessage) GetQuotePost() string {
 }
 
 func (m *megaStreamMessage) GetEmbeddings() map[string][]float32 {
+	// Return nil instead of empty map to avoid Elasticsearch type inference issues
+	// when serializing to JSON (empty map becomes {}, which ES may misinterpret)
+	if len(m.embeddings) == 0 {
+		return nil
+	}
 	return m.embeddings
 }
 

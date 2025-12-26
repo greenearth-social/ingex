@@ -9,7 +9,7 @@ GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
 SERVICES=(
     "jetstream-ingest"
     "megastream-ingest"
-    "elasticsearch-expiry"
+    # "elasticsearch-expiry"
 )
 
 # Colors for output

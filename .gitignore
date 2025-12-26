@@ -39,11 +39,3 @@ go.work.sum
 # Claude configurations
 claude.md
 .claude/
-
-# Ingest Test Data
-ingest/test_data/graze
-ingest/test_data/parquet
-ingest/test_data/jetstream
-
-# ES Test Queries
-index/test_queries
