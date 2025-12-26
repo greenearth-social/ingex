@@ -179,15 +179,7 @@ echo "Done! Indices have been recreated."
 # Restart ingest services for stage/prod
 if [ "$ENVIRONMENT" = "stage" ] || [ "$ENVIRONMENT" = "prod" ]; then
   echo ""
-  echo "Restarting ingest services..."
-
-  if [ -f "$INGESTCTL" ]; then
-    "$INGESTCTL" start || {
-      echo "Warning: Failed to start services. You may need to start them manually."
-      echo "Run: ${INGESTCTL} start"
-    }
-    echo "Ingest services restarted."
-  fi
+  echo "To restart ingest services, run ingetsctl.sh start"
 fi
 
 echo ""
