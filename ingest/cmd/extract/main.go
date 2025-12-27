@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/elastic/go-elasticsearch/v9"
 	"github.com/greenearth/ingest/internal/common"
-	"github.com/parquet-go/parquet-go"
 )
 
 func main() {
@@ -207,22 +205,33 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logger *common.IngestLogger,
 	dryRun bool, outputPath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName, startTime, endTime string, config *common.Config) error {
 
+	const writeChunkSize = 5000
+
 	maxRecordsPerFile := config.ParquetMaxRecords
 	fetchSize := config.ExtractFetchSize
 
-	var fileNum = 1
 	var totalRecords int64 = 0
 	var afterCreatedAt, afterIndexedAt string
-	var currentFileBatch []common.ExtractPost
+	var writerState *parquetWriterState[common.ExtractPost]
+	var writeBuffer []common.ExtractPost
+
+	defer func() {
+		if writerState != nil && !dryRun {
+			if len(writeBuffer) > 0 {
+				if err := writerState.writeChunk(writeBuffer, logger); err != nil {
+					logger.Error("Failed to write final chunk: %v", err)
+				}
+			}
+			if err := writerState.close(ctx, outputPath, indexName, logger); err != nil {
+				logger.Error("Failed to close parquet file: %v", err)
+			}
+		}
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			if len(currentFileBatch) > 0 && !dryRun {
-				if err := writePostsParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
-					logger.Error("Failed to write final parquet file: %v", err)
-				}
-			}
+			logger.Info("Shutdown signal received during export")
 			return ctx.Err()
 		default:
 		}
@@ -238,24 +247,53 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 		}
 
 		batchPosts := common.HitsToExtractPosts(response.Hits.Hits)
-		currentFileBatch = append(currentFileBatch, batchPosts...)
 		totalRecords += int64(len(batchPosts))
 
 		logger.Info("Fetched %d records (total: %d)", len(batchPosts), totalRecords)
 
-		if maxRecordsPerFile > 0 && int64(len(currentFileBatch)) >= maxRecordsPerFile {
-			if !dryRun {
-				if err := writePostsParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
-					return fmt.Errorf("failed to write parquet file: %w", err)
-				}
-				fileNum++
-			} else {
-				lastPost := currentFileBatch[len(currentFileBatch)-1]
-				filename := generateFilename(indexName, lastPost.RecordCreatedAt, logger)
-				logger.Info("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
-				fileNum++
+		if writerState == nil && !dryRun {
+			writerState, err = openParquetWriterForPosts(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, logger)
+			if err != nil {
+				return fmt.Errorf("failed to open parquet writer: %w", err)
 			}
-			currentFileBatch = currentFileBatch[:0]
+			writeBuffer = make([]common.ExtractPost, 0, writeChunkSize)
+		}
+
+		if !dryRun {
+			writeBuffer = append(writeBuffer, batchPosts...)
+
+			if len(batchPosts) > 0 {
+				writerState.lastRecordTimestamp = batchPosts[len(batchPosts)-1].RecordCreatedAt
+			}
+
+			for len(writeBuffer) >= writeChunkSize {
+				chunk := writeBuffer[:writeChunkSize]
+				if err := writerState.writeChunk(chunk, logger); err != nil {
+					return fmt.Errorf("failed to write chunk: %w", err)
+				}
+				writeBuffer = writeBuffer[writeChunkSize:]
+			}
+
+			if maxRecordsPerFile > 0 && writerState.recordsInCurrentFile >= maxRecordsPerFile {
+				if len(writeBuffer) > 0 {
+					if err := writerState.writeChunk(writeBuffer, logger); err != nil {
+						return fmt.Errorf("failed to flush write buffer: %w", err)
+					}
+					writeBuffer = writeBuffer[:0]
+				}
+
+				if err := writerState.close(ctx, outputPath, indexName, logger); err != nil {
+					return fmt.Errorf("failed to close parquet file: %w", err)
+				}
+
+				writerState = nil
+			}
+		} else {
+			if len(batchPosts) > 0 {
+				lastPost := batchPosts[len(batchPosts)-1]
+				filename := generateFilename(indexName, lastPost.RecordCreatedAt, logger)
+				logger.Info("Dry-run: Would process %s", filename)
+			}
 		}
 
 		lastHit := response.Hits.Hits[len(response.Hits.Hits)-1]
@@ -263,41 +301,40 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 		afterIndexedAt = lastHit.Source.IndexedAt
 	}
 
-	if len(currentFileBatch) > 0 {
-		if !dryRun {
-			if err := writePostsParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
-				return fmt.Errorf("failed to write final parquet file: %w", err)
-			}
-		} else {
-			lastPost := currentFileBatch[len(currentFileBatch)-1]
-			filename := generateFilename(indexName, lastPost.RecordCreatedAt, logger)
-			logger.Info("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
-		}
-	}
-
-	logger.Info("Export complete: %d total records in %d files", totalRecords, fileNum)
+	logger.Info("Export complete: %d total records", totalRecords)
 	return nil
 }
 
 func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logger *common.IngestLogger,
 	dryRun bool, outputPath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName, startTime, endTime string, config *common.Config) error {
 
+	const writeChunkSize = 5000
+
 	maxRecordsPerFile := config.ParquetMaxRecords
 	fetchSize := config.ExtractFetchSize
 
-	var fileNum = 1
 	var totalRecords int64 = 0
 	var afterCreatedAt, afterIndexedAt string
-	var currentFileBatch []common.ExtractLike
+	var writerState *parquetWriterState[common.ExtractLike]
+	var writeBuffer []common.ExtractLike
+
+	defer func() {
+		if writerState != nil && !dryRun {
+			if len(writeBuffer) > 0 {
+				if err := writerState.writeChunk(writeBuffer, logger); err != nil {
+					logger.Error("Failed to write final chunk: %v", err)
+				}
+			}
+			if err := writerState.close(ctx, outputPath, indexName, logger); err != nil {
+				logger.Error("Failed to close parquet file: %v", err)
+			}
+		}
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			if len(currentFileBatch) > 0 && !dryRun {
-				if err := writeLikesParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
-					logger.Error("Failed to write final parquet file: %v", err)
-				}
-			}
+			logger.Info("Shutdown signal received during export")
 			return ctx.Err()
 		default:
 		}
@@ -313,24 +350,53 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 		}
 
 		batchLikes := common.LikeHitsToExtractLikes(response.Hits.Hits)
-		currentFileBatch = append(currentFileBatch, batchLikes...)
 		totalRecords += int64(len(batchLikes))
 
 		logger.Info("Fetched %d records (total: %d)", len(batchLikes), totalRecords)
 
-		if maxRecordsPerFile > 0 && int64(len(currentFileBatch)) >= maxRecordsPerFile {
-			if !dryRun {
-				if err := writeLikesParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
-					return fmt.Errorf("failed to write parquet file: %w", err)
-				}
-				fileNum++
-			} else {
-				lastLike := currentFileBatch[len(currentFileBatch)-1]
-				filename := generateFilename(indexName, lastLike.RecordCreatedAt, logger)
-				logger.Info("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
-				fileNum++
+		if writerState == nil && !dryRun {
+			writerState, err = openParquetWriterForLikes(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, logger)
+			if err != nil {
+				return fmt.Errorf("failed to open parquet writer: %w", err)
 			}
-			currentFileBatch = currentFileBatch[:0]
+			writeBuffer = make([]common.ExtractLike, 0, writeChunkSize)
+		}
+
+		if !dryRun {
+			writeBuffer = append(writeBuffer, batchLikes...)
+
+			if len(batchLikes) > 0 {
+				writerState.lastRecordTimestamp = batchLikes[len(batchLikes)-1].RecordCreatedAt
+			}
+
+			for len(writeBuffer) >= writeChunkSize {
+				chunk := writeBuffer[:writeChunkSize]
+				if err := writerState.writeChunk(chunk, logger); err != nil {
+					return fmt.Errorf("failed to write chunk: %w", err)
+				}
+				writeBuffer = writeBuffer[writeChunkSize:]
+			}
+
+			if maxRecordsPerFile > 0 && writerState.recordsInCurrentFile >= maxRecordsPerFile {
+				if len(writeBuffer) > 0 {
+					if err := writerState.writeChunk(writeBuffer, logger); err != nil {
+						return fmt.Errorf("failed to flush write buffer: %w", err)
+					}
+					writeBuffer = writeBuffer[:0]
+				}
+
+				if err := writerState.close(ctx, outputPath, indexName, logger); err != nil {
+					return fmt.Errorf("failed to close parquet file: %w", err)
+				}
+
+				writerState = nil
+			}
+		} else {
+			if len(batchLikes) > 0 {
+				lastLike := batchLikes[len(batchLikes)-1]
+				filename := generateFilename(indexName, lastLike.RecordCreatedAt, logger)
+				logger.Info("Dry-run: Would process %s", filename)
+			}
 		}
 
 		lastHit := response.Hits.Hits[len(response.Hits.Hits)-1]
@@ -338,19 +404,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 		afterIndexedAt = lastHit.Source.IndexedAt
 	}
 
-	if len(currentFileBatch) > 0 {
-		if !dryRun {
-			if err := writeLikesParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
-				return fmt.Errorf("failed to write final parquet file: %w", err)
-			}
-		} else {
-			lastLike := currentFileBatch[len(currentFileBatch)-1]
-			filename := generateFilename(indexName, lastLike.RecordCreatedAt, logger)
-			logger.Info("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
-		}
-	}
-
-	logger.Info("Export complete: %d total records in %d files", totalRecords, fileNum)
+	logger.Info("Export complete: %d total records", totalRecords)
 	return nil
 }
 
@@ -431,121 +485,3 @@ func getIndexType(indexName string, logger *common.IngestLogger) IndexType {
 	return indexType
 }
 
-func writePostsParquetFile(ctx context.Context, basePath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName string, posts []common.ExtractPost, logger *common.IngestLogger) error {
-	if len(posts) == 0 {
-		return fmt.Errorf("no posts to write")
-	}
-
-	// Use the last post's timestamp for the filename (posts are sorted by created_at)
-	lastPost := posts[len(posts)-1]
-	filename := generateFilename(indexName, lastPost.RecordCreatedAt, logger)
-
-	if isGCS {
-		// Write to GCS using streaming parquet writer
-		fullPath := gcsPrefix + filename
-		logger.Info("Writing %d records to: gs://%s/%s", len(posts), gcsBucket, fullPath)
-
-		obj := gcsClient.Bucket(gcsBucket).Object(fullPath)
-		gcsWriter := obj.NewWriter(ctx)
-
-		// Use GenericWriter for streaming
-		parquetWriter := parquet.NewGenericWriter[common.ExtractPost](gcsWriter)
-
-		// Write posts in batch
-		if _, err := parquetWriter.Write(posts); err != nil {
-			if err := parquetWriter.Close(); err != nil {
-				logger.Error("Failed to close parquet writer: %v", err)
-			}
-			if err := gcsClient.Close(); err != nil {
-				logger.Error("Failed to close GSC writer: %v", err)
-			}
-			return fmt.Errorf("failed to write parquet data: %w", err)
-		}
-
-		// Close parquet writer (writes footer)
-		if err := parquetWriter.Close(); err != nil {
-			if err := gcsClient.Close(); err != nil {
-				logger.Error("Failed to close GSC writer: %v", err)
-			}
-			return fmt.Errorf("failed to close parquet writer: %w", err)
-		}
-
-		// Close GCS writer (finalizes upload)
-		if err := gcsWriter.Close(); err != nil {
-			return fmt.Errorf("failed to close GCS writer: %w", err)
-		}
-
-		logger.Info("Successfully wrote %d records to gs://%s/%s", len(posts), gcsBucket, fullPath)
-	} else {
-		// Write to local file (existing logic)
-		fullPath := filepath.Join(basePath, filename)
-		logger.Info("Writing %d records to: %s", len(posts), fullPath)
-
-		if err := parquet.WriteFile(fullPath, posts); err != nil {
-			return fmt.Errorf("failed to write parquet file: %w", err)
-		}
-
-		logger.Info("Successfully wrote %d records to %s", len(posts), fullPath)
-	}
-
-	return nil
-}
-
-func writeLikesParquetFile(ctx context.Context, basePath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName string, likes []common.ExtractLike, logger *common.IngestLogger) error {
-	if len(likes) == 0 {
-		return fmt.Errorf("no likes to write")
-	}
-
-	lastLike := likes[len(likes)-1]
-	filename := generateFilename(indexName, lastLike.RecordCreatedAt, logger)
-
-	if isGCS {
-		// Write to GCS using streaming parquet writer
-		fullPath := gcsPrefix + filename
-		logger.Info("Writing %d like records to: gs://%s/%s", len(likes), gcsBucket, fullPath)
-
-		obj := gcsClient.Bucket(gcsBucket).Object(fullPath)
-		gcsWriter := obj.NewWriter(ctx)
-
-		// Use GenericWriter for streaming
-		parquetWriter := parquet.NewGenericWriter[common.ExtractLike](gcsWriter)
-
-		// Write likes in batch
-		if _, err := parquetWriter.Write(likes); err != nil {
-			if err := parquetWriter.Close(); err != nil {
-				logger.Error("Failed to close parquet writer: %v", err)
-			}
-			if err := gcsClient.Close(); err != nil {
-				logger.Error("Failed to close GSC writer: %v", err)
-			}
-			return fmt.Errorf("failed to write parquet data: %w", err)
-		}
-
-		// Close parquet writer (writes footer)
-		if err := parquetWriter.Close(); err != nil {
-			if err := gcsClient.Close(); err != nil {
-				logger.Error("Failed to close GSC writer: %v", err)
-			}
-			return fmt.Errorf("failed to close parquet writer: %w", err)
-		}
-
-		// Close GCS writer (finalizes upload)
-		if err := gcsWriter.Close(); err != nil {
-			return fmt.Errorf("failed to close GCS writer: %w", err)
-		}
-
-		logger.Info("Successfully wrote %d like records to gs://%s/%s", len(likes), gcsBucket, fullPath)
-	} else {
-		// Write to local file (existing logic)
-		fullPath := filepath.Join(basePath, filename)
-		logger.Info("Writing %d like records to: %s", len(likes), fullPath)
-
-		if err := parquet.WriteFile(fullPath, likes); err != nil {
-			return fmt.Errorf("failed to write parquet file: %w", err)
-		}
-
-		logger.Info("Successfully wrote %d like records to %s", len(likes), fullPath)
-	}
-
-	return nil
-}
