@@ -422,10 +422,10 @@ setup_extract_cloud_scheduler() {
         return 0
     fi
 
-    local schedule="0 * * * *"  # Every 1 hour at the top of the hour
-    local job_name="extract-hourly-stage"
-    local description="hourly extract job for stage"
-    log_info "Stage environment: Configuring hourly extract schedule"
+    local schedule="*/30 * * * *"  # Every 1/2 hour at the top and middle of the hour
+    local job_name="extract-halfhourly-stage"
+    local description="Half hourly extract job for stage"
+    log_info "Stage environment: Configuring half hourly extract schedule"
 
     # Grant the default compute service account permission to invoke the Cloud Run job
     log_info "Granting default compute service account permission to invoke extract job..."
