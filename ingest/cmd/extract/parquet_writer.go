@@ -179,7 +179,9 @@ func (s *parquetWriterState[T]) close(
 
 func (s *parquetWriterState[T]) cleanup(logger *common.IngestLogger) {
 	if s.localFile != nil {
-		s.localFile.Close()
+		if err := s.localFile.Close(); err != nil {
+			logger.Error("Failed to close file handle: %v", err)
+		}
 		if s.tempFilePath != "" {
 			if err := os.Remove(s.tempFilePath); err != nil {
 				logger.Error("Failed to remove temp file %s: %v", s.tempFilePath, err)
@@ -188,6 +190,8 @@ func (s *parquetWriterState[T]) cleanup(logger *common.IngestLogger) {
 	}
 
 	if s.gcsWriter != nil {
-		s.gcsWriter.Close()
+		if err := s.gcsWriter.Close(); err != nil {
+			logger.Error("failed to close GCS writer: %v", err)
+		}
 	}
 }
