@@ -30,11 +30,13 @@ func main() {
 	skipTLSVerify := flag.Bool("skip-tls-verify", false, "Skip TLS certificate verification (use for local development only)")
 	noRewind := flag.Bool("no-rewind", false, "Do not rewind to last processed timestamp on startup (drops intervening data)")
 	maxRewindMinutes := flag.Int("max-rewind", 0, "Maximum number of minutes to rewind cursor on startup (0 = unlimited)")
+	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
 	// Load configuration
 	config := common.LoadConfig()
 	logger := common.NewLogger(config.LoggingEnabled)
+	logger.SetDebugEnabled(*debug)
 
 	logger.Info("Green Earth Ingex - BlueSky Jetstream Ingest Service")
 	if *dryRun {
@@ -117,19 +119,19 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	if !noRewind {
 		if cursor := stateManager.GetCursor(); cursor != nil {
 			cursorTime := cursor.LastTimeUs
-			
+
 			// Apply max-rewind limit if specified
 			if maxRewindMinutes > 0 {
 				currentTime := time.Now().UnixMicro()
 				maxRewindUs := int64(maxRewindMinutes) * 60 * 1000000 // Convert minutes to microseconds
 				minAllowedTime := currentTime - maxRewindUs
-				
+
 				if cursorTime < minAllowedTime {
 					logger.Info("Cursor %d is older than max-rewind limit (%d minutes), clamping to %d", cursorTime, maxRewindMinutes, minAllowedTime)
 					cursorTime = minAllowedTime
 				}
 			}
-			
+
 			client.SetCursor(cursorTime)
 			logger.Info("Rewinding to last processed timestamp: %d", cursorTime)
 		}
@@ -190,7 +192,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 							// Log summary of batches processed since last log
 							if pendingBatchCount > 0 {
 								freshnessSeconds := calculateFreshness(pendingCursor)
-								logger.Info("Indexed %d likes (skipped: %d, freshness: %ds)", pendingBatchCount, pendingSkipCount, freshnessSeconds)
+								logger.Debug("Indexed %d likes (skipped: %d, freshness: %ds)", pendingBatchCount, pendingSkipCount, freshnessSeconds)
 								pendingBatchCount = 0
 								pendingSkipCount = 0
 							}
@@ -283,7 +285,8 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 							tombstone := common.CreateLikeTombstoneDoc(delMsg, likeDoc.SubjectURI)
 							tombstoneBatch = append(tombstoneBatch, tombstone)
 						} else {
-							logger.Error("Like document not found for deletion, skipping tombstone: at_uri=%s", atURI)
+							// This isn't an error since we won't always have the original like document
+							logger.Debug("Like document not found for deletion, skipping tombstone: at_uri=%s", atURI)
 						}
 
 						// Always add to delete batch (idempotent operation)
@@ -411,7 +414,7 @@ cleanup:
 				tombstone := common.CreateLikeTombstoneDoc(delMsg, likeDoc.SubjectURI)
 				tombstoneBatch = append(tombstoneBatch, tombstone)
 			} else {
-				logger.Error("Like document not found for final deletion, skipping tombstone: at_uri=%s", atURI)
+				logger.Debug("Like document not found for final deletion, skipping tombstone: at_uri=%s", atURI)
 			}
 
 			deleteBatch = append(deleteBatch, common.DeleteDoc{
@@ -451,7 +454,9 @@ cleanup:
 func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, wg *sync.WaitGroup) {
 	defer wg.Done()
 
+	batchCounter := 0
 	for job := range batchChan {
+		batchCounter++
 		// Calculate freshness once at start
 		freshnessSeconds := calculateFreshness(job.timeUs)
 		success := true
@@ -464,9 +469,9 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 				success = false
 			} else {
 				if dryRun {
-					logger.Info("Worker %d: Dry-run: Would index %d like tombstones", id, job.tombstoneCount)
+					logger.Debug("Worker %d: Dry-run: Would index %d like tombstones", id, job.tombstoneCount)
 				} else {
-					logger.Info("Worker %d: Indexed %d like tombstones", id, job.tombstoneCount)
+					logger.Debug("Worker %d: Indexed %d like tombstones", id, job.tombstoneCount)
 				}
 
 				// Only delete if tombstone indexing succeeded
@@ -476,9 +481,9 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 						success = false
 					} else {
 						if dryRun {
-							logger.Info("Worker %d: Dry-run: Would delete %d likes (freshness: %ds)", id, len(job.deleteBatch), freshnessSeconds)
+							logger.Debug("Worker %d: Dry-run: Would delete %d likes (freshness: %ds)", id, len(job.deleteBatch), freshnessSeconds)
 						} else {
-							logger.Info("Worker %d: Deleted %d likes (freshness: %ds)", id, len(job.deleteBatch), freshnessSeconds)
+							logger.Debug("Worker %d: Deleted %d likes (freshness: %ds)", id, len(job.deleteBatch), freshnessSeconds)
 						}
 					}
 				}
@@ -492,11 +497,16 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 				success = false
 			} else {
 				if dryRun {
-					logger.Info("Worker %d: Dry-run: Would index %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
+					logger.Debug("Worker %d: Dry-run: Would index %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
 				} else {
-					logger.Info("Worker %d: Indexed %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
+					logger.Debug("Worker %d: Indexed %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
 				}
 			}
+		}
+
+		// Log info every 100 batches
+		if batchCounter%100 == 0 {
+			logger.Info("Worker %d: Processed %d batches (~%d documents)", id, batchCounter, batchCounter*100)
 		}
 
 		// Save cursor after successful batch operations

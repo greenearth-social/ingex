@@ -30,11 +30,13 @@ func main() {
 	noRewind := flag.Bool("no-rewind", false, "Do not rewind to last processed timestamp on startup (drops intervening data)")
 	startupWithLastFile := flag.Bool("startup-with-last-file", false, "Process the most recent file on startup, even if before the default cursor")
 	maxRewindMinutes := flag.Int("max-rewind", 0, "Maximum number of minutes to rewind cursor on startup (0 = unlimited)")
+	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
 	// Load configuration
 	config := common.LoadConfig()
 	logger := common.NewLogger(config.LoggingEnabled)
+	logger.SetDebugEnabled(*debug)
 
 	logger.Info("Green Earth Ingex - BlueSky Ingest Service")
 	if *dryRun {
@@ -341,9 +343,13 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					} else {
 						processedCount += len(batch)
 						if dryRun {
-							logger.Info("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
+							logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
 						} else {
-							logger.Info("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
+							logger.Debug("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
+						}
+						// Log info every 100 batches (~10k documents)
+						if (processedCount / len(batch) % 100) == 0 {
+							logger.Info("Progress: %d documents processed (deleted: %d, skipped: %d)", processedCount, deletedCount, skippedCount)
 						}
 					}
 					batch = batch[:0]
