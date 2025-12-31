@@ -18,11 +18,13 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "Run in dry-run mode (show what would be deleted without actually deleting)")
 	skipTLSVerify := flag.Bool("skip-tls-verify", false, "Skip TLS certificate verification (use for local development only)")
 	retentionHours := flag.Int("retention-hours", 1440, "Number of hours to retain data (default: 1440 hours = 60 days)")
+	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
 	// Load configuration
 	config := common.LoadConfig()
 	logger := common.NewLogger(config.LoggingEnabled)
+	logger.SetDebugEnabled(*debug)
 
 	logger.Info("Green Earth Ingex - Elasticsearch Expiry Service")
 	logger.Info("Retention period: %d hours (%.1f days)", *retentionHours, float64(*retentionHours)/24.0)

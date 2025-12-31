@@ -636,7 +636,7 @@ func BulkGetLikes(ctx context.Context, client *elasticsearch.Client, index strin
 		if doc.Found {
 			result[doc.ID] = doc.Source
 		} else {
-			logger.Error("Like document not found for deletion: at_uri=%s", doc.ID)
+			logger.Debug("Like document not found for deletion: at_uri=%s", doc.ID)
 		}
 	}
 
