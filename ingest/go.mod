@@ -6,11 +6,11 @@ require (
 	cloud.google.com/go/storage v1.58.0
 	github.com/aws/aws-sdk-go-v2 v1.41.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.6
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.94.0
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.95.0
 	github.com/elastic/go-elasticsearch/v9 v9.2.1
 	github.com/gorilla/websocket v1.5.3
-	github.com/parquet-go/parquet-go v0.26.3
-	modernc.org/sqlite v1.41.0
+	github.com/parquet-go/parquet-go v0.26.4
+	modernc.org/sqlite v1.42.2
 )
 
 require (
