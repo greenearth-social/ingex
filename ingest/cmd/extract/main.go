@@ -233,7 +233,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 		}
 
 		if len(response.Hits.Hits) == 0 {
-			logger.Info("No more records to fetch")
+			logger.Debug("No more records to fetch")
 			break
 		}
 
@@ -252,7 +252,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 			} else {
 				lastPost := currentFileBatch[len(currentFileBatch)-1]
 				filename := generateFilename(indexName, lastPost.RecordCreatedAt, logger)
-				logger.Info("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
+				logger.Debug("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
 				fileNum++
 			}
 			currentFileBatch = currentFileBatch[:0]
@@ -271,7 +271,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 		} else {
 			lastPost := currentFileBatch[len(currentFileBatch)-1]
 			filename := generateFilename(indexName, lastPost.RecordCreatedAt, logger)
-			logger.Info("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
+			logger.Debug("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
 		}
 	}
 
@@ -308,7 +308,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 		}
 
 		if len(response.Hits.Hits) == 0 {
-			logger.Info("No more records to fetch")
+			logger.Debug("No more records to fetch")
 			break
 		}
 
@@ -327,7 +327,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 			} else {
 				lastLike := currentFileBatch[len(currentFileBatch)-1]
 				filename := generateFilename(indexName, lastLike.RecordCreatedAt, logger)
-				logger.Info("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
+				logger.Debug("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
 				fileNum++
 			}
 			currentFileBatch = currentFileBatch[:0]
@@ -346,7 +346,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 		} else {
 			lastLike := currentFileBatch[len(currentFileBatch)-1]
 			filename := generateFilename(indexName, lastLike.RecordCreatedAt, logger)
-			logger.Info("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
+			logger.Debug("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
 		}
 	}
 
