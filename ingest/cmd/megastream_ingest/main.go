@@ -416,7 +416,7 @@ func handleAccountDeletion(
 	deletedCount *int,
 ) error {
 	authorDID := msg.GetAuthorDID()
-	logger.Info("Processing account deletion for DID: %s", authorDID)
+	logger.Debug("Processing account deletion for DID: %s", authorDID)
 
 	// Create 1-minute timeout context for queries
 	queryCtx, queryCancel := context.WithTimeout(ctx, time.Minute)
@@ -427,14 +427,14 @@ func handleAccountDeletion(
 	if err != nil {
 		return fmt.Errorf("failed to query posts for account deletion (DID: %s): %w", authorDID, err)
 	}
-	logger.Info("Found %d posts for account deletion (DID: %s)", len(posts), authorDID)
+	logger.Debug("Found %d posts for account deletion (DID: %s)", len(posts), authorDID)
 
 	// Query all likes
 	likes, err := common.QueryLikesByAuthorDID(queryCtx, esClient, "likes", authorDID, logger)
 	if err != nil {
 		return fmt.Errorf("failed to query likes for account deletion (DID: %s): %w", authorDID, err)
 	}
-	logger.Info("Found %d likes for account deletion (DID: %s)", len(likes), authorDID)
+	logger.Debug("Found %d likes for account deletion (DID: %s)", len(likes), authorDID)
 
 	// Process post deletions
 	if err := processAccountPostDeletions(ctx, posts, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
@@ -448,7 +448,7 @@ func handleAccountDeletion(
 	}
 	*deletedCount += len(likes)
 
-	logger.Info("Completed account deletion for DID: %s (posts: %d, likes: %d)", authorDID, len(posts), len(likes))
+	logger.Debug("Completed account deletion for DID: %s (posts: %d, likes: %d)", authorDID, len(posts), len(likes))
 	return nil
 }
 
