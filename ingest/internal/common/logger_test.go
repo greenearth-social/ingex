@@ -51,6 +51,7 @@ func TestLoggerDisabled(t *testing.T) {
 func TestLoggerLevels(t *testing.T) {
 	var buf bytes.Buffer
 	logger := NewLogger(true)
+	logger.SetDebugEnabled(true) // Enable debug logging
 	logger.SetOutput(&buf)
 
 	logger.Info("info message")
@@ -67,6 +68,27 @@ func TestLoggerLevels(t *testing.T) {
 	}
 	if !strings.Contains(output, "[DEBUG]") {
 		t.Error("Expected [DEBUG] in output")
+	}
+}
+
+func TestLoggerDebugDisabledByDefault(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger(true)
+	logger.SetOutput(&buf)
+
+	logger.Info("info message")
+	logger.Debug("debug message")
+
+	output := buf.String()
+
+	if !strings.Contains(output, "[INFO]") {
+		t.Error("Expected [INFO] in output")
+	}
+	if strings.Contains(output, "[DEBUG]") {
+		t.Error("Expected no [DEBUG] in output when debug is not enabled")
+	}
+	if strings.Contains(output, "debug message") {
+		t.Error("Expected no debug message content when debug is not enabled")
 	}
 }
 
