@@ -241,7 +241,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 		currentFileBatch = append(currentFileBatch, batchPosts...)
 		totalRecords += int64(len(batchPosts))
 
-		logger.Info("Fetched %d records (total: %d)", len(batchPosts), totalRecords)
+		logger.Debug("Fetched %d records (total: %d)", len(batchPosts), totalRecords)
 
 		if maxRecordsPerFile > 0 && int64(len(currentFileBatch)) >= maxRecordsPerFile {
 			if !dryRun {
@@ -316,7 +316,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 		currentFileBatch = append(currentFileBatch, batchLikes...)
 		totalRecords += int64(len(batchLikes))
 
-		logger.Info("Fetched %d records (total: %d)", len(batchLikes), totalRecords)
+		logger.Debug("Fetched %d records (total: %d)", len(batchLikes), totalRecords)
 
 		if maxRecordsPerFile > 0 && int64(len(currentFileBatch)) >= maxRecordsPerFile {
 			if !dryRun {
@@ -443,7 +443,7 @@ func writePostsParquetFile(ctx context.Context, basePath string, isGCS bool, gcs
 	if isGCS {
 		// Write to GCS using streaming parquet writer
 		fullPath := gcsPrefix + filename
-		logger.Info("Writing %d records to: gs://%s/%s", len(posts), gcsBucket, fullPath)
+		logger.Debug("Writing %d records to: gs://%s/%s", len(posts), gcsBucket, fullPath)
 
 		obj := gcsClient.Bucket(gcsBucket).Object(fullPath)
 		gcsWriter := obj.NewWriter(ctx)
@@ -475,17 +475,17 @@ func writePostsParquetFile(ctx context.Context, basePath string, isGCS bool, gcs
 			return fmt.Errorf("failed to close GCS writer: %w", err)
 		}
 
-		logger.Info("Successfully wrote %d records to gs://%s/%s", len(posts), gcsBucket, fullPath)
+		logger.Debug("Successfully wrote %d records to gs://%s/%s", len(posts), gcsBucket, fullPath)
 	} else {
 		// Write to local file (existing logic)
 		fullPath := filepath.Join(basePath, filename)
-		logger.Info("Writing %d records to: %s", len(posts), fullPath)
+		logger.Debug("Writing %d records to: %s", len(posts), fullPath)
 
 		if err := parquet.WriteFile(fullPath, posts); err != nil {
 			return fmt.Errorf("failed to write parquet file: %w", err)
 		}
 
-		logger.Info("Successfully wrote %d records to %s", len(posts), fullPath)
+		logger.Debug("Successfully wrote %d records to %s", len(posts), fullPath)
 	}
 
 	return nil
@@ -502,7 +502,7 @@ func writeLikesParquetFile(ctx context.Context, basePath string, isGCS bool, gcs
 	if isGCS {
 		// Write to GCS using streaming parquet writer
 		fullPath := gcsPrefix + filename
-		logger.Info("Writing %d like records to: gs://%s/%s", len(likes), gcsBucket, fullPath)
+		logger.Debug("Writing %d like records to: gs://%s/%s", len(likes), gcsBucket, fullPath)
 
 		obj := gcsClient.Bucket(gcsBucket).Object(fullPath)
 		gcsWriter := obj.NewWriter(ctx)
@@ -534,17 +534,17 @@ func writeLikesParquetFile(ctx context.Context, basePath string, isGCS bool, gcs
 			return fmt.Errorf("failed to close GCS writer: %w", err)
 		}
 
-		logger.Info("Successfully wrote %d like records to gs://%s/%s", len(likes), gcsBucket, fullPath)
+		logger.Debug("Successfully wrote %d like records to gs://%s/%s", len(likes), gcsBucket, fullPath)
 	} else {
 		// Write to local file (existing logic)
 		fullPath := filepath.Join(basePath, filename)
-		logger.Info("Writing %d like records to: %s", len(likes), fullPath)
+		logger.Debug("Writing %d like records to: %s", len(likes), fullPath)
 
 		if err := parquet.WriteFile(fullPath, likes); err != nil {
 			return fmt.Errorf("failed to write parquet file: %w", err)
 		}
 
-		logger.Info("Successfully wrote %d like records to %s", len(likes), fullPath)
+		logger.Debug("Successfully wrote %d like records to %s", len(likes), fullPath)
 	}
 
 	return nil

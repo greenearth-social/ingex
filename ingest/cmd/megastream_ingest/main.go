@@ -271,9 +271,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						logger.Error("Failed to bulk index tombstones before account deletion: %v", err)
 					} else {
 						if dryRun {
-							logger.Info("Dry-run: Would index tombstones before account deletion: %d", len(tombstoneBatch))
+							logger.Debug("Dry-run: Would index tombstones before account deletion: %d", len(tombstoneBatch))
 						} else {
-							logger.Info("Indexed tombstones before account deletion: %d", len(tombstoneBatch))
+							logger.Debug("Indexed tombstones before account deletion: %d", len(tombstoneBatch))
 						}
 					}
 					if err := common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
@@ -281,9 +281,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					} else {
 						deletedCount += len(deleteBatch)
 						if dryRun {
-							logger.Info("Dry-run: Would delete posts before account deletion: %d", len(deleteBatch))
+							logger.Debug("Dry-run: Would delete posts before account deletion: %d", len(deleteBatch))
 						} else {
-							logger.Info("Deleted posts before account deletion: %d", len(deleteBatch))
+							logger.Debug("Deleted posts before account deletion: %d", len(deleteBatch))
 						}
 					}
 					tombstoneBatch = tombstoneBatch[:0]
@@ -310,9 +310,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						logger.Error("Failed to bulk index tombstones: %v", err)
 					} else {
 						if dryRun {
-							logger.Info("Dry-run: Would index %d tombstones", len(tombstoneBatch))
+							logger.Debug("Dry-run: Would index %d tombstones", len(tombstoneBatch))
 						} else {
-							logger.Info("Indexed %d tombstones", len(tombstoneBatch))
+							logger.Debug("Indexed %d tombstones", len(tombstoneBatch))
 						}
 					}
 
@@ -321,9 +321,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					} else {
 						deletedCount += len(deleteBatch)
 						if dryRun {
-							logger.Info("Dry-run: Would delete batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
+							logger.Debug("Dry-run: Would delete batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
 						} else {
-							logger.Info("Deleted batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
+							logger.Debug("Deleted batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
 						}
 					}
 
@@ -371,9 +371,9 @@ cleanup:
 		} else {
 			processedCount += len(batch)
 			if dryRun {
-				logger.Info("Dry-run: Would index final batch: %d documents", len(batch))
+				logger.Debug("Dry-run: Would index final batch: %d documents", len(batch))
 			} else {
-				logger.Info("Indexed final batch: %d documents", len(batch))
+				logger.Debug("Indexed final batch: %d documents", len(batch))
 			}
 		}
 	}
@@ -384,9 +384,9 @@ cleanup:
 			logger.Error("Failed to bulk index final tombstone batch: %v", err)
 		} else {
 			if dryRun {
-				logger.Info("Dry-run: Would index final batch: %d tombstones", len(tombstoneBatch))
+				logger.Debug("Dry-run: Would index final batch: %d tombstones", len(tombstoneBatch))
 			} else {
-				logger.Info("Indexed final batch: %d tombstones", len(tombstoneBatch))
+				logger.Debug("Indexed final batch: %d tombstones", len(tombstoneBatch))
 			}
 		}
 
@@ -395,9 +395,9 @@ cleanup:
 		} else {
 			deletedCount += len(deleteBatch)
 			if dryRun {
-				logger.Info("Dry-run: Would delete final batch: %d posts", len(deleteBatch))
+				logger.Debug("Dry-run: Would delete final batch: %d posts", len(deleteBatch))
 			} else {
-				logger.Info("Deleted final batch: %d posts", len(deleteBatch))
+				logger.Debug("Deleted final batch: %d posts", len(deleteBatch))
 			}
 		}
 	}
