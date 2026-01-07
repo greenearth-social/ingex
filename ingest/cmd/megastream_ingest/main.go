@@ -30,11 +30,13 @@ func main() {
 	noRewind := flag.Bool("no-rewind", false, "Do not rewind to last processed timestamp on startup (drops intervening data)")
 	startupWithLastFile := flag.Bool("startup-with-last-file", false, "Process the most recent file on startup, even if before the default cursor")
 	maxRewindMinutes := flag.Int("max-rewind", 0, "Maximum number of minutes to rewind cursor on startup (0 = unlimited)")
+	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
 	// Load configuration
 	config := common.LoadConfig()
 	logger := common.NewLogger(config.LoggingEnabled)
+	logger.SetDebugEnabled(*debug)
 
 	logger.Info("Green Earth Ingex - BlueSky Ingest Service")
 	if *dryRun {
@@ -269,9 +271,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						logger.Error("Failed to bulk index tombstones before account deletion: %v", err)
 					} else {
 						if dryRun {
-							logger.Info("Dry-run: Would index tombstones before account deletion: %d", len(tombstoneBatch))
+							logger.Debug("Dry-run: Would index tombstones before account deletion: %d", len(tombstoneBatch))
 						} else {
-							logger.Info("Indexed tombstones before account deletion: %d", len(tombstoneBatch))
+							logger.Debug("Indexed tombstones before account deletion: %d", len(tombstoneBatch))
 						}
 					}
 					if err := common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
@@ -279,9 +281,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					} else {
 						deletedCount += len(deleteBatch)
 						if dryRun {
-							logger.Info("Dry-run: Would delete posts before account deletion: %d", len(deleteBatch))
+							logger.Debug("Dry-run: Would delete posts before account deletion: %d", len(deleteBatch))
 						} else {
-							logger.Info("Deleted posts before account deletion: %d", len(deleteBatch))
+							logger.Debug("Deleted posts before account deletion: %d", len(deleteBatch))
 						}
 					}
 					tombstoneBatch = tombstoneBatch[:0]
@@ -308,9 +310,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						logger.Error("Failed to bulk index tombstones: %v", err)
 					} else {
 						if dryRun {
-							logger.Info("Dry-run: Would index %d tombstones", len(tombstoneBatch))
+							logger.Debug("Dry-run: Would index %d tombstones", len(tombstoneBatch))
 						} else {
-							logger.Info("Indexed %d tombstones", len(tombstoneBatch))
+							logger.Debug("Indexed %d tombstones", len(tombstoneBatch))
 						}
 					}
 
@@ -319,9 +321,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					} else {
 						deletedCount += len(deleteBatch)
 						if dryRun {
-							logger.Info("Dry-run: Would delete batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
+							logger.Debug("Dry-run: Would delete batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
 						} else {
-							logger.Info("Deleted batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
+							logger.Debug("Deleted batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
 						}
 					}
 
@@ -341,9 +343,13 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					} else {
 						processedCount += len(batch)
 						if dryRun {
-							logger.Info("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
+							logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
 						} else {
-							logger.Info("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
+							logger.Debug("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
+						}
+						// Log info every 100 batches (~10k documents)
+						if (processedCount / len(batch) % 100) == 0 {
+							logger.Info("Progress: %d documents processed (deleted: %d, skipped: %d)", processedCount, deletedCount, skippedCount)
 						}
 					}
 					batch = batch[:0]
@@ -365,9 +371,9 @@ cleanup:
 		} else {
 			processedCount += len(batch)
 			if dryRun {
-				logger.Info("Dry-run: Would index final batch: %d documents", len(batch))
+				logger.Debug("Dry-run: Would index final batch: %d documents", len(batch))
 			} else {
-				logger.Info("Indexed final batch: %d documents", len(batch))
+				logger.Debug("Indexed final batch: %d documents", len(batch))
 			}
 		}
 	}
@@ -378,9 +384,9 @@ cleanup:
 			logger.Error("Failed to bulk index final tombstone batch: %v", err)
 		} else {
 			if dryRun {
-				logger.Info("Dry-run: Would index final batch: %d tombstones", len(tombstoneBatch))
+				logger.Debug("Dry-run: Would index final batch: %d tombstones", len(tombstoneBatch))
 			} else {
-				logger.Info("Indexed final batch: %d tombstones", len(tombstoneBatch))
+				logger.Debug("Indexed final batch: %d tombstones", len(tombstoneBatch))
 			}
 		}
 
@@ -389,9 +395,9 @@ cleanup:
 		} else {
 			deletedCount += len(deleteBatch)
 			if dryRun {
-				logger.Info("Dry-run: Would delete final batch: %d posts", len(deleteBatch))
+				logger.Debug("Dry-run: Would delete final batch: %d posts", len(deleteBatch))
 			} else {
-				logger.Info("Deleted final batch: %d posts", len(deleteBatch))
+				logger.Debug("Deleted final batch: %d posts", len(deleteBatch))
 			}
 		}
 	}
@@ -410,7 +416,7 @@ func handleAccountDeletion(
 	deletedCount *int,
 ) error {
 	authorDID := msg.GetAuthorDID()
-	logger.Info("Processing account deletion for DID: %s", authorDID)
+	logger.Debug("Processing account deletion for DID: %s", authorDID)
 
 	// Create 1-minute timeout context for queries
 	queryCtx, queryCancel := context.WithTimeout(ctx, time.Minute)
@@ -421,14 +427,14 @@ func handleAccountDeletion(
 	if err != nil {
 		return fmt.Errorf("failed to query posts for account deletion (DID: %s): %w", authorDID, err)
 	}
-	logger.Info("Found %d posts for account deletion (DID: %s)", len(posts), authorDID)
+	logger.Debug("Found %d posts for account deletion (DID: %s)", len(posts), authorDID)
 
 	// Query all likes
 	likes, err := common.QueryLikesByAuthorDID(queryCtx, esClient, "likes", authorDID, logger)
 	if err != nil {
 		return fmt.Errorf("failed to query likes for account deletion (DID: %s): %w", authorDID, err)
 	}
-	logger.Info("Found %d likes for account deletion (DID: %s)", len(likes), authorDID)
+	logger.Debug("Found %d likes for account deletion (DID: %s)", len(likes), authorDID)
 
 	// Process post deletions
 	if err := processAccountPostDeletions(ctx, posts, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
@@ -442,7 +448,7 @@ func handleAccountDeletion(
 	}
 	*deletedCount += len(likes)
 
-	logger.Info("Completed account deletion for DID: %s (posts: %d, likes: %d)", authorDID, len(posts), len(likes))
+	logger.Debug("Completed account deletion for DID: %s (posts: %d, likes: %d)", authorDID, len(posts), len(likes))
 	return nil
 }
 
