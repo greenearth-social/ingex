@@ -1255,3 +1255,226 @@ func QueryLikesByAuthorDID(ctx context.Context, client *elasticsearch.Client, in
 	logger.Info("QueryLikesByAuthorDID complete: found %d likes for DID %s", len(likes), authorDID)
 	return likes, nil
 }
+
+// LikeCountUpdate represents a like count change for a post
+type LikeCountUpdate struct {
+	SubjectURI string
+	Increment  int // Positive for like creation, negative for deletion
+}
+
+// BulkCountLikesBySubjectURIs queries the likes index and returns a map of subject_uri -> like count
+// Uses a terms aggregation to efficiently count likes for multiple posts in a single query
+func BulkCountLikesBySubjectURIs(ctx context.Context, client *elasticsearch.Client, index string, subjectURIs []string, logger *IngestLogger) (map[string]int, error) {
+	if len(subjectURIs) == 0 {
+		return make(map[string]int), nil
+	}
+
+	// Build aggregation query with terms bucket
+	query := map[string]interface{}{
+		"size": 0, // We only want aggregations, not individual documents
+		"query": map[string]interface{}{
+			"terms": map[string]interface{}{
+				"subject_uri": subjectURIs,
+			},
+		},
+		"aggs": map[string]interface{}{
+			"likes_per_post": map[string]interface{}{
+				"terms": map[string]interface{}{
+					"field": "subject_uri",
+					"size":  len(subjectURIs), // Get all buckets
+				},
+			},
+		},
+	}
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal aggregation query: %w", err)
+	}
+
+	logger.Debug("Executing aggregation query for %d subject URIs", len(subjectURIs))
+
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("aggregation request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close aggregation response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return nil, fmt.Errorf("aggregation request returned error: %s", res.String())
+	}
+
+	// Parse aggregation response
+	var aggResponse struct {
+		Aggregations struct {
+			LikesPerPost struct {
+				Buckets []struct {
+					Key      string `json:"key"`
+					DocCount int    `json:"doc_count"`
+				} `json:"buckets"`
+			} `json:"likes_per_post"`
+		} `json:"aggregations"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&aggResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse aggregation response: %w", err)
+	}
+
+	// Build result map
+	result := make(map[string]int)
+	for _, bucket := range aggResponse.Aggregations.LikesPerPost.Buckets {
+		result[bucket.Key] = bucket.DocCount
+	}
+
+	logger.Debug("Aggregation returned like counts for %d posts", len(result))
+	return result, nil
+}
+
+// BulkUpdatePostLikeCounts updates like_count fields on posts using the ES update API
+// Uses scripted updates with upsert=false to ignore non-existent posts
+// TODO: Add routing support using author_did to avoid broadcasting updates to all shards
+func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	if dryRun {
+		logger.Debug("Dry-run: Skipping bulk update of %d post like counts", len(updates))
+		return nil
+	}
+
+	// Aggregate updates by subject_uri (in case same post appears multiple times)
+	aggregated := make(map[string]int)
+	for _, update := range updates {
+		aggregated[update.SubjectURI] += update.Increment
+	}
+
+	var buf bytes.Buffer
+	validUpdateCount := 0
+
+	for subjectURI, increment := range aggregated {
+		if subjectURI == "" {
+			logger.Error("Skipping like count update with empty subject_uri")
+			continue
+		}
+
+		// Elasticsearch update action metadata
+		// Note: We use the subject_uri as the document ID since posts are keyed by at_uri
+		meta := map[string]interface{}{
+			"update": map[string]interface{}{
+				"_index": index,
+				"_id":    subjectURI,
+				// No routing specified - we don't know the author_did
+				// This means the update will be broadcast to all shards
+			},
+		}
+
+		validUpdateCount++
+
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			return fmt.Errorf("failed to marshal update metadata: %w", err)
+		}
+
+		buf.Write(metaJSON)
+		buf.WriteByte('\n')
+
+		// Update body with painless script
+		updateBody := map[string]interface{}{
+			"script": map[string]interface{}{
+				"source": "if (ctx._source.like_count == null) { ctx._source.like_count = 0; } ctx._source.like_count = ctx._source.like_count + params.increment;",
+				"params": map[string]interface{}{
+					"increment": increment,
+				},
+				"lang": "painless",
+			},
+			"_source": true, // Return the updated document
+		}
+
+		updateJSON, err := json.Marshal(updateBody)
+		if err != nil {
+			return fmt.Errorf("failed to marshal update body: %w", err)
+		}
+
+		buf.Write(updateJSON)
+		buf.WriteByte('\n')
+	}
+
+	if validUpdateCount == 0 {
+		logger.Error("No valid updates to perform (all had empty subject_uri)")
+		return fmt.Errorf("no valid updates in batch")
+	}
+
+	res, err := client.Bulk(
+		bytes.NewReader(buf.Bytes()),
+		client.Bulk.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("bulk update request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return fmt.Errorf("bulk update request returned error: %s", res.String())
+	}
+
+	var bulkResponse struct {
+		Errors bool `json:"errors"`
+		Items  []map[string]struct {
+			Status int `json:"status"`
+			Error  *struct {
+				Type   string `json:"type"`
+				Reason string `json:"reason"`
+			} `json:"error"`
+		} `json:"items"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
+		return fmt.Errorf("failed to parse bulk update response: %w", err)
+	}
+
+	if bulkResponse.Errors {
+		// Check if all errors are 404s (post doesn't exist)
+		hasRealErrors := false
+		notFoundCount := 0
+
+		for _, item := range bulkResponse.Items {
+			for _, details := range item {
+				if details.Error != nil {
+					if details.Status == 404 {
+						notFoundCount++
+					} else {
+						hasRealErrors = true
+						logger.Error("Update error (status %d): %s - %s",
+							details.Status, details.Error.Type, details.Error.Reason)
+					}
+				}
+			}
+		}
+
+		if notFoundCount > 0 {
+			logger.Debug("Skipped %d like count updates for non-existent posts (expected behavior)", notFoundCount)
+		}
+
+		if hasRealErrors {
+			itemsJSON, _ := json.Marshal(bulkResponse.Items)
+			logger.Error("Bulk update failed with errors. Response items: %s", string(itemsJSON))
+			return fmt.Errorf("bulk update failed: some updates had errors (see logs for details)")
+		}
+	}
+
+	logger.Debug("Successfully updated like counts for %d posts", validUpdateCount)
+	return nil
+}
