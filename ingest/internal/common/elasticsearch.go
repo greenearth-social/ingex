@@ -39,6 +39,7 @@ type ElasticsearchDoc struct {
 	QuotePost        string                  `json:"quote_post,omitempty"`
 	Embeddings       map[string]Float32Array `json:"embeddings,omitempty"`
 	IndexedAt        string                  `json:"indexed_at"`
+	LikeCount        int                     `json:"like_count"`
 }
 
 // PostTombstoneDoc represents the document structure for post deletion tombstones

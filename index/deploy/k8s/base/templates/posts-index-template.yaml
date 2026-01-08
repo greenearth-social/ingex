@@ -79,6 +79,10 @@ data:
             "indexed_at": {
               "type": "date",
               "format": "iso8601"
+            },
+            "like_count": {
+              "type": "integer",
+              "index": true
             }
           }
         }
