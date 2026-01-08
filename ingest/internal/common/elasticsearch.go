@@ -988,78 +988,84 @@ func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *Inges
 
 // BulkGetPosts fetches multiple post documents from Elasticsearch by at_uri
 // Returns a map of at_uri -> author_did for routing purposes
-// Note: This function does NOT provide routing in the mget request, which means
-// it will search all shards. This is necessary when we don't know the author_did yet.
+// Note: Uses search API instead of mget because mget requires routing when
+// _routing.required=true, but we don't have author_did yet (that's what we're fetching)
 func BulkGetPosts(ctx context.Context, client *elasticsearch.Client, index string, atURIs []string, logger *IngestLogger) (map[string]string, error) {
 	if len(atURIs) == 0 {
 		return make(map[string]string), nil
 	}
 
-	// Build mget request
-	docs := make([]map[string]interface{}, 0, len(atURIs))
+	// Filter empty URIs
+	validURIs := make([]string, 0, len(atURIs))
 	for _, uri := range atURIs {
-		if uri == "" {
-			continue
+		if uri != "" {
+			validURIs = append(validURIs, uri)
 		}
-		docs = append(docs, map[string]interface{}{
-			"_index": index,
-			"_id":    uri,
-			// Note: No routing specified - we don't have author_did yet
-			// This will cause mget to search all shards (slower but necessary)
-		})
 	}
 
-	requestBody := map[string]interface{}{
-		"docs": docs,
+	if len(validURIs) == 0 {
+		return make(map[string]string), nil
 	}
 
-	bodyJSON, err := json.Marshal(requestBody)
+	// Build search request with terms query on _id field
+	searchBody := map[string]interface{}{
+		"query": map[string]interface{}{
+			"terms": map[string]interface{}{
+				"_id": validURIs, // Query by document IDs (at_uri values)
+			},
+		},
+		"_source": []string{"author_did"}, // Only fetch author_did field
+		"size":    len(validURIs),          // Return up to batch size (100)
+	}
+
+	bodyJSON, err := json.Marshal(searchBody)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal mget request: %w", err)
+		return nil, fmt.Errorf("failed to marshal search request: %w", err)
 	}
 
-	// Execute mget request
-	res, err := client.Mget(
-		bytes.NewReader(bodyJSON),
-		client.Mget.WithContext(ctx),
+	// Execute search request
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(index),
+		client.Search.WithBody(bytes.NewReader(bodyJSON)),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("mget request failed: %w", err)
+		return nil, fmt.Errorf("search request failed: %w", err)
 	}
 	defer func() {
 		if err := res.Body.Close(); err != nil {
-			logger.Error("Failed to close mget response body: %v", err)
+			logger.Error("Failed to close search response body: %v", err)
 		}
 	}()
 
 	if res.IsError() {
-		return nil, fmt.Errorf("mget request returned error: %s", res.String())
+		return nil, fmt.Errorf("search request returned error: %s", res.String())
 	}
 
-	// Parse response - we only need author_did for routing
-	var mgetResponse struct {
-		Docs []struct {
-			ID     string `json:"_id"`
-			Found  bool   `json:"found"`
-			Source struct {
-				AuthorDID string `json:"author_did"`
-			} `json:"_source"`
-		} `json:"docs"`
+	// Parse search response
+	var searchResponse struct {
+		Hits struct {
+			Hits []struct {
+				ID     string `json:"_id"`
+				Source struct {
+					AuthorDID string `json:"author_did"`
+				} `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
 	}
 
-	if err := json.NewDecoder(res.Body).Decode(&mgetResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse mget response: %w", err)
+	if err := json.NewDecoder(res.Body).Decode(&searchResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse search response: %w", err)
 	}
 
 	// Build result map: at_uri -> author_did
 	result := make(map[string]string)
-	for _, doc := range mgetResponse.Docs {
-		if doc.Found && doc.Source.AuthorDID != "" {
-			result[doc.ID] = doc.Source.AuthorDID
+	for _, hit := range searchResponse.Hits.Hits {
+		if hit.Source.AuthorDID != "" {
+			result[hit.ID] = hit.Source.AuthorDID
 		}
 	}
 
-	logger.Debug("Fetched routing info for %d/%d posts", len(result), len(atURIs))
 	return result, nil
 }
 
