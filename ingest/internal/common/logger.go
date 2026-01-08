@@ -13,16 +13,24 @@ type IngestLogger struct {
 	debugLogger  *log.Logger
 	enabled      bool
 	debugEnabled bool
+	gitSHA       string
 }
 
 // NewLogger creates a new logger with configurable output destinations
 func NewLogger(enabled bool) *IngestLogger {
+	gitSHA := os.Getenv("GE_GIT_SHA")
+	var prefix string
+	if gitSHA != "" {
+		prefix = "[" + gitSHA + "] "
+	}
+
 	return &IngestLogger{
-		infoLogger:   log.New(os.Stdout, "[INFO] ", log.LstdFlags),
-		errorLogger:  log.New(os.Stderr, "[ERROR] ", log.LstdFlags),
-		debugLogger:  log.New(os.Stdout, "[DEBUG] ", log.LstdFlags),
+		infoLogger:   log.New(os.Stdout, prefix+"[INFO] ", 0),
+		errorLogger:  log.New(os.Stderr, prefix+"[ERROR] ", 0),
+		debugLogger:  log.New(os.Stdout, prefix+"[DEBUG] ", 0),
 		enabled:      enabled,
 		debugEnabled: false,
+		gitSHA:       gitSHA,
 	}
 }
 

@@ -21,6 +21,9 @@ GE_AWS_S3_PREFIX="${GE_AWS_S3_PREFIX:-mega/}"
 GE_JETSTREAM_INSTANCES="${GE_JETSTREAM_INSTANCES:-1}"
 GE_MEGASTREAM_INSTANCES="${GE_MEGASTREAM_INSTANCES:-1}"
 
+# Get current git SHA (short version) for deployment tracking
+GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -172,6 +175,7 @@ deploy_jetstream_service() {
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest" \
         --set-env-vars="GE_JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
+        --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --set-env-vars="GE_JETSTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/jetstream_state.json" \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
@@ -209,6 +213,7 @@ deploy_megastream_service() {
         --vpc-egress=private-ranges-only \
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
+        --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --set-env-vars="GE_SPOOL_INTERVAL_SEC=60" \
         --set-env-vars="GE_AWS_REGION=us-east-1" \
         --set-env-vars="GE_MEGASTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/megastream_state.json" \
@@ -294,6 +299,7 @@ EOF
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
+        --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=3600 \
@@ -333,6 +339,7 @@ deploy_extract_job() {
     cat > "$temp_var_dir/extract-env-vars.yaml" <<EOF
 GE_ELASTICSEARCH_TLS_SKIP_VERIFY: "true"
 GE_LOGGING_ENABLED: "true"
+GE_GIT_SHA: "$GIT_SHA"
 GE_EXTRACT_INDICES: "posts,likes"
 GE_ELASTICSEARCH_URL: "$GE_ELASTICSEARCH_URL"
 GE_PARQUET_DESTINATION: "gs://$destination_bucket"
@@ -401,6 +408,7 @@ main() {
     echo "Environment: $GE_ENVIRONMENT"
     echo "Project: $GE_GCP_PROJECT_ID"
     echo "Region: $GE_GCP_REGION"
+    echo "Git SHA: $GIT_SHA"
     echo "=================================================="
     echo
 
