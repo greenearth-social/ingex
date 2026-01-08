@@ -214,6 +214,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	// Process rows from spooler
 	rowChan := spooler.GetRowChannel()
 	var batch []common.ElasticsearchDoc
+	var msgs []common.MegaStreamMessage
 	var tombstoneBatch []common.PostTombstoneDoc
 	var deleteBatch []common.DeleteDoc
 	const batchSize = 100
@@ -248,8 +249,31 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// after the account deletion (which would be out of order)
 
 				// Flush post creation batch
-				if len(batch) > 0 {
+				if len(msgs) > 0 {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+
+					// Extract at_uris for like count query
+					atURIs := make([]string, len(msgs))
+					for i, m := range msgs {
+						atURIs[i] = m.GetAtURI()
+					}
+
+					// Query like counts
+					likeCounts, err := common.BulkCountLikesBySubjectURIs(batchCtx, esClient, "likes", atURIs, logger)
+					if err != nil {
+						logger.Error("Failed to query like counts before account deletion: %v (proceeding with zero counts)", err)
+						likeCounts = make(map[string]int)
+					}
+
+					// Create docs with like counts
+					batch = make([]common.ElasticsearchDoc, 0, len(msgs))
+					for _, m := range msgs {
+						likeCount := likeCounts[m.GetAtURI()]
+						doc := common.CreateElasticsearchDoc(m, likeCount)
+						batch = append(batch, doc)
+					}
+
+					// Index batch
 					if err := common.BulkIndex(batchCtx, esClient, "posts", batch, dryRun, logger); err != nil {
 						logger.Error("Failed to bulk index batch before account deletion: %v", err)
 					} else {
@@ -261,6 +285,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						}
 					}
 					batch = batch[:0]
+					msgs = msgs[:0]
 					cancelBatchCtx()
 				}
 
@@ -332,12 +357,33 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					cancelBatchCtx()
 				}
 			} else {
-				// Post creation - add to batch
-				doc := common.CreateElasticsearchDoc(msg)
-				batch = append(batch, doc)
+				// Post creation - accumulate messages first
+				msgs = append(msgs, msg)
 
-				if len(batch) >= batchSize {
+				if len(msgs) >= batchSize {
+					// Extract at_uris for like count query
+					atURIs := make([]string, len(msgs))
+					for i, m := range msgs {
+						atURIs[i] = m.GetAtURI()
+					}
+
+					// Query like counts (with timeout)
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+					likeCounts, err := common.BulkCountLikesBySubjectURIs(batchCtx, esClient, "likes", atURIs, logger)
+					if err != nil {
+						logger.Error("Failed to query like counts: %v (proceeding with zero counts)", err)
+						likeCounts = make(map[string]int)
+					}
+
+					// Create docs with like counts
+					batch = make([]common.ElasticsearchDoc, 0, len(msgs))
+					for _, m := range msgs {
+						likeCount := likeCounts[m.GetAtURI()]
+						doc := common.CreateElasticsearchDoc(m, likeCount)
+						batch = append(batch, doc)
+					}
+
+					// Index batch
 					if err := common.BulkIndex(batchCtx, esClient, "posts", batch, dryRun, logger); err != nil {
 						logger.Error("Failed to bulk index batch: %v", err)
 					} else {
@@ -353,6 +399,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						}
 					}
 					batch = batch[:0]
+					msgs = msgs[:0]
 					cancelBatchCtx()
 				}
 			}
@@ -365,7 +412,29 @@ cleanup:
 	defer cleanupCancel()
 
 	// Index remaining documents in batch
-	if len(batch) > 0 {
+	if len(msgs) > 0 {
+		// Extract at_uris
+		atURIs := make([]string, len(msgs))
+		for i, m := range msgs {
+			atURIs[i] = m.GetAtURI()
+		}
+
+		// Query like counts
+		likeCounts, err := common.BulkCountLikesBySubjectURIs(cleanupCtx, esClient, "likes", atURIs, logger)
+		if err != nil {
+			logger.Error("Failed to query like counts for final batch: %v (proceeding with zero counts)", err)
+			likeCounts = make(map[string]int)
+		}
+
+		// Create docs with like counts
+		batch = make([]common.ElasticsearchDoc, 0, len(msgs))
+		for _, m := range msgs {
+			likeCount := likeCounts[m.GetAtURI()]
+			doc := common.CreateElasticsearchDoc(m, likeCount)
+			batch = append(batch, doc)
+		}
+
+		// Index batch
 		if err := common.BulkIndex(cleanupCtx, esClient, "posts", batch, dryRun, logger); err != nil {
 			logger.Error("Failed to bulk index final batch: %v", err)
 		} else {

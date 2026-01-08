@@ -402,7 +402,7 @@ func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string,
 }
 
 // CreateElasticsearchDoc creates an ElasticsearchDoc from a MegaStreamMessage
-func CreateElasticsearchDoc(msg MegaStreamMessage) ElasticsearchDoc {
+func CreateElasticsearchDoc(msg MegaStreamMessage, likeCount int) ElasticsearchDoc {
 	// Convert embeddings to Float32Array type for proper JSON marshaling
 	var embeddings map[string]Float32Array
 	rawEmbeddings := msg.GetEmbeddings()
@@ -423,6 +423,7 @@ func CreateElasticsearchDoc(msg MegaStreamMessage) ElasticsearchDoc {
 		QuotePost:        msg.GetQuotePost(),
 		Embeddings:       embeddings,
 		IndexedAt:        time.Now().UTC().Format(time.RFC3339),
+		LikeCount:        likeCount,
 	}
 }
 
