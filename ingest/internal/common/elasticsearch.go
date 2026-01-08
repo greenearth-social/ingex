@@ -988,8 +988,7 @@ func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *Inges
 
 // BulkGetPosts fetches multiple post documents from Elasticsearch by at_uri
 // Returns a map of at_uri -> author_did for routing purposes
-// Note: Uses search API instead of mget because mget requires routing when
-// _routing.required=true, but we don't have author_did yet (that's what we're fetching)
+// Note: Uses search API instead of mget because mget requires routing
 func BulkGetPosts(ctx context.Context, client *elasticsearch.Client, index string, atURIs []string, logger *IngestLogger) (map[string]string, error) {
 	if len(atURIs) == 0 {
 		return make(map[string]string), nil
@@ -1015,7 +1014,7 @@ func BulkGetPosts(ctx context.Context, client *elasticsearch.Client, index strin
 			},
 		},
 		"_source": []string{"author_did"}, // Only fetch author_did field
-		"size":    len(validURIs),          // Return up to batch size (100)
+		"size":    len(validURIs),         // Return up to batch size (100)
 	}
 
 	bodyJSON, err := json.Marshal(searchBody)
