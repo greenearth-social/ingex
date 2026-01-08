@@ -216,7 +216,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	}
 
 	// Start worker pool for parallel Elasticsearch writes
-	const numWorkers = 3
+	const numWorkers = 10
 	workersDone := make(chan struct{})
 	go func() {
 		var wg sync.WaitGroup
