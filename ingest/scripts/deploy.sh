@@ -21,6 +21,9 @@ GE_AWS_S3_PREFIX="${GE_AWS_S3_PREFIX:-mega/}"
 GE_JETSTREAM_INSTANCES="${GE_JETSTREAM_INSTANCES:-1}"
 GE_MEGASTREAM_INSTANCES="${GE_MEGASTREAM_INSTANCES:-1}"
 
+# Get current git SHA (short version) for deployment tracking
+GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -42,6 +45,45 @@ log_error() {
 
 log_build() {
     echo -e "${BLUE}[BUILD]${NC} $1"
+}
+
+cleanup_old_revisions() {
+    local resource_type="$1"  # "service" or "job"
+    local resource_name="$2"
+    local max_revisions=10
+
+    log_info "Cleaning up old revisions..."
+
+    local list_cmd
+    if [ "$resource_type" = "service" ]; then
+        list_cmd="gcloud run revisions list --service=$resource_name"
+    else
+        list_cmd="gcloud run jobs revisions list --job=$resource_name"
+    fi
+
+    local all_revisions=$($list_cmd \
+        --region="$GE_GCP_REGION" \
+        --format="value(name)" \
+        --sort-by="~metadata.creationTimestamp" 2>/dev/null || true)
+
+    if [ -n "$all_revisions" ]; then
+        local revision_count=$(echo "$all_revisions" | wc -l | tr -d ' ')
+        if [ "$revision_count" -gt "$max_revisions" ]; then
+            log_info "Found $revision_count revisions, keeping the $max_revisions most recent"
+            echo "$all_revisions" | tail -n +$((max_revisions + 1)) | while read -r revision; do
+                log_info "Deleting old revision: $revision"
+                if [ "$resource_type" = "service" ]; then
+                    gcloud run revisions delete "$revision" \
+                        --region="$GE_GCP_REGION" \
+                        --quiet 2>/dev/null || log_warn "Failed to delete $revision"
+                else
+                    gcloud run jobs revisions delete "$revision" \
+                        --region="$GE_GCP_REGION" \
+                        --quiet 2>/dev/null || log_warn "Failed to delete $revision"
+                fi
+            done
+        fi
+    fi
 }
 
 validate_config() {
@@ -133,6 +175,7 @@ deploy_jetstream_service() {
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest" \
         --set-env-vars="GE_JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
+        --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --set-env-vars="GE_JETSTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/jetstream_state.json" \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
@@ -145,6 +188,8 @@ deploy_jetstream_service() {
         --no-cpu-throttling \
         --allow-unauthenticated \
         --args="--max-rewind,$max_rewind"
+
+    cleanup_old_revisions "service" "jetstream-ingest"
 }
 
 deploy_megastream_service() {
@@ -168,6 +213,7 @@ deploy_megastream_service() {
         --vpc-egress=private-ranges-only \
         --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
+        --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --set-env-vars="GE_SPOOL_INTERVAL_SEC=60" \
         --set-env-vars="GE_AWS_REGION=us-east-1" \
         --set-env-vars="GE_MEGASTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/megastream_state.json" \
@@ -184,6 +230,8 @@ deploy_megastream_service() {
         --no-cpu-throttling \
         --allow-unauthenticated \
         --args="--source,s3,--mode,spool,--max-rewind,$max_rewind"
+
+    cleanup_old_revisions "service" "megastream-ingest"
 }
 
 deploy_expiry_job() {
@@ -251,10 +299,13 @@ EOF
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
+        --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=3600 \
         --args="--retention-hours,$retention_hours"
+
+    cleanup_old_revisions "job" "elasticsearch-expiry"
 }
 
 deploy_extract_job() {
@@ -288,6 +339,7 @@ deploy_extract_job() {
     cat > "$temp_var_dir/extract-env-vars.yaml" <<EOF
 GE_ELASTICSEARCH_TLS_SKIP_VERIFY: "true"
 GE_LOGGING_ENABLED: "true"
+GE_GIT_SHA: "$GIT_SHA"
 GE_EXTRACT_INDICES: "posts,likes"
 GE_ELASTICSEARCH_URL: "$GE_ELASTICSEARCH_URL"
 GE_PARQUET_DESTINATION: "gs://$destination_bucket"
@@ -308,6 +360,8 @@ EOF
         --memory=2Gi \
         --task-timeout=7200 \
         --args="--window-size-min,$window_minutes"
+
+    cleanup_old_revisions "job" "extract"
 }
 
 deploy_all_services() {
@@ -354,6 +408,7 @@ main() {
     echo "Environment: $GE_ENVIRONMENT"
     echo "Project: $GE_GCP_PROJECT_ID"
     echo "Region: $GE_GCP_REGION"
+    echo "Git SHA: $GIT_SHA"
     echo "=================================================="
     echo
 

@@ -121,3 +121,103 @@ func TestStateManager_GCSPath(t *testing.T) {
 		t.Skipf("GCS access denied (expected without proper permissions): %v", err)
 	}
 }
+
+func TestStateManager_WriteAndReadInstanceInfo(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+	logger := NewLogger(false)
+
+	sm, err := NewStateManager(stateFile, logger)
+	if err != nil {
+		t.Fatalf("Failed to create state manager: %v", err)
+	}
+
+	startedAt := int64(1704672000000000) // 2024-01-08 00:00:00 UTC in microseconds
+
+	// Write instance info
+	if err := sm.WriteInstanceInfo(startedAt); err != nil {
+		t.Fatalf("Failed to write instance info: %v", err)
+	}
+
+	// Read it back
+	instanceInfo, err := sm.ReadInstanceInfo()
+	if err != nil {
+		t.Fatalf("Failed to read instance info: %v", err)
+	}
+
+	if instanceInfo.StartedAt != startedAt {
+		t.Errorf("Expected StartedAt %d, got %d", startedAt, instanceInfo.StartedAt)
+	}
+}
+
+func TestStateManager_InstanceInfoNotExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+	logger := NewLogger(false)
+
+	sm, err := NewStateManager(stateFile, logger)
+	if err != nil {
+		t.Fatalf("Failed to create state manager: %v", err)
+	}
+
+	// Try to read instance info that doesn't exist
+	_, err = sm.ReadInstanceInfo()
+	if err == nil {
+		t.Error("Expected error when reading non-existent instance info, got nil")
+	}
+}
+
+func TestStateManager_InstanceInfoOverwrite(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+	logger := NewLogger(false)
+
+	sm, err := NewStateManager(stateFile, logger)
+	if err != nil {
+		t.Fatalf("Failed to create state manager: %v", err)
+	}
+
+	// Write first instance info
+	firstStartTime := int64(1704672000000000)
+	if err := sm.WriteInstanceInfo(firstStartTime); err != nil {
+		t.Fatalf("Failed to write first instance info: %v", err)
+	}
+
+	// Overwrite with second instance info (simulating new deployment)
+	secondStartTime := int64(1704672060000000) // 60 seconds later
+	if err := sm.WriteInstanceInfo(secondStartTime); err != nil {
+		t.Fatalf("Failed to write second instance info: %v", err)
+	}
+
+	// Read it back - should have the newer timestamp
+	instanceInfo, err := sm.ReadInstanceInfo()
+	if err != nil {
+		t.Fatalf("Failed to read instance info: %v", err)
+	}
+
+	if instanceInfo.StartedAt != secondStartTime {
+		t.Errorf("Expected StartedAt %d (second instance), got %d", secondStartTime, instanceInfo.StartedAt)
+	}
+}
+
+func TestStateManager_InstanceFileLocation(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "test_state.json")
+	logger := NewLogger(false)
+
+	sm, err := NewStateManager(stateFile, logger)
+	if err != nil {
+		t.Fatalf("Failed to create state manager: %v", err)
+	}
+
+	startedAt := int64(1704672000000000)
+	if err := sm.WriteInstanceInfo(startedAt); err != nil {
+		t.Fatalf("Failed to write instance info: %v", err)
+	}
+
+	// Verify the instance file is created with the correct name
+	expectedPath := filepath.Join(tmpDir, "test_instance.json")
+	if _, err := os.Stat(expectedPath); os.IsNotExist(err) {
+		t.Errorf("Expected instance file to be created at %s", expectedPath)
+	}
+}

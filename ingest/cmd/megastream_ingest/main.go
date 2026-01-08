@@ -82,6 +82,9 @@ func main() {
 	}
 }
 
+// checkForNewerInstance checks if another instance has started after us
+// Returns true if a newer instance is detected
+
 func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, source, mode string, dryRun, skipTLSVerify, noRewind, startupWithLastFile bool, maxRewindMinutes int) error {
 	// Validate source parameter
 	if source != "local" && source != "s3" {
@@ -122,6 +125,14 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	if err != nil {
 		return fmt.Errorf("failed to initialize state manager: %w", err)
 	}
+
+	// Write instance coordination file with current timestamp
+	// This allows other instances to detect when a new instance has started
+	myStartTime := time.Now().UnixMicro()
+	if err := stateManager.WriteInstanceInfo(myStartTime); err != nil {
+		return fmt.Errorf("failed to write instance info: %w", err)
+	}
+	logger.Info("Wrote instance coordination file with start time: %d", myStartTime)
 
 	// Handle cursor initialization based on flags
 	if noRewind {
@@ -236,7 +247,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 			// Skip rows with empty at_uri unless it's an account deletion event
 			if row.AtURI == "" && !msg.IsAccountDeletion() {
-				logger.Error("Skipping row with empty at_uri from file %s (did: %s)", row.SourceFilename, row.DID)
+				logger.Debug("Skipping row with empty at_uri from file %s (did: %s)", row.SourceFilename, row.DID)
 				skippedCount++
 				continue
 			}
@@ -254,6 +265,14 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						logger.Error("Failed to bulk index batch before account deletion: %v", err)
 					} else {
 						processedCount += len(batch)
+						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
+						if processedCount%1000 == 0 {
+							if stateManager.CheckForNewerInstance(myStartTime) {
+								logger.Info("Newer instance detected, exiting")
+								cancelBatchCtx()
+								goto cleanup
+							}
+						}
 						if dryRun {
 							logger.Info("Dry-run: Would index batch before account deletion: %d documents", len(batch))
 						} else {
@@ -342,6 +361,14 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						logger.Error("Failed to bulk index batch: %v", err)
 					} else {
 						processedCount += len(batch)
+						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
+						if processedCount%1000 == 0 {
+							if stateManager.CheckForNewerInstance(myStartTime) {
+								logger.Info("Newer instance detected, exiting")
+								cancelBatchCtx()
+								goto cleanup
+							}
+						}
 						if dryRun {
 							logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
 						} else {
