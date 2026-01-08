@@ -284,7 +284,6 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 							logger.Info("Indexed batch before account deletion: %d documents", len(batch))
 						}
 					}
-					batch = batch[:0]
 					msgs = msgs[:0]
 					cancelBatchCtx()
 				}
@@ -398,7 +397,6 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 							logger.Info("Progress: %d documents processed (deleted: %d, skipped: %d)", processedCount, deletedCount, skippedCount)
 						}
 					}
-					batch = batch[:0]
 					msgs = msgs[:0]
 					cancelBatchCtx()
 				}
