@@ -1427,7 +1427,6 @@ func aggregateLikeCountUpdates(updates []LikeCountUpdate) map[string]int {
 }
 
 // BulkUpdatePostLikeCounts updates like_count fields on posts using the ES update API
-// Uses scripted updates with upsert=false to ignore non-existent posts
 // Fetches posts first to get author_did for routing (required by posts index)
 func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) error {
 	if len(updates) == 0 {
@@ -1565,7 +1564,6 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	}
 
 	if bulkResponse.Errors {
-		// Check errors - routing errors should now be resolved
 		hasRealErrors := false
 		notFoundCount := 0
 
