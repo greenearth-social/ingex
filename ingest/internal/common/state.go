@@ -176,3 +176,110 @@ func (sm *StateManager) UpdateCursor(timeUs int64) error {
 
 	return nil
 }
+
+// InstanceInfo represents information about a running instance
+type InstanceInfo struct {
+	StartedAt int64 `json:"started_at"` // Unix timestamp in microseconds
+}
+
+// WriteInstanceInfo writes the current instance's start time to a coordination file
+// This allows multiple instances to detect each other
+func (sm *StateManager) WriteInstanceInfo(startedAt int64) error {
+	info := InstanceInfo{
+		StartedAt: startedAt,
+	}
+
+	data, err := json.Marshal(info)
+	if err != nil {
+		return fmt.Errorf("failed to marshal instance info: %w", err)
+	}
+
+	instancePath := sm.getInstancePath()
+
+	if sm.useGCS {
+		ctx := context.Background()
+		writer := sm.gcsClient.Bucket(sm.gcsBucket).Object(instancePath).NewWriter(ctx)
+		if _, err := writer.Write(data); err != nil {
+			_ = writer.Close()
+			return fmt.Errorf("failed to write instance info to GCS: %w", err)
+		}
+		if err := writer.Close(); err != nil {
+			return fmt.Errorf("failed to close GCS writer: %w", err)
+		}
+	} else {
+		filePath := strings.Replace(sm.stateFilePath, "_state.json", "_instance.json", 1)
+		if err := os.WriteFile(filePath, data, 0600); err != nil {
+			return fmt.Errorf("failed to write instance info file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ReadInstanceInfo reads the instance coordination file
+func (sm *StateManager) ReadInstanceInfo() (*InstanceInfo, error) {
+	instancePath := sm.getInstancePath()
+
+	var data []byte
+	var err error
+
+	if sm.useGCS {
+		ctx := context.Background()
+		reader, err := sm.gcsClient.Bucket(sm.gcsBucket).Object(instancePath).NewReader(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read instance info from GCS: %w", err)
+		}
+		defer func() {
+			if closeErr := reader.Close(); closeErr != nil {
+				sm.logger.Error("Failed to close GCS reader: %v", closeErr)
+			}
+		}()
+
+		// Read all data from GCS reader
+		buf := make([]byte, 1024) // Small buffer for instance info
+		n, err := reader.Read(buf)
+		if err != nil && err.Error() != "EOF" {
+			return nil, fmt.Errorf("failed to read instance info data: %w", err)
+		}
+		data = buf[:n]
+	} else {
+		filePath := strings.Replace(sm.stateFilePath, "_state.json", "_instance.json", 1)
+		data, err = os.ReadFile(filePath) // #nosec G304 - filePath is a controlled configuration value
+		if err != nil {
+			return nil, fmt.Errorf("failed to read instance info file: %w", err)
+		}
+	}
+
+	var info InstanceInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal instance info: %w", err)
+	}
+
+	return &info, nil
+}
+
+// CheckForNewerInstance checks if a newer instance has started by comparing start times.
+// Returns true if a newer instance is detected, false otherwise.
+func (sm *StateManager) CheckForNewerInstance(myStartTime int64) bool {
+	instanceInfo, err := sm.ReadInstanceInfo()
+	if err != nil {
+		// If we can't read the file, assume it's not there yet or temporary error
+		sm.logger.Debug("Could not read instance info (may not exist yet): %v", err)
+		return false
+	}
+
+	if instanceInfo.StartedAt > myStartTime {
+		sm.logger.Info("Detected newer instance started at %d (my start time: %d), shutting down", instanceInfo.StartedAt, myStartTime)
+		return true
+	}
+
+	return false
+}
+
+// getInstancePath returns the GCS object path for instance info (replaces _state.json with _instance.json)
+func (sm *StateManager) getInstancePath() string {
+	if sm.useGCS {
+		return strings.Replace(sm.gcsObject, "_state.json", "_instance.json", 1)
+	}
+	return strings.Replace(sm.stateFilePath, "_state.json", "_instance.json", 1)
+}

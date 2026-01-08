@@ -92,12 +92,23 @@ func main() {
 	runIngestion(ctx, config, logger, healthServer, *dryRun, *skipTLSVerify, *noRewind, *maxRewindMinutes)
 }
 
+// checkForNewerInstance checks if another instance has started after us
+// Returns true if a newer instance is detected
 func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify, noRewind bool, maxRewindMinutes int) {
 	stateManager, err := common.NewStateManager(config.JetstreamStateFile, logger)
 	if err != nil {
 		logger.Error("Failed to initialize state manager: %v", err)
 		os.Exit(1)
 	}
+
+	// Write instance coordination file with current timestamp
+	// This allows other instances to detect when a new instance has started
+	myStartTime := time.Now().UnixMicro()
+	if err := stateManager.WriteInstanceInfo(myStartTime); err != nil {
+		logger.Error("Failed to write instance info: %v", err)
+		os.Exit(1)
+	}
+	logger.Info("Wrote instance coordination file with start time: %d", myStartTime)
 
 	// Initialize Elasticsearch client
 	esConfig := common.ElasticsearchConfig{
@@ -354,6 +365,14 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					select {
 					case batchChan <- job:
 						processedCount += len(batch)
+
+						// Check if a newer instance has started (every 10 batches to avoid excessive GCS reads)
+						if processedCount%1000 == 0 {
+							if stateManager.CheckForNewerInstance(myStartTime) {
+								logger.Info("Newer instance detected, exiting")
+								goto cleanup
+							}
+						}
 					case <-ctx.Done():
 						goto cleanup
 					}
@@ -535,6 +554,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 		// Log info every 100 batches
 		if batchCounter%100 == 0 {
 			logger.Info("Worker %d: Processed %d batches (~%d documents)", id, batchCounter, batchCounter*100)
+			batchCounter = 0
 		}
 
 		// Save cursor after successful batch operations
