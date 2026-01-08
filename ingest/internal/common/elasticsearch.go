@@ -1421,7 +1421,9 @@ func BulkCountLikesBySubjectURIs(ctx context.Context, client *elasticsearch.Clie
 func aggregateLikeCountUpdates(updates []LikeCountUpdate) map[string]int {
 	aggregated := make(map[string]int)
 	for _, update := range updates {
-		aggregated[update.SubjectURI] += update.Increment
+		if update.SubjectURI != "" {
+			aggregated[update.SubjectURI] += update.Increment
+		}
 	}
 	return aggregated
 }
@@ -1444,9 +1446,7 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	// Extract unique subject URIs for routing lookup
 	subjectURIs := make([]string, 0, len(aggregated))
 	for uri := range aggregated {
-		if uri != "" {
-			subjectURIs = append(subjectURIs, uri)
-		}
+		subjectURIs = append(subjectURIs, uri)
 	}
 
 	if len(subjectURIs) == 0 {
@@ -1464,11 +1464,6 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	skippedNoRouting := 0
 
 	for subjectURI, increment := range aggregated {
-		if subjectURI == "" {
-			logger.Error("Skipping like count update with empty subject_uri")
-			continue
-		}
-
 		// Get routing value (author_did) for this post
 		authorDID, found := routingMap[subjectURI]
 		if !found || authorDID == "" {
@@ -1477,17 +1472,16 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 			skippedNoRouting++
 			continue
 		}
+		validUpdateCount++
 
-		// Elasticsearch update action metadata WITH routing
+		// Elasticsearch update action metadata with shard routing
 		meta := map[string]interface{}{
 			"update": map[string]interface{}{
 				"_index":  index,
 				"_id":     subjectURI,
-				"routing": authorDID, // CRITICAL: Include routing for posts index
+				"routing": authorDID,
 			},
 		}
-
-		validUpdateCount++
 
 		metaJSON, err := json.Marshal(meta)
 		if err != nil {
@@ -1519,16 +1513,12 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	}
 
 	if validUpdateCount == 0 {
-		if skippedNoRouting > 0 {
-			logger.Debug("Skipped %d like count updates for non-existent posts (expected behavior)", skippedNoRouting)
-		}
-		logger.Error("No valid updates to perform (all had empty subject_uri or posts not found)")
-		return fmt.Errorf("no valid updates in batch")
+		logger.Debug("No like-count updates to perform (no corresponding posts found)")
+		return nil
 	}
-
-	// Log if we skipped some updates
+	// Log if we skipped some updates due to missing posts
 	if skippedNoRouting > 0 {
-		logger.Debug("Skipped %d like count updates for non-existent posts (expected behavior)", skippedNoRouting)
+		logger.Debug("Skipped %d post like-count updates while looking for routing info due to missing posts", skippedNoRouting)
 	}
 
 	res, err := client.Bulk(
@@ -1570,6 +1560,8 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 		for _, item := range bulkResponse.Items {
 			for _, details := range item {
 				if details.Error != nil {
+					// It's possible (though unlikely) a post is deleted
+					// before we increment likes. Ignore those race situations.
 					if details.Status == 404 {
 						notFoundCount++
 					} else {
@@ -1582,13 +1574,14 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 		}
 
 		if notFoundCount > 0 {
-			logger.Debug("Skipped %d like count updates for non-existent posts (expected behavior)", notFoundCount)
+			logger.Debug("Skipped %d like-count updates due to missing posts", notFoundCount)
 		}
 
 		if hasRealErrors {
 			itemsJSON, _ := json.Marshal(bulkResponse.Items)
-			logger.Error("Bulk update failed with errors. Response items: %s", string(itemsJSON))
-			return fmt.Errorf("bulk update failed: some updates had errors (see logs for details)")
+			logger.Error("Bulk like-count update failed with errors")
+			logger.Debug("Response items with errors: %s", string(itemsJSON))
+			return fmt.Errorf("bulk update failed: some updates had errors")
 		}
 	}
 

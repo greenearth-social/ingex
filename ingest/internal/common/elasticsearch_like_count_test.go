@@ -94,6 +94,18 @@ func TestLikeCountUpdate_Aggregation(t *testing.T) {
 	if aggregated2["at://post1"] != 2 {
 		t.Errorf("Expected post1 to have net increment of 2, got %d", aggregated2["at://post1"])
 	}
+
+	// Test that updates without subject URI are filtered out
+	updates3 := []LikeCountUpdate{
+		{SubjectURI: "", Increment: 1},
+		{SubjectURI: "at://post1", Increment: 1},
+		{SubjectURI: "at://post2", Increment: 1},
+	}
+
+	aggregated3 := aggregateLikeCountUpdates(updates3)
+	if _, exists := aggregated3[""]; exists {
+		t.Errorf("Expected empty subject URI to not exist, got %d", aggregated3[""])
+	}
 }
 
 func TestBulkUpdatePostLikeCounts_DryRun(t *testing.T) {
