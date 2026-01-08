@@ -44,6 +44,45 @@ log_build() {
     echo -e "${BLUE}[BUILD]${NC} $1"
 }
 
+cleanup_old_revisions() {
+    local resource_type="$1"  # "service" or "job"
+    local resource_name="$2"
+    local max_revisions=10
+
+    log_info "Cleaning up old revisions..."
+
+    local list_cmd
+    if [ "$resource_type" = "service" ]; then
+        list_cmd="gcloud run revisions list --service=$resource_name"
+    else
+        list_cmd="gcloud run jobs revisions list --job=$resource_name"
+    fi
+
+    local all_revisions=$($list_cmd \
+        --region="$GE_GCP_REGION" \
+        --format="value(name)" \
+        --sort-by="~metadata.creationTimestamp" 2>/dev/null || true)
+
+    if [ -n "$all_revisions" ]; then
+        local revision_count=$(echo "$all_revisions" | wc -l | tr -d ' ')
+        if [ "$revision_count" -gt "$max_revisions" ]; then
+            log_info "Found $revision_count revisions, keeping the $max_revisions most recent"
+            echo "$all_revisions" | tail -n +$((max_revisions + 1)) | while read -r revision; do
+                log_info "Deleting old revision: $revision"
+                if [ "$resource_type" = "service" ]; then
+                    gcloud run revisions delete "$revision" \
+                        --region="$GE_GCP_REGION" \
+                        --quiet 2>/dev/null || log_warn "Failed to delete $revision"
+                else
+                    gcloud run jobs revisions delete "$revision" \
+                        --region="$GE_GCP_REGION" \
+                        --quiet 2>/dev/null || log_warn "Failed to delete $revision"
+                fi
+            done
+        fi
+    fi
+}
+
 validate_config() {
     log_info "Validating configuration..."
 
@@ -146,27 +185,7 @@ deploy_jetstream_service() {
         --allow-unauthenticated \
         --args="--max-rewind,$max_rewind"
 
-    # Delete all old revisions to prevent duplicate instances
-    # This removes rollback capability but ensures only one instance runs
-    log_info "Cleaning up old revisions..."
-    local all_revisions=$(gcloud run revisions list \
-        --service=jetstream-ingest \
-        --region="$GE_GCP_REGION" \
-        --format="value(name)" \
-        --sort-by="~metadata.creationTimestamp" 2>/dev/null || true)
-
-    if [ -n "$all_revisions" ]; then
-        local revision_count=$(echo "$all_revisions" | wc -l | tr -d ' ')
-        if [ "$revision_count" -gt 1 ]; then
-            log_info "Found $revision_count revisions, keeping only the most recent"
-            echo "$all_revisions" | tail -n +2 | while read -r revision; do
-                log_info "Deleting old revision: $revision"
-                gcloud run revisions delete "$revision" \
-                    --region="$GE_GCP_REGION" \
-                    --quiet 2>/dev/null || log_warn "Failed to delete $revision"
-            done
-        fi
-    fi
+    cleanup_old_revisions "service" "jetstream-ingest"
 }
 
 deploy_megastream_service() {
@@ -207,27 +226,7 @@ deploy_megastream_service() {
         --allow-unauthenticated \
         --args="--source,s3,--mode,spool,--max-rewind,$max_rewind"
 
-    # Delete all old revisions to prevent duplicate instances
-    # This removes rollback capability but ensures only one instance runs
-    log_info "Cleaning up old revisions..."
-    local all_revisions=$(gcloud run revisions list \
-        --service=megastream-ingest \
-        --region="$GE_GCP_REGION" \
-        --format="value(name)" \
-        --sort-by="~metadata.creationTimestamp" 2>/dev/null || true)
-
-    if [ -n "$all_revisions" ]; then
-        local revision_count=$(echo "$all_revisions" | wc -l | tr -d ' ')
-        if [ "$revision_count" -gt 1 ]; then
-            log_info "Found $revision_count revisions, keeping only the most recent"
-            echo "$all_revisions" | tail -n +2 | while read -r revision; do
-                log_info "Deleting old revision: $revision"
-                gcloud run revisions delete "$revision" \
-                    --region="$GE_GCP_REGION" \
-                    --quiet 2>/dev/null || log_warn "Failed to delete $revision"
-            done
-        fi
-    fi
+    cleanup_old_revisions "service" "megastream-ingest"
 }
 
 deploy_expiry_job() {
@@ -299,6 +298,8 @@ EOF
         --memory=512Mi \
         --task-timeout=3600 \
         --args="--retention-hours,$retention_hours"
+
+    cleanup_old_revisions "job" "elasticsearch-expiry"
 }
 
 deploy_extract_job() {
@@ -352,6 +353,8 @@ EOF
         --memory=2Gi \
         --task-timeout=7200 \
         --args="--window-size-min,$window_minutes"
+
+    cleanup_old_revisions "job" "extract"
 }
 
 deploy_all_services() {

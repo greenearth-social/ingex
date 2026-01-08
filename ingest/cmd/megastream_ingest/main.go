@@ -268,7 +268,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
 						if processedCount%1000 == 0 {
 							if stateManager.CheckForNewerInstance(myStartTime) {
-								logger.Info("Newer instance detected, exiting cleanly")
+								logger.Info("Newer instance detected, exiting")
 								cancelBatchCtx()
 								goto cleanup
 							}
@@ -364,7 +364,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
 						if processedCount%1000 == 0 {
 							if stateManager.CheckForNewerInstance(myStartTime) {
-								logger.Info("Newer instance detected, exiting cleanly")
+								logger.Info("Newer instance detected, exiting")
 								cancelBatchCtx()
 								goto cleanup
 							}
