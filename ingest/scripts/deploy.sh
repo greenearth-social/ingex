@@ -145,6 +145,28 @@ deploy_jetstream_service() {
         --no-cpu-throttling \
         --allow-unauthenticated \
         --args="--max-rewind,$max_rewind"
+
+    # Delete all old revisions to prevent duplicate instances
+    # This removes rollback capability but ensures only one instance runs
+    log_info "Cleaning up old revisions..."
+    local all_revisions=$(gcloud run revisions list \
+        --service=jetstream-ingest \
+        --region="$GE_GCP_REGION" \
+        --format="value(name)" \
+        --sort-by="~metadata.creationTimestamp" 2>/dev/null || true)
+
+    if [ -n "$all_revisions" ]; then
+        local revision_count=$(echo "$all_revisions" | wc -l | tr -d ' ')
+        if [ "$revision_count" -gt 1 ]; then
+            log_info "Found $revision_count revisions, keeping only the most recent"
+            echo "$all_revisions" | tail -n +2 | while read -r revision; do
+                log_info "Deleting old revision: $revision"
+                gcloud run revisions delete "$revision" \
+                    --region="$GE_GCP_REGION" \
+                    --quiet 2>/dev/null || log_warn "Failed to delete $revision"
+            done
+        fi
+    fi
 }
 
 deploy_megastream_service() {
@@ -184,6 +206,28 @@ deploy_megastream_service() {
         --no-cpu-throttling \
         --allow-unauthenticated \
         --args="--source,s3,--mode,spool,--max-rewind,$max_rewind"
+
+    # Delete all old revisions to prevent duplicate instances
+    # This removes rollback capability but ensures only one instance runs
+    log_info "Cleaning up old revisions..."
+    local all_revisions=$(gcloud run revisions list \
+        --service=megastream-ingest \
+        --region="$GE_GCP_REGION" \
+        --format="value(name)" \
+        --sort-by="~metadata.creationTimestamp" 2>/dev/null || true)
+
+    if [ -n "$all_revisions" ]; then
+        local revision_count=$(echo "$all_revisions" | wc -l | tr -d ' ')
+        if [ "$revision_count" -gt 1 ]; then
+            log_info "Found $revision_count revisions, keeping only the most recent"
+            echo "$all_revisions" | tail -n +2 | while read -r revision; do
+                log_info "Deleting old revision: $revision"
+                gcloud run revisions delete "$revision" \
+                    --region="$GE_GCP_REGION" \
+                    --quiet 2>/dev/null || log_warn "Failed to delete $revision"
+            done
+        fi
+    fi
 }
 
 deploy_expiry_job() {

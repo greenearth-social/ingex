@@ -236,7 +236,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 			// Skip rows with empty at_uri unless it's an account deletion event
 			if row.AtURI == "" && !msg.IsAccountDeletion() {
-				logger.Error("Skipping row with empty at_uri from file %s (did: %s)", row.SourceFilename, row.DID)
+				logger.Debug("Skipping row with empty at_uri from file %s (did: %s)", row.SourceFilename, row.DID)
 				skippedCount++
 				continue
 			}

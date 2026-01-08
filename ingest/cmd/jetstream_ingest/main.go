@@ -507,6 +507,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 		// Log info every 100 batches
 		if batchCounter%100 == 0 {
 			logger.Info("Worker %d: Processed %d batches (~%d documents)", id, batchCounter, batchCounter*100)
+			batchCounter = 0
 		}
 
 		// Save cursor after successful batch operations

@@ -111,7 +111,12 @@ func (c *Client) readLoop(ctx context.Context) {
 				c.logger.Info("Attempting to reconnect...")
 				if err := c.Connect(ctx); err != nil {
 					c.logger.Error("Reconnection failed: %v, retrying in 5 seconds", err)
-					time.Sleep(5 * time.Second)
+					// Use a timer with context checking instead of blocking sleep
+					select {
+					case <-time.After(5 * time.Second):
+					case <-ctx.Done():
+						return
+					}
 					continue
 				}
 				c.mu.RLock()
@@ -135,7 +140,12 @@ func (c *Client) readLoop(ctx context.Context) {
 					c.mu.Unlock()
 					if shouldReconnect {
 						c.logger.Info("Reconnecting in 5 seconds...")
-						time.Sleep(5 * time.Second)
+						// Use a timer with context checking instead of blocking sleep
+						select {
+						case <-time.After(5 * time.Second):
+						case <-ctx.Done():
+							return
+						}
 						continue
 					}
 					return
@@ -153,7 +163,12 @@ func (c *Client) readLoop(ctx context.Context) {
 				c.mu.Unlock()
 				if shouldReconnect {
 					c.logger.Info("Reconnecting in 5 seconds...")
-					time.Sleep(5 * time.Second)
+					// Use a timer with context checking instead of blocking sleep
+					select {
+					case <-time.After(5 * time.Second):
+					case <-ctx.Done():
+						return
+					}
 					continue
 				}
 				return
