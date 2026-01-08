@@ -238,3 +238,35 @@ func TestLikeCountUpdate_StructFields(t *testing.T) {
 		t.Errorf("Expected Increment to be 0 for zero value, got %d", update3.Increment)
 	}
 }
+
+func TestBulkGetPosts_EmptyInput(t *testing.T) {
+	logger := NewLogger(false)
+
+	// Empty slice should return empty map without error
+	result, err := BulkGetPosts(context.TODO(), nil, "posts", []string{}, logger)
+	if err != nil {
+		t.Errorf("Expected no error for empty input, got: %v", err)
+	}
+
+	if result == nil {
+		t.Error("Expected non-nil result")
+	}
+
+	if len(result) != 0 {
+		t.Errorf("Expected empty result map, got %d entries", len(result))
+	}
+
+	// Nil slice should also return empty map without error
+	result2, err2 := BulkGetPosts(context.TODO(), nil, "posts", nil, logger)
+	if err2 != nil {
+		t.Errorf("Expected no error for nil input, got: %v", err2)
+	}
+
+	if result2 == nil {
+		t.Error("Expected non-nil result for nil input")
+	}
+
+	if len(result2) != 0 {
+		t.Errorf("Expected empty result map for nil input, got %d entries", len(result2))
+	}
+}

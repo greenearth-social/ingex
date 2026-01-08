@@ -986,6 +986,83 @@ func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *Inges
 	return response, nil
 }
 
+// BulkGetPosts fetches multiple post documents from Elasticsearch by at_uri
+// Returns a map of at_uri -> author_did for routing purposes
+// Note: This function does NOT provide routing in the mget request, which means
+// it will search all shards. This is necessary when we don't know the author_did yet.
+func BulkGetPosts(ctx context.Context, client *elasticsearch.Client, index string, atURIs []string, logger *IngestLogger) (map[string]string, error) {
+	if len(atURIs) == 0 {
+		return make(map[string]string), nil
+	}
+
+	// Build mget request
+	docs := make([]map[string]interface{}, 0, len(atURIs))
+	for _, uri := range atURIs {
+		if uri == "" {
+			continue
+		}
+		docs = append(docs, map[string]interface{}{
+			"_index": index,
+			"_id":    uri,
+			// Note: No routing specified - we don't have author_did yet
+			// This will cause mget to search all shards (slower but necessary)
+		})
+	}
+
+	requestBody := map[string]interface{}{
+		"docs": docs,
+	}
+
+	bodyJSON, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal mget request: %w", err)
+	}
+
+	// Execute mget request
+	res, err := client.Mget(
+		bytes.NewReader(bodyJSON),
+		client.Mget.WithContext(ctx),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("mget request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close mget response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return nil, fmt.Errorf("mget request returned error: %s", res.String())
+	}
+
+	// Parse response - we only need author_did for routing
+	var mgetResponse struct {
+		Docs []struct {
+			ID     string `json:"_id"`
+			Found  bool   `json:"found"`
+			Source struct {
+				AuthorDID string `json:"author_did"`
+			} `json:"_source"`
+		} `json:"docs"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&mgetResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse mget response: %w", err)
+	}
+
+	// Build result map: at_uri -> author_did
+	result := make(map[string]string)
+	for _, doc := range mgetResponse.Docs {
+		if doc.Found && doc.Source.AuthorDID != "" {
+			result[doc.ID] = doc.Source.AuthorDID
+		}
+	}
+
+	logger.Debug("Fetched routing info for %d/%d posts", len(result), len(atURIs))
+	return result, nil
+}
+
 // QueryPostsByAuthorDID retrieves all post at_uris for a given author_did using scroll API
 func QueryPostsByAuthorDID(ctx context.Context, client *elasticsearch.Client, index string, authorDID string, logger *IngestLogger) ([]string, error) {
 	// Build search query
@@ -1351,7 +1428,7 @@ func aggregateLikeCountUpdates(updates []LikeCountUpdate) map[string]int {
 
 // BulkUpdatePostLikeCounts updates like_count fields on posts using the ES update API
 // Uses scripted updates with upsert=false to ignore non-existent posts
-// TODO: Add routing support using author_did to avoid broadcasting updates to all shards
+// Fetches posts first to get author_did for routing (required by posts index)
 func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) error {
 	if len(updates) == 0 {
 		return nil
@@ -1365,8 +1442,27 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	// Aggregate updates by subject_uri (in case same post appears multiple times)
 	aggregated := aggregateLikeCountUpdates(updates)
 
+	// Extract unique subject URIs for routing lookup
+	subjectURIs := make([]string, 0, len(aggregated))
+	for uri := range aggregated {
+		if uri != "" {
+			subjectURIs = append(subjectURIs, uri)
+		}
+	}
+
+	if len(subjectURIs) == 0 {
+		return fmt.Errorf("no valid updates in batch")
+	}
+
+	// Fetch posts to get author_did for routing
+	routingMap, err := BulkGetPosts(ctx, client, index, subjectURIs, logger)
+	if err != nil {
+		return fmt.Errorf("failed to fetch posts for routing: %w", err)
+	}
+
 	var buf bytes.Buffer
 	validUpdateCount := 0
+	skippedNoRouting := 0
 
 	for subjectURI, increment := range aggregated {
 		if subjectURI == "" {
@@ -1374,14 +1470,21 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 			continue
 		}
 
-		// Elasticsearch update action metadata
-		// Note: We use the subject_uri as the document ID since posts are keyed by at_uri
+		// Get routing value (author_did) for this post
+		authorDID, found := routingMap[subjectURI]
+		if !found || authorDID == "" {
+			// Post doesn't exist or wasn't found - skip update
+			// This is expected for likes that arrive before posts are indexed
+			skippedNoRouting++
+			continue
+		}
+
+		// Elasticsearch update action metadata WITH routing
 		meta := map[string]interface{}{
 			"update": map[string]interface{}{
-				"_index": index,
-				"_id":    subjectURI,
-				// No routing specified - we don't know the author_did
-				// This means the update will be broadcast to all shards
+				"_index":  index,
+				"_id":     subjectURI,
+				"routing": authorDID, // CRITICAL: Include routing for posts index
 			},
 		}
 
@@ -1417,8 +1520,16 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	}
 
 	if validUpdateCount == 0 {
-		logger.Error("No valid updates to perform (all had empty subject_uri)")
+		if skippedNoRouting > 0 {
+			logger.Debug("Skipped %d like count updates for non-existent posts (expected behavior)", skippedNoRouting)
+		}
+		logger.Error("No valid updates to perform (all had empty subject_uri or posts not found)")
 		return fmt.Errorf("no valid updates in batch")
+	}
+
+	// Log if we skipped some updates
+	if skippedNoRouting > 0 {
+		logger.Debug("Skipped %d like count updates for non-existent posts (expected behavior)", skippedNoRouting)
 	}
 
 	res, err := client.Bulk(
@@ -1454,7 +1565,7 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	}
 
 	if bulkResponse.Errors {
-		// Check if all errors are 404s (post doesn't exist)
+		// Check errors - routing errors should now be resolved
 		hasRealErrors := false
 		notFoundCount := 0
 
