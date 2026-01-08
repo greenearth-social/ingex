@@ -68,11 +68,7 @@ func TestLikeCountUpdate_Aggregation(t *testing.T) {
 		{SubjectURI: "at://post3", Increment: 5},
 	}
 
-	// Simulate aggregation logic from BulkUpdatePostLikeCounts
-	aggregated := make(map[string]int)
-	for _, update := range updates {
-		aggregated[update.SubjectURI] += update.Increment
-	}
+	aggregated := aggregateLikeCountUpdates(updates)
 
 	if aggregated["at://post1"] != 3 {
 		t.Errorf("Expected post1 to have 3 updates, got %d", aggregated["at://post1"])
@@ -93,10 +89,7 @@ func TestLikeCountUpdate_Aggregation(t *testing.T) {
 		{SubjectURI: "at://post1", Increment: -1},
 	}
 
-	aggregated2 := make(map[string]int)
-	for _, update := range updates2 {
-		aggregated2[update.SubjectURI] += update.Increment
-	}
+	aggregated2 := aggregateLikeCountUpdates(updates2)
 
 	if aggregated2["at://post1"] != 2 {
 		t.Errorf("Expected post1 to have net increment of 2, got %d", aggregated2["at://post1"])

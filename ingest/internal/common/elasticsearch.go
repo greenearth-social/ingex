@@ -1339,6 +1339,16 @@ func BulkCountLikesBySubjectURIs(ctx context.Context, client *elasticsearch.Clie
 	return result, nil
 }
 
+// aggregateLikeCountUpdates aggregates multiple updates to the same post
+// Returns a map of subject_uri -> total increment
+func aggregateLikeCountUpdates(updates []LikeCountUpdate) map[string]int {
+	aggregated := make(map[string]int)
+	for _, update := range updates {
+		aggregated[update.SubjectURI] += update.Increment
+	}
+	return aggregated
+}
+
 // BulkUpdatePostLikeCounts updates like_count fields on posts using the ES update API
 // Uses scripted updates with upsert=false to ignore non-existent posts
 // TODO: Add routing support using author_did to avoid broadcasting updates to all shards
@@ -1353,10 +1363,7 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	}
 
 	// Aggregate updates by subject_uri (in case same post appears multiple times)
-	aggregated := make(map[string]int)
-	for _, update := range updates {
-		aggregated[update.SubjectURI] += update.Increment
-	}
+	aggregated := aggregateLikeCountUpdates(updates)
 
 	var buf bytes.Buffer
 	validUpdateCount := 0
