@@ -84,21 +84,6 @@ func main() {
 
 // checkForNewerInstance checks if another instance has started after us
 // Returns true if a newer instance is detected
-func checkForNewerInstance(stateManager *common.StateManager, myStartTime int64, logger *common.IngestLogger) bool {
-	instanceInfo, err := stateManager.ReadInstanceInfo()
-	if err != nil {
-		// If we can't read the file, assume it's not there yet or temporary error
-		logger.Debug("Could not read instance info (may not exist yet): %v", err)
-		return false
-	}
-
-	if instanceInfo.StartedAt > myStartTime {
-		logger.Info("Detected newer instance started at %d (my start time: %d), shutting down", instanceInfo.StartedAt, myStartTime)
-		return true
-	}
-
-	return false
-}
 
 func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, source, mode string, dryRun, skipTLSVerify, noRewind, startupWithLastFile bool, maxRewindMinutes int) error {
 	// Validate source parameter
@@ -282,13 +267,13 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						processedCount += len(batch)
 						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
 						if processedCount%1000 == 0 {
-							if checkForNewerInstance(stateManager, myStartTime, logger) {
+							if stateManager.CheckForNewerInstance(myStartTime) {
 								logger.Info("Newer instance detected, exiting cleanly")
 								cancelBatchCtx()
 								goto cleanup
 							}
 						}
-												if dryRun {
+						if dryRun {
 							logger.Info("Dry-run: Would index batch before account deletion: %d documents", len(batch))
 						} else {
 							logger.Info("Indexed batch before account deletion: %d documents", len(batch))
@@ -378,13 +363,13 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						processedCount += len(batch)
 						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
 						if processedCount%1000 == 0 {
-							if checkForNewerInstance(stateManager, myStartTime, logger) {
+							if stateManager.CheckForNewerInstance(myStartTime) {
 								logger.Info("Newer instance detected, exiting cleanly")
 								cancelBatchCtx()
 								goto cleanup
 							}
 						}
-												if dryRun {
+						if dryRun {
 							logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)
 						} else {
 							logger.Debug("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", len(batch), processedCount, deletedCount, skippedCount)

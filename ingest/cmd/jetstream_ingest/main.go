@@ -94,22 +94,6 @@ func main() {
 
 // checkForNewerInstance checks if another instance has started after us
 // Returns true if a newer instance is detected
-func checkForNewerInstance(stateManager *common.StateManager, myStartTime int64, logger *common.IngestLogger) bool {
-	instanceInfo, err := stateManager.ReadInstanceInfo()
-	if err != nil {
-		// If we can't read the file, assume it's not there yet or temporary error
-		logger.Debug("Could not read instance info (may not exist yet): %v", err)
-		return false
-	}
-
-	if instanceInfo.StartedAt > myStartTime {
-		logger.Info("Detected newer instance started at %d (my start time: %d), shutting down", instanceInfo.StartedAt, myStartTime)
-		return true
-	}
-
-	return false
-}
-
 func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify, noRewind bool, maxRewindMinutes int) {
 	stateManager, err := common.NewStateManager(config.JetstreamStateFile, logger)
 	if err != nil {
@@ -384,7 +368,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 						// Check if a newer instance has started (every 10 batches to avoid excessive GCS reads)
 						if processedCount%1000 == 0 {
-							if checkForNewerInstance(stateManager, myStartTime, logger) {
+							if stateManager.CheckForNewerInstance(myStartTime) {
 								logger.Info("Newer instance detected, exiting cleanly")
 								goto cleanup
 							}

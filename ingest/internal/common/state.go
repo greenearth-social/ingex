@@ -258,6 +258,24 @@ func (sm *StateManager) ReadInstanceInfo() (*InstanceInfo, error) {
 	return &info, nil
 }
 
+// CheckForNewerInstance checks if a newer instance has started by comparing start times.
+// Returns true if a newer instance is detected, false otherwise.
+func (sm *StateManager) CheckForNewerInstance(myStartTime int64) bool {
+	instanceInfo, err := sm.ReadInstanceInfo()
+	if err != nil {
+		// If we can't read the file, assume it's not there yet or temporary error
+		sm.logger.Debug("Could not read instance info (may not exist yet): %v", err)
+		return false
+	}
+
+	if instanceInfo.StartedAt > myStartTime {
+		sm.logger.Info("Detected newer instance started at %d (my start time: %d), shutting down", instanceInfo.StartedAt, myStartTime)
+		return true
+	}
+
+	return false
+}
+
 // getInstancePath returns the GCS object path for instance info (replaces _state.json with _instance.json)
 func (sm *StateManager) getInstancePath() string {
 	if sm.useGCS {
