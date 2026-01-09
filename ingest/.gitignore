@@ -1,6 +1,8 @@
 # binaries
 bin/
 
-# state file
+# state files
 .megastream_state.json
 .jetstream_state.json
+.megastream_instance.json
+.jetstream_instance.json

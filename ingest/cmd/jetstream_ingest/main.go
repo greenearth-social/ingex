@@ -216,7 +216,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	}
 
 	// Start worker pool for parallel Elasticsearch writes
-	const numWorkers = 3
+	const numWorkers = 10
 	workersDone := make(chan struct{})
 	go func() {
 		var wg sync.WaitGroup
@@ -504,6 +504,20 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 						} else {
 							logger.Debug("Worker %d: Deleted %d likes (freshness: %ds)", id, len(job.deleteBatch), freshnessSeconds)
 						}
+
+						// Decrement like counts on posts
+						updates := make([]common.LikeCountUpdate, len(job.tombstoneBatch))
+						for i, tombstone := range job.tombstoneBatch {
+							updates[i] = common.LikeCountUpdate{
+								SubjectURI: tombstone.SubjectURI,
+								Increment:  -1,
+							}
+						}
+
+						if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
+							logger.Error("Worker %d: Failed to decrement post like counts: %v", id, err)
+							// Don't set success=false - this is a secondary operation
+						}
 					}
 				}
 			}
@@ -519,6 +533,20 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 					logger.Debug("Worker %d: Dry-run: Would index %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
 				} else {
 					logger.Debug("Worker %d: Indexed %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
+				}
+
+				// Update like counts on posts
+				updates := make([]common.LikeCountUpdate, len(job.batch))
+				for i, like := range job.batch {
+					updates[i] = common.LikeCountUpdate{
+						SubjectURI: like.SubjectURI,
+						Increment:  1,
+					}
+				}
+
+				if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
+					logger.Error("Worker %d: Failed to update post like counts: %v", id, err)
+					// Don't set success=false - this is a secondary operation
 				}
 			}
 		}

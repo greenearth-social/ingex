@@ -40,7 +40,7 @@ func TestDeleteMessageFlow(t *testing.T) {
 		t.Error("Expected post message to not be a delete")
 	}
 
-	postDoc := CreateElasticsearchDoc(postMsg)
+	postDoc := CreateElasticsearchDoc(postMsg, 0)
 	if postDoc.AtURI != postAtURI {
 		t.Errorf("Expected AtURI %s, got %s", postAtURI, postDoc.AtURI)
 	}
