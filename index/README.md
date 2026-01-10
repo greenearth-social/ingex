@@ -67,100 +67,51 @@ The deployment script automatically handles all setup steps including Elasticsea
 
 ## Deployment Guide
 
-The deployment infrastructure uses **Kustomize** for configuration management with a shared base and environment-specific overlays.
-
 ### Prerequisites
 
-**Local Environment:**
-
-- Docker
-- minikube or other local Kubernetes cluster
+**All Environments:**
 - kubectl
-- ECK operator installed (or use `--install-eck` flag)
+- `GE_ELASTICSEARCH_SERVICE_USER_PWD` environment variable set
 
-**Stage/Prod Environments:**
+**Local:**
+- Docker and minikube (or other local Kubernetes cluster)
 
+**Stage/Prod:**
 - Google Cloud CLI (`gcloud`) installed and authenticated
-- **Kubernetes Engine Admin** IAM role for ECK operator installation
-- kubectl installed locally
-- ECK operator installed (or use `--install-eck` flag)
-- VPC network setup completed (see `../network/README.md`)
+- **Kubernetes Engine Admin** IAM role (for ECK operator installation)
 
-### Automated Deployment
+### Deploy
 
-The simplest way to deploy is using the automated deployment script:
+Use the automated deployment script for all environments:
 
 ```bash
-# Set required environment variable
+# Set required environment variable (use fc -p to avoid shell history)
 export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 
-# Deploy to local environment
-./deploy.sh local
+# Deploy to any environment
+./deploy.sh local   # or stage, prod
 
-# Deploy to stage with ECK installation
-./deploy.sh stage --install-eck
-
-# See all options
-./deploy.sh --help
+# Common options
+./deploy.sh local --install-eck   # Install ECK operator first
+./deploy.sh local --dry-run       # Preview changes without applying
+./deploy.sh local --teardown      # Delete environment (prompts for confirmation)
 ```
 
-#### Deployment Script Options
+The script automatically:
+- Detects changes (schema, resources, or both)
+- Creates/updates infrastructure using Kustomize
+- Deploys Elasticsearch and Kibana via ECK operator
+- Sets up authentication and bootstrap indices
+- Tracks deployment state for graceful updates
 
-- `--install-eck`: Install ECK operator before deployment
-- `--dry-run`: Show what would be deployed without applying
-- `--teardown`: Delete the entire environment (prompts for confirmation)
-- `--no-timeout`: Wait indefinitely for resources (no timeout)
+### Configuration Structure
 
-### Manual Deployment (Advanced)
+Kustomize base + overlay architecture:
+- **`deploy/k8s/base/`** - Shared configuration for all environments
+- **`deploy/k8s/environments/local/`** - Local overrides (2GB memory, 5GB storage)
+- **`deploy/k8s/environments/stage/`** - Stage overrides (12GB memory, 20GB storage)
 
-If you prefer manual deployment or need to customize the process:
-
-```bash
-# 1. Set environment variables
-export GE_ENVIRONMENT=local  # or stage
-export GE_K8S_NAMESPACE=greenearth-$GE_ENVIRONMENT
-export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
-
-# 2. Create namespace
-kubectl create namespace $GE_K8S_NAMESPACE
-
-# 3. For stage only: Deploy DaemonSet
-kubectl apply -f deploy/k8s/environments/stage/max-map-count-daemonset.yaml
-
-# 4. Deploy all resources using Kustomize
-kubectl apply -k deploy/k8s/environments/$GE_ENVIRONMENT
-
-# 5. Wait for resources to be ready
-kubectl get elasticsearch,kibana -n $GE_K8S_NAMESPACE -w
-
-# 6. Create service user secret
-kubectl create secret generic es-service-user-secret \
-  --from-literal=username="es-service-user" \
-  --from-literal=password="$GE_ELASTICSEARCH_SERVICE_USER_PWD" \
-  -n $GE_K8S_NAMESPACE
-
-# 7. Deploy and wait for service user setup job
-kubectl apply -f deploy/k8s/base/es-service-user-setup-job.yaml -n $GE_K8S_NAMESPACE
-kubectl wait --for=condition=complete --timeout=180s job/es-service-user-setup -n $GE_K8S_NAMESPACE
-
-# 8. Deploy and wait for bootstrap job
-kubectl apply -f deploy/k8s/base/bootstrap-job.yaml -n $GE_K8S_NAMESPACE
-kubectl wait --for=condition=complete --timeout=180s job/elasticsearch-bootstrap -n $GE_K8S_NAMESPACE
-```
-
-### Kustomize Configuration
-
-The deployment uses Kustomize with a base + overlay structure:
-
-- **base/**: Shared configuration for all environments
-  - Elasticsearch, Kibana, bootstrap job, service user setup
-  - Index templates and aliases (shared across environments)
-- **environments/local/**: Local-specific overrides
-  - 2GB memory, mmap disabled, 5GB storage
-- **environments/stage/**: Stage-specific overrides
-  - 12GB memory, mmap enabled, 20GB storage, DaemonSet for vm.max_map_count
-
-This structure eliminates configuration duplication and makes it easy to add new environments.
+To customize an environment, edit the overlay in `deploy/k8s/environments/<env>/kustomization.yaml`.
 
 ## Graceful Updates
 
