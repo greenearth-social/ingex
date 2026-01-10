@@ -5,6 +5,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 K8S_DIR="$SCRIPT_DIR/deploy/k8s"
 
+# Source change detection library
+source "$SCRIPT_DIR/lib/change-detector.sh"
+
 # set default cluster, region, project id
 GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
 GE_GCP_PROJECT_ID="${GE_GCP_PROJECT_ID:-greenearth-471522}"
@@ -336,41 +339,155 @@ teardown_environment() {
     log_success "Environment $GE_ENVIRONMENT has been deleted"
 }
 
-deploy_environment() {
-    local environment=$1
-    local namespace="greenearth-$environment"
+verify_cluster_health() {
+    local namespace=$1
+    local required_health=${2:-yellow}
 
-    GE_K8S_CLUSTER="${GE_K8S_CLUSTER:-greenearth-$environment-cluster}"
+    log_info "Checking cluster health..."
 
-    if [ "$TEARDOWN" = true ]; then
-        setup_kubectl_context "$environment" false
-        teardown_environment "$namespace"
-        exit 0
+    if ! kubectl get elasticsearch greenearth -n "$namespace" &>/dev/null; then
+        log_info "Elasticsearch resource not found - assuming fresh deployment"
+        return 0
     fi
 
-    setup_kubectl_context "$environment" true
+    local health=$(kubectl get elasticsearch greenearth -n "$namespace" -o jsonpath='{.status.health}' 2>/dev/null || echo "")
 
-    log_info "Deploying to $environment environment (namespace: $namespace)"
-
-    trap "cleanup_on_failure $namespace" ERR
-
-    if [ "$INSTALL_ECK" = true ]; then
-        install_eck_operator
+    if [ -z "$health" ]; then
+        log_warning "Could not determine cluster health - proceeding with caution"
+        return 0
     fi
 
-    log_info "Creating namespace $namespace..."
-    if [ "$DRY_RUN" = true ]; then
-        log_info "[DRY RUN] Would create namespace $namespace"
+    if [ "$health" = "red" ]; then
+        log_error "Cluster health is RED - refusing to proceed"
+        return 1
+    fi
+
+    if [ "$required_health" = "green" ] && [ "$health" != "green" ]; then
+        log_error "Cluster health is $health but GREEN is required for $GE_ENVIRONMENT"
+        return 1
+    fi
+
+    log_success "Cluster health is $health"
+    return 0
+}
+
+update_deployment_state() {
+    local namespace=$1
+    local kustomize_dir=$2
+    local update_type=$3
+
+    log_info "Updating deployment state..."
+
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local template_checksum=$(compute_template_checksum "$kustomize_dir")
+    local deployment_count=$(kubectl get configmap elasticsearch-deployment-state \
+        -n "$namespace" \
+        -o jsonpath='{.data.deployment-count}' 2>/dev/null || echo "0")
+    deployment_count=$((deployment_count + 1))
+
+    local patch=""
+    if [ "$update_type" = "schema" ]; then
+        patch="{\"data\":{\"deployment-count\":\"$deployment_count\",\"last-schema-update\":\"$timestamp\",\"template-checksum\":\"$template_checksum\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
+    elif [ "$update_type" = "resource" ]; then
+        patch="{\"data\":{\"deployment-count\":\"$deployment_count\",\"last-resource-update\":\"$timestamp\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     else
-        kubectl create namespace $namespace 2>/dev/null || log_info "Namespace $namespace already exists"
+        patch="{\"data\":{\"deployment-count\":\"$deployment_count\",\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"template-checksum\":\"$template_checksum\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     fi
+
+    kubectl patch configmap elasticsearch-deployment-state \
+        -n "$namespace" \
+        --type merge \
+        -p "$patch" 2>/dev/null || log_warning "Could not update deployment state ConfigMap"
+
+    log_success "Deployment state updated"
+}
+
+deploy_schema_update() {
+    local namespace=$1
+    local kustomize_dir=$2
+
+    log_info "Deploying schema updates..."
+
+    verify_cluster_health "$namespace" "yellow" || {
+        log_error "Cluster health check failed"
+        exit 1
+    }
+
+    log_info "Applying updated ConfigMaps (templates)..."
+    kubectl apply -k "$kustomize_dir"
+
+    log_info "Cleaning up previous bootstrap job..."
+    kubectl delete job elasticsearch-bootstrap -n "$namespace" --ignore-not-found=true
+    kubectl wait --for=delete job/elasticsearch-bootstrap -n "$namespace" --timeout=30s 2>/dev/null || true
+
+    log_info "Running bootstrap job to update templates..."
+    kubectl apply -f "$K8S_DIR/base/bootstrap-job.yaml" -n "$namespace"
+
+    wait_for_job "elasticsearch-bootstrap" "$namespace" 180 || {
+        log_error "Bootstrap job failed"
+        kubectl logs -l job-name=elasticsearch-bootstrap -n "$namespace" --tail=100 2>/dev/null || true
+        exit 1
+    }
+
+    verify_cluster_health "$namespace" "yellow" || {
+        log_error "Cluster health degraded after schema update"
+        exit 1
+    }
+
+    update_deployment_state "$namespace" "$kustomize_dir" "schema"
+
+    log_success "Schema update completed successfully!"
+}
+
+deploy_resource_update() {
+    local namespace=$1
+    local kustomize_dir=$2
+
+    log_info "Deploying resource updates..."
+
+    local required_health="green"
+    if [ "$GE_ENVIRONMENT" != "prod" ]; then
+        required_health="yellow"
+    fi
+
+    verify_cluster_health "$namespace" "$required_health" || {
+        log_error "Cluster health check failed"
+        exit 1
+    }
+
+    log_info "Applying updated Elasticsearch manifest..."
+    kubectl apply -k "$kustomize_dir"
+
+    log_info "Monitoring ECK operator rolling update..."
+    log_info "Waiting for Elasticsearch resource to be ready..."
+
+    wait_for_resource "elasticsearch" "greenearth" "$namespace" 600 || {
+        log_error "Elasticsearch resource update failed"
+        exit 1
+    }
+
+    verify_cluster_health "$namespace" "$required_health" || {
+        log_error "Cluster health degraded after resource update"
+        exit 1
+    }
+
+    update_deployment_state "$namespace" "$kustomize_dir" "resource"
+
+    log_success "Resource update completed successfully!"
+}
+
+deploy_fresh_environment() {
+    local namespace=$1
+    local kustomize_dir=$2
+
+    log_info "Deploying fresh environment..."
 
     if [ "$environment" = "stage" ] || [ "$environment" = "prod" ]; then
         log_info "Deploying DaemonSet for vm.max_map_count..."
         if [ "$DRY_RUN" = true ]; then
             log_info "[DRY RUN] Would deploy max-map-count-daemonset"
         else
-            kubectl apply -f "$K8S_DIR/environments/$environment/max-map-count-daemonset.yaml"
+            kubectl apply -f "$K8S_DIR/environments/$GE_ENVIRONMENT/max-map-count-daemonset.yaml"
             log_info "Waiting 30 seconds for DaemonSet to initialize..."
             sleep 30
         fi
@@ -379,14 +496,11 @@ deploy_environment() {
     log_info "Applying Kustomize manifests..."
     if [ "$DRY_RUN" = true ]; then
         log_info "[DRY RUN] Would apply:"
-        kubectl kustomize "$K8S_DIR/environments/$environment"
-    else
-        kubectl apply -k "$K8S_DIR/environments/$environment"
-    fi
-
-    if [ "$DRY_RUN" = true ]; then
+        kubectl kustomize "$kustomize_dir"
         log_info "[DRY RUN] Deployment would continue with resource waiting and verification"
         exit 0
+    else
+        kubectl apply -k "$kustomize_dir"
     fi
 
     wait_for_resource "elasticsearch" "greenearth" "$namespace" 600 || {
@@ -423,6 +537,85 @@ deploy_environment() {
         log_error "Bootstrap job failed"
         exit 1
     }
+
+    # Initialize deployment state
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local template_checksum=$(compute_template_checksum "$kustomize_dir")
+
+    kubectl patch configmap elasticsearch-deployment-state \
+        -n "$namespace" \
+        --type merge \
+        -p "{\"data\":{\"deployment-count\":\"1\",\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"template-checksum\":\"$template_checksum\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}" 2>/dev/null || log_warning "Could not initialize deployment state ConfigMap"
+
+    log_success "Fresh deployment completed successfully!"
+}
+
+deploy_environment() {
+    local environment=$1
+    local namespace="greenearth-$environment"
+    local kustomize_dir="$K8S_DIR/environments/$environment"
+
+    GE_K8S_CLUSTER="${GE_K8S_CLUSTER:-greenearth-$environment-cluster}"
+
+    if [ "$TEARDOWN" = true ]; then
+        setup_kubectl_context "$environment" false
+        teardown_environment "$namespace"
+        exit 0
+    fi
+
+    setup_kubectl_context "$environment" true
+
+    log_info "Deploying to $environment environment (namespace: $namespace)"
+
+    trap "cleanup_on_failure $namespace" ERR
+
+    if [ "$INSTALL_ECK" = true ]; then
+        install_eck_operator
+    fi
+
+    log_info "Creating namespace $namespace..."
+    if [ "$DRY_RUN" = true ]; then
+        log_info "[DRY RUN] Would create namespace $namespace"
+    else
+        kubectl create namespace $namespace 2>/dev/null || log_info "Namespace $namespace already exists"
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        log_info "[DRY RUN] Would apply:"
+        kubectl kustomize "$kustomize_dir"
+        log_info "[DRY RUN] Deployment would continue with change detection and appropriate deployment mode"
+        exit 0
+    fi
+
+    # Detect deployment mode
+    local deployment_mode=$(get_deployment_mode "$namespace" "$kustomize_dir")
+    log_info "Deployment mode: $deployment_mode"
+
+    case $deployment_mode in
+        fresh)
+            deploy_fresh_environment "$namespace" "$kustomize_dir"
+            ;;
+        schema)
+            deploy_schema_update "$namespace" "$kustomize_dir"
+            ;;
+        resource)
+            deploy_resource_update "$namespace" "$kustomize_dir"
+            ;;
+        both)
+            log_info "Detected both schema and resource changes"
+            log_info "Applying resource updates first (safer), then schema updates"
+            deploy_resource_update "$namespace" "$kustomize_dir"
+            deploy_schema_update "$namespace" "$kustomize_dir"
+            ;;
+        none)
+            log_info "No changes detected - deployment is up to date"
+            exit 0
+            ;;
+        *)
+            log_error "Unknown deployment mode: $deployment_mode"
+            exit 1
+            ;;
+    esac
 
     log_success "Deployment to $environment completed successfully!"
     echo ""
