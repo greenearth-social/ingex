@@ -107,9 +107,9 @@ export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 #### Deployment Script Options
 
 - `--install-eck`: Install ECK operator before deployment
-- `--skip-templates`: Skip template/alias ConfigMaps (for updates)
 - `--dry-run`: Show what would be deployed without applying
 - `--teardown`: Delete the entire environment (prompts for confirmation)
+- `--no-timeout`: Wait indefinitely for resources (no timeout)
 
 ### Manual Deployment (Advanced)
 
@@ -161,6 +161,238 @@ The deployment uses Kustomize with a base + overlay structure:
   - 12GB memory, mmap enabled, 20GB storage, DaemonSet for vm.max_map_count
 
 This structure eliminates configuration duplication and makes it easy to add new environments.
+
+## Graceful Updates
+
+The deployment system supports graceful updates with zero or minimal downtime through intelligent change detection and deployment mode selection.
+
+### Deployment Modes
+
+When you run `./deploy.sh`, the script automatically detects what has changed and selects the appropriate deployment mode:
+
+- **Fresh**: No existing deployment found - performs initial setup
+- **Schema**: Index templates changed - updates templates for non-breaking schema changes
+- **Resource**: Elasticsearch compute/storage resources changed - performs rolling update via ECK
+- **Both**: Both schema and resources changed - updates resources first, then schema
+- **None**: No changes detected - deployment is already up to date
+
+### Supported Schema Changes (Non-Breaking)
+
+The deployment system supports the following **non-breaking** schema changes without reindexing:
+
+✅ **Supported (Zero Downtime)**:
+- **Adding new fields** to existing indices (indexed or non-indexed)
+- **Adding dense_vector fields** for embeddings
+- **Creating entirely new index types** (e.g., adding a `reposts` index)
+- **Updating analyzers** (affects new documents only)
+
+When you make these changes:
+- Templates are updated via `PUT /_index_template` (idempotent operation)
+- **New documents** ingested after the update will include the new fields
+- **Existing documents** won't have the new fields (treated as `null` in queries - Elasticsearch handles this gracefully)
+- No reindexing needed - fully backward compatible
+
+❌ **Not Supported (Requires Reindexing - Out of Scope)**:
+- **Changing field data types** (e.g., `text` → `keyword`)
+- **Changing number of shards** (immutable after index creation)
+- **Changing indexed fields** to non-indexed or vice versa
+- **Major mapping restructuring**
+
+These breaking changes would require blue-green deployment with reindexing, which is not implemented in the current system. If you need to make breaking changes, you'll need to manually create new indices and reindex data.
+
+### Deployment Version Tracking
+
+The system tracks deployment state in a ConfigMap called `elasticsearch-deployment-state`:
+
+```bash
+# Check current deployment version
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o yaml
+
+# View deployment metadata
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.metadata.annotations}'
+
+# Check template checksum (changes when templates are updated)
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.template-checksum}'
+
+# View last schema update timestamp
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.last-schema-update}'
+
+# View last resource update timestamp
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.last-resource-update}'
+```
+
+The ConfigMap tracks:
+- **deployment-count**: Number of successful deployments
+- **last-schema-update**: Timestamp of last schema (template) update
+- **last-resource-update**: Timestamp of last resource (CPU/memory) update
+- **template-checksum**: SHA256 hash of all template ConfigMaps
+- **index-types**: Comma-separated list of index types
+
+### Deploying Non-Breaking Schema Changes
+
+**Example**: Adding a `reply_count` field to the posts index
+
+1. Edit the template file:
+```bash
+vim deploy/k8s/base/templates/posts-index-template.yaml
+```
+
+Add the new field to the `properties` section:
+```yaml
+reply_count:
+  type: integer
+  index: true
+```
+
+2. Deploy the change:
+```bash
+export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-password"
+./deploy.sh local  # or stage, prod
+```
+
+The deployment script will:
+- Detect that templates have changed (mode: `schema`)
+- Update the `posts_template` via `PUT /_index_template/posts_template`
+- Verify cluster health remains green/yellow
+- Update deployment state ConfigMap
+
+3. Verify the template was updated:
+```bash
+kubectl port-forward svc/greenearth-es-http 9200 -n greenearth-local &
+curl -k -u "elastic:PASSWORD" "https://localhost:9200/_index_template/posts_template"
+```
+
+4. Test with new documents:
+```bash
+# New documents can include the reply_count field
+curl -k -X POST "https://localhost:9200/posts/_doc" \
+  -u "es-service-user:PASSWORD" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"test post","reply_count":5}'
+
+# Existing documents continue to work (reply_count will be null)
+curl -k "https://localhost:9200/posts/_search?q=content:test"
+```
+
+### Deploying Resource Updates
+
+**Example**: Increasing Elasticsearch memory from 2Gi to 4Gi
+
+1. Edit the environment overlay:
+```bash
+vim deploy/k8s/environments/local/kustomization.yaml
+```
+
+Update the memory patch:
+```yaml
+- op: replace
+  path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
+  value: 4Gi
+```
+
+2. Deploy the change:
+```bash
+./deploy.sh local
+```
+
+The deployment script will:
+- Detect that Elasticsearch resources have changed (mode: `resource`)
+- Verify cluster health is green/yellow before proceeding
+- Apply the updated Elasticsearch manifest
+- ECK operator performs rolling update (one pod at a time)
+- Wait for all pods to be updated and cluster to return to healthy state
+- Update deployment state ConfigMap
+
+3. Verify the update:
+```bash
+# Check pod resources
+kubectl get pod elasticsearch-es-default-0 -n greenearth-local -o jsonpath='{.spec.containers[0].resources}'
+
+# Check cluster health
+kubectl get elasticsearch greenearth -n greenearth-local -o jsonpath='{.status.health}'
+```
+
+**Expected disruption**: ~30 seconds per node during rolling update. ECK maintains cluster quorum and redistributes shards gracefully.
+
+### Rollback Procedures
+
+#### Rolling Back Schema Changes (Non-Breaking)
+
+Since non-breaking schema changes only affect future documents, rollback is straightforward:
+
+```bash
+# 1. Revert the template change in git
+git revert <commit-hash>
+
+# 2. Redeploy
+./deploy.sh local
+
+# Result:
+# - Template reverted to previous version
+# - Future documents will use old schema
+# - Existing documents are unaffected (they already have whatever fields they have)
+```
+
+**Note**: If your application is already using new fields, you may need to handle `null` values gracefully when querying older documents that don't have those fields.
+
+#### Rolling Back Resource Changes
+
+```bash
+# 1. Revert the resource change in git
+git revert <commit-hash>
+
+# 2. Redeploy
+./deploy.sh local
+
+# Result:
+# - ECK operator performs rolling update back to previous spec
+# - Cluster remains available during rollback
+```
+
+#### Emergency Rollback (Manual)
+
+If the automated rollback doesn't work, you can manually intervene:
+
+**For schema changes**:
+```bash
+# Get the previous template version from git or backup
+git show HEAD~1:index/deploy/k8s/base/templates/posts-index-template.yaml > /tmp/old-template.yaml
+
+# Manually update template
+kubectl port-forward svc/greenearth-es-http 9200 -n greenearth-local &
+curl -k -X PUT "https://localhost:9200/_index_template/posts_template" \
+  -u "es-service-user:PASSWORD" \
+  -H "Content-Type: application/json" \
+  -d @/tmp/old-template.json
+```
+
+**For resource changes**:
+```bash
+# Edit Elasticsearch resource directly
+kubectl edit elasticsearch greenearth -n greenearth-local
+
+# Revert the spec changes manually
+# Save and exit - ECK will roll back
+```
+
+### Best Practices for Production Deployments
+
+1. **Always test in local first**: `./deploy.sh local`
+2. **Then test in stage**: `./deploy.sh stage`
+3. **Review deployment state** before and after:
+   ```bash
+   kubectl get configmap elasticsearch-deployment-state -n greenearth-stage -o yaml
+   ```
+4. **Use dry-run to preview changes**:
+   ```bash
+   ./deploy.sh prod --dry-run
+   ```
+5. **Monitor cluster health during and after deployment**:
+   ```bash
+   watch kubectl get elasticsearch greenearth -n greenearth-prod -o jsonpath='{.status.health}'
+   ```
+6. **Check application metrics** for errors after schema changes
+7. **Have rollback plan ready** before deploying to production
 
 ## Accessing the Cluster
 
