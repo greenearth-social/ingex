@@ -5,9 +5,6 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 K8S_DIR="$SCRIPT_DIR/deploy/k8s"
 
-# Source change detection library
-source "$SCRIPT_DIR/lib/change-detector.sh"
-
 # set default cluster, region, project id
 GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
 GE_GCP_PROJECT_ID="${GE_GCP_PROJECT_ID:-greenearth-471522}"
@@ -19,8 +16,12 @@ print_usage() {
     echo "  environment         Target environment: local, stage, or prod"
     echo ""
     echo "Options:"
+    echo "  --ctypes <types>    Comma-separated change types: init, schema, resource, or schema,resource"
+    echo "                      - init: Fresh deployment (cannot be combined with other types)"
+    echo "                      - schema: Update index templates only"
+    echo "                      - resource: Update Elasticsearch compute/storage resources"
+    echo "                      - schema,resource: Update both (resources first, then schema)"
     echo "  --install-eck       Install ECK operator before deployment"
-    echo "  --skip-templates    Skip template/alias ConfigMaps (for updates)"
     echo "  --dry-run           Show what would be deployed without applying"
     echo "  --no-timeout        Wait indefinitely for resources (no timeout)"
     echo "  --teardown          Delete the entire environment (prompts for confirmation)"
@@ -30,10 +31,11 @@ print_usage() {
     echo "  GE_ELASTICSEARCH_SERVICE_USER_PWD    Password for the Elasticsearch service user"
     echo ""
     echo "Examples:"
-    echo "  $0 local                    # Deploy to local environment"
-    echo "  $0 stage --install-eck      # Deploy to stage with ECK installation"
-    echo "  $0 prod --no-timeout        # Deploy to prod with no timeout"
-    echo "  $0 local --teardown         # Delete local environment"
+    echo "  $0 local --ctypes init              # Fresh deployment"
+    echo "  $0 stage --ctypes schema            # Update templates only"
+    echo "  $0 prod --ctypes resource           # Update resources only"
+    echo "  $0 stage --ctypes schema,resource   # Update both"
+    echo "  $0 local --teardown                 # Delete local environment"
 }
 
 log_info() {
@@ -371,15 +373,18 @@ verify_cluster_health() {
     return 0
 }
 
+get_git_sha() {
+    git rev-parse --short HEAD 2>/dev/null || echo "unknown"
+}
+
 update_deployment_state() {
     local namespace=$1
-    local kustomize_dir=$2
-    local update_type=$3
+    local update_type=$2
 
     log_info "Updating deployment state..."
 
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    local template_checksum=$(compute_template_checksum "$kustomize_dir")
+    local git_sha=$(get_git_sha)
     local deployment_count=$(kubectl get configmap elasticsearch-deployment-state \
         -n "$namespace" \
         -o jsonpath='{.data.deployment-count}' 2>/dev/null || echo "0")
@@ -387,11 +392,11 @@ update_deployment_state() {
 
     local patch=""
     if [ "$update_type" = "schema" ]; then
-        patch="{\"data\":{\"deployment-count\":\"$deployment_count\",\"last-schema-update\":\"$timestamp\",\"template-checksum\":\"$template_checksum\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
+        patch="{\"data\":{\"deployment-count\":\"$deployment_count\",\"last-schema-update\":\"$timestamp\",\"template-checksum\":\"$git_sha\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     elif [ "$update_type" = "resource" ]; then
         patch="{\"data\":{\"deployment-count\":\"$deployment_count\",\"last-resource-update\":\"$timestamp\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     else
-        patch="{\"data\":{\"deployment-count\":\"$deployment_count\",\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"template-checksum\":\"$template_checksum\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
+        patch="{\"data\":{\"deployment-count\":\"$deployment_count\",\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"template-checksum\":\"$git_sha\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     fi
 
     kubectl patch configmap elasticsearch-deployment-state \
@@ -399,7 +404,7 @@ update_deployment_state() {
         --type merge \
         -p "$patch" 2>/dev/null || log_warning "Could not update deployment state ConfigMap"
 
-    log_success "Deployment state updated"
+    log_success "Deployment state updated (git SHA: $git_sha)"
 }
 
 deploy_schema_update() {
@@ -434,7 +439,7 @@ deploy_schema_update() {
         exit 1
     }
 
-    update_deployment_state "$namespace" "$kustomize_dir" "schema"
+    update_deployment_state "$namespace" "schema"
 
     log_success "Schema update completed successfully!"
 }
@@ -471,18 +476,18 @@ deploy_resource_update() {
         exit 1
     }
 
-    update_deployment_state "$namespace" "$kustomize_dir" "resource"
+    update_deployment_state "$namespace" "resource"
 
     log_success "Resource update completed successfully!"
 }
 
-deploy_fresh_environment() {
+deploy_init() {
     local namespace=$1
     local kustomize_dir=$2
 
-    log_info "Deploying fresh environment..."
+    log_info "Deploying fresh environment (init)..."
 
-    if [ "$environment" = "stage" ] || [ "$environment" = "prod" ]; then
+    if [ "$GE_ENVIRONMENT" = "stage" ] || [ "$GE_ENVIRONMENT" = "prod" ]; then
         log_info "Deploying DaemonSet for vm.max_map_count..."
         if [ "$DRY_RUN" = true ]; then
             log_info "[DRY RUN] Would deploy max-map-count-daemonset"
@@ -540,12 +545,12 @@ deploy_fresh_environment() {
 
     # Initialize deployment state
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    local template_checksum=$(compute_template_checksum "$kustomize_dir")
+    local git_sha=$(get_git_sha)
 
     kubectl patch configmap elasticsearch-deployment-state \
         -n "$namespace" \
         --type merge \
-        -p "{\"data\":{\"deployment-count\":\"1\",\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"template-checksum\":\"$template_checksum\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}" 2>/dev/null || log_warning "Could not initialize deployment state ConfigMap"
+        -p "{\"data\":{\"deployment-count\":\"1\",\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"template-checksum\":\"$git_sha\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}" 2>/dev/null || log_warning "Could not initialize deployment state ConfigMap"
 
     log_success "Fresh deployment completed successfully!"
 }
@@ -583,39 +588,36 @@ deploy_environment() {
     if [ "$DRY_RUN" = true ]; then
         log_info "[DRY RUN] Would apply:"
         kubectl kustomize "$kustomize_dir"
-        log_info "[DRY RUN] Deployment would continue with change detection and appropriate deployment mode"
+        log_info "[DRY RUN] Deployment would continue with ctypes: $CHANGE_TYPES"
         exit 0
     fi
 
-    # Detect deployment mode
-    local deployment_mode=$(get_deployment_mode "$namespace" "$kustomize_dir")
-    log_info "Deployment mode: $deployment_mode"
+    # Validate change types
+    if [ -z "$CHANGE_TYPES" ]; then
+        log_error "Missing required --ctypes flag"
+        echo ""
+        print_usage
+        exit 1
+    fi
 
-    case $deployment_mode in
-        fresh)
-            deploy_fresh_environment "$namespace" "$kustomize_dir"
-            ;;
-        schema)
-            deploy_schema_update "$namespace" "$kustomize_dir"
-            ;;
-        resource)
-            deploy_resource_update "$namespace" "$kustomize_dir"
-            ;;
-        both)
-            log_info "Detected both schema and resource changes"
-            log_info "Applying resource updates first (safer), then schema updates"
-            deploy_resource_update "$namespace" "$kustomize_dir"
-            deploy_schema_update "$namespace" "$kustomize_dir"
-            ;;
-        none)
-            log_info "No changes detected - deployment is up to date"
-            exit 0
-            ;;
-        *)
-            log_error "Unknown deployment mode: $deployment_mode"
-            exit 1
-            ;;
-    esac
+    log_info "Change types: $CHANGE_TYPES"
+
+    # Parse change types and execute appropriate deployment
+    if [ "$CHANGE_TYPES" = "init" ]; then
+        deploy_init "$namespace" "$kustomize_dir"
+    elif [ "$CHANGE_TYPES" = "schema" ]; then
+        deploy_schema_update "$namespace" "$kustomize_dir"
+    elif [ "$CHANGE_TYPES" = "resource" ]; then
+        deploy_resource_update "$namespace" "$kustomize_dir"
+    elif [ "$CHANGE_TYPES" = "schema,resource" ] || [ "$CHANGE_TYPES" = "resource,schema" ]; then
+        log_info "Applying resource updates first (safer), then schema updates"
+        deploy_resource_update "$namespace" "$kustomize_dir"
+        deploy_schema_update "$namespace" "$kustomize_dir"
+    else
+        log_error "Invalid --ctypes value: $CHANGE_TYPES"
+        log_error "Valid options: init, schema, resource, schema,resource"
+        exit 1
+    fi
 
     log_success "Deployment to $environment completed successfully!"
     echo ""
@@ -627,10 +629,10 @@ deploy_environment() {
 
 GE_ENVIRONMENT=""
 INSTALL_ECK=false
-SKIP_TEMPLATES=false
 DRY_RUN=false
 NO_TIMEOUT=false
 TEARDOWN=false
+CHANGE_TYPES=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -638,12 +640,24 @@ while [[ $# -gt 0 ]]; do
             GE_ENVIRONMENT="$1"
             shift
             ;;
+        --ctypes)
+            CHANGE_TYPES="$2"
+            # Validate ctypes format
+            if [[ "$CHANGE_TYPES" =~ ^init$ ]]; then
+                # init is valid on its own
+                :
+            elif [[ "$CHANGE_TYPES" =~ ^(schema|resource|schema,resource|resource,schema)$ ]]; then
+                # Valid combinations
+                :
+            else
+                log_error "Invalid --ctypes value: $CHANGE_TYPES"
+                log_error "Valid options: init, schema, resource, schema,resource"
+                exit 1
+            fi
+            shift 2
+            ;;
         --install-eck)
             INSTALL_ECK=true
-            shift
-            ;;
-        --skip-templates)
-            SKIP_TEMPLATES=true
             shift
             ;;
         --dry-run)

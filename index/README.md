@@ -56,14 +56,17 @@ fc -p
 # Set the service user password
 export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 
-# Deploy to local environment
-./deploy.sh local
+# Fresh deployment (first time)
+./deploy.sh local --ctypes init
 
-# Deploy to stage environment
-./deploy.sh stage
+# Update index templates
+./deploy.sh local --ctypes schema
+
+# Update compute/storage resources
+./deploy.sh local --ctypes resource
 ```
 
-The deployment script automatically handles all setup steps including Elasticsearch, Kibana, service user creation, and index template configuration.
+The deployment script handles all setup steps including Elasticsearch, Kibana, service user creation, and index template configuration.
 
 ## Deployment Guide
 
@@ -88,21 +91,29 @@ Use the automated deployment script for all environments:
 # Set required environment variable (use fc -p to avoid shell history)
 export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 
-# Deploy to any environment
-./deploy.sh local   # or stage, prod
+# Deploy to any environment with change type
+./deploy.sh local --ctypes init              # Fresh deployment
+./deploy.sh local --ctypes schema            # Update templates
+./deploy.sh local --ctypes resource          # Update resources
+./deploy.sh local --ctypes schema,resource   # Update both
 
 # Common options
-./deploy.sh local --install-eck   # Install ECK operator first
-./deploy.sh local --dry-run       # Preview changes without applying
-./deploy.sh local --teardown      # Delete environment (prompts for confirmation)
+./deploy.sh local --ctypes init --install-eck   # Install ECK operator first
+./deploy.sh local --ctypes schema --dry-run     # Preview changes
+./deploy.sh local --teardown                    # Delete environment
 ```
 
-The script automatically:
-- Detects changes (schema, resources, or both)
+**Change Types (`--ctypes`)**:
+- **`init`** - Fresh deployment (cannot be combined with other types)
+- **`schema`** - Update index templates only
+- **`resource`** - Update Elasticsearch compute/storage resources
+- **`schema,resource`** - Update both (resources first, then schema)
+
+The script:
 - Creates/updates infrastructure using Kustomize
 - Deploys Elasticsearch and Kibana via ECK operator
 - Sets up authentication and bootstrap indices
-- Tracks deployment state for graceful updates
+- Tracks deployment state with git SHA checksums
 
 ### Configuration Structure
 
@@ -115,17 +126,14 @@ To customize an environment, edit the overlay in `deploy/k8s/environments/<env>/
 
 ## Graceful Updates
 
-The deployment system supports graceful updates with zero or minimal downtime through intelligent change detection and deployment mode selection.
+The deployment system supports graceful updates with zero or minimal downtime. You specify what to update using the `--ctypes` flag.
 
-### Deployment Modes
+### Change Types
 
-When you run `./deploy.sh`, the script automatically detects what has changed and selects the appropriate deployment mode:
-
-- **Fresh**: No existing deployment found - performs initial setup
-- **Schema**: Index templates changed - updates templates for non-breaking schema changes
-- **Resource**: Elasticsearch compute/storage resources changed - performs rolling update via ECK
-- **Both**: Both schema and resources changed - updates resources first, then schema
-- **None**: No changes detected - deployment is already up to date
+- **`init`** - Fresh deployment (first time setup)
+- **`schema`** - Update index templates for non-breaking schema changes
+- **`resource`** - Update Elasticsearch compute/storage resources via ECK rolling update
+- **`schema,resource`** - Update both (resources first, then schema)
 
 ### Supported Schema Changes (Non-Breaking)
 
@@ -162,7 +170,7 @@ kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o yaml
 # View deployment metadata
 kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.metadata.annotations}'
 
-# Check template checksum (changes when templates are updated)
+# Check git SHA (tracks manifest version at deployment time)
 kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.template-checksum}'
 
 # View last schema update timestamp
@@ -176,7 +184,7 @@ The ConfigMap tracks:
 - **deployment-count**: Number of successful deployments
 - **last-schema-update**: Timestamp of last schema (template) update
 - **last-resource-update**: Timestamp of last resource (CPU/memory) update
-- **template-checksum**: SHA256 hash of all template ConfigMaps
+- **template-checksum**: Git SHA of manifest at deployment time
 - **index-types**: Comma-separated list of index types
 
 ### Deploying Non-Breaking Schema Changes
@@ -198,14 +206,13 @@ reply_count:
 2. Deploy the change:
 ```bash
 export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-password"
-./deploy.sh local  # or stage, prod
+./deploy.sh local --ctypes schema  # or stage, prod
 ```
 
 The deployment script will:
-- Detect that templates have changed (mode: `schema`)
 - Update the `posts_template` via `PUT /_index_template/posts_template`
 - Verify cluster health remains green/yellow
-- Update deployment state ConfigMap
+- Update deployment state ConfigMap with git SHA
 
 3. Verify the template was updated:
 ```bash
@@ -243,11 +250,10 @@ Update the memory patch:
 
 2. Deploy the change:
 ```bash
-./deploy.sh local
+./deploy.sh local --ctypes resource
 ```
 
 The deployment script will:
-- Detect that Elasticsearch resources have changed (mode: `resource`)
 - Verify cluster health is green/yellow before proceeding
 - Apply the updated Elasticsearch manifest
 - ECK operator performs rolling update (one pod at a time)
@@ -276,7 +282,7 @@ Since non-breaking schema changes only affect future documents, rollback is stra
 git revert <commit-hash>
 
 # 2. Redeploy
-./deploy.sh local
+./deploy.sh local --ctypes schema
 
 # Result:
 # - Template reverted to previous version
@@ -293,7 +299,7 @@ git revert <commit-hash>
 git revert <commit-hash>
 
 # 2. Redeploy
-./deploy.sh local
+./deploy.sh local --ctypes resource
 
 # Result:
 # - ECK operator performs rolling update back to previous spec
@@ -328,15 +334,15 @@ kubectl edit elasticsearch greenearth -n greenearth-local
 
 ### Best Practices for Production Deployments
 
-1. **Always test in local first**: `./deploy.sh local`
-2. **Then test in stage**: `./deploy.sh stage`
+1. **Always test in local first**: `./deploy.sh local --ctypes schema`
+2. **Then test in stage**: `./deploy.sh stage --ctypes schema`
 3. **Review deployment state** before and after:
    ```bash
    kubectl get configmap elasticsearch-deployment-state -n greenearth-stage -o yaml
    ```
 4. **Use dry-run to preview changes**:
    ```bash
-   ./deploy.sh prod --dry-run
+   ./deploy.sh prod --ctypes schema --dry-run
    ```
 5. **Monitor cluster health during and after deployment**:
    ```bash
