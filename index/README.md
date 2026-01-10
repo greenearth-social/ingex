@@ -171,7 +171,7 @@ kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o yaml
 kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.metadata.annotations}'
 
 # Check git SHA (tracks manifest version at deployment time)
-kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.template-checksum}'
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.deployment-git-sha}'
 
 # View last schema update timestamp
 kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.last-schema-update}'
@@ -181,10 +181,9 @@ kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o json
 ```
 
 The ConfigMap tracks:
-- **deployment-count**: Number of successful deployments
 - **last-schema-update**: Timestamp of last schema (template) update
 - **last-resource-update**: Timestamp of last resource (CPU/memory) update
-- **template-checksum**: Git SHA of manifest at deployment time
+- **deployment-git-sha**: Git SHA of manifest at deployment time
 - **index-types**: Comma-separated list of index types
 
 ### Deploying Non-Breaking Schema Changes

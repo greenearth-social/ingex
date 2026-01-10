@@ -385,18 +385,14 @@ update_deployment_state() {
 
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     local git_sha=$(get_git_sha)
-    local deployment_count=$(kubectl get configmap elasticsearch-deployment-state \
-        -n "$namespace" \
-        -o jsonpath='{.data.deployment-count}' 2>/dev/null || echo "0")
-    deployment_count=$((deployment_count + 1))
 
     local patch=""
     if [ "$update_type" = "schema" ]; then
-        patch="{\"data\":{\"deployment-count\":\"$deployment_count\",\"last-schema-update\":\"$timestamp\",\"template-checksum\":\"$git_sha\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
+        patch="{\"data\":{\"last-schema-update\":\"$timestamp\",\"deployment-git-sha\":\"$git_sha\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     elif [ "$update_type" = "resource" ]; then
-        patch="{\"data\":{\"deployment-count\":\"$deployment_count\",\"last-resource-update\":\"$timestamp\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
+        patch="{\"data\":{\"last-resource-update\":\"$timestamp\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     else
-        patch="{\"data\":{\"deployment-count\":\"$deployment_count\",\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"template-checksum\":\"$git_sha\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
+        patch="{\"data\":{\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"deployment-git-sha\":\"$git_sha\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     fi
 
     kubectl patch configmap elasticsearch-deployment-state \
@@ -550,7 +546,7 @@ deploy_init() {
     kubectl patch configmap elasticsearch-deployment-state \
         -n "$namespace" \
         --type merge \
-        -p "{\"data\":{\"deployment-count\":\"1\",\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"template-checksum\":\"$git_sha\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}" 2>/dev/null || log_warning "Could not initialize deployment state ConfigMap"
+        -p "{\"data\":{\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"deployment-git-sha\":\"$git_sha\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}" 2>/dev/null || log_warning "Could not initialize deployment state ConfigMap"
 
     log_success "Fresh deployment completed successfully!"
 }
