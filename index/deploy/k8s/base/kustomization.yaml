@@ -5,8 +5,8 @@ resources:
   - elasticsearch.yaml
   - elasticsearch-internal-lb.yaml
   - kibana.yaml
-  - bootstrap-job.yaml
   - es-service-user-setup-job.yaml
+  - deployment-state-configmap.yaml
   - templates/posts-index-template.yaml
   - templates/post-tombstones-index-template.yaml
   - templates/likes-index-template.yaml

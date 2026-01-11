@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-deployment-state
+  annotations:
+    last-deployment: ""
+    deployed-by: "deploy.sh"
+data:
+  last-schema-update: ""
+  last-resource-update: ""
+  deployment-git-sha: ""
+  index-types: "posts,likes,post_tombstones,like_tombstones"

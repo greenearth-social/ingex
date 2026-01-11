@@ -56,111 +56,299 @@ fc -p
 # Set the service user password
 export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 
-# Deploy to local environment
-./deploy.sh local
+# Fresh deployment (first time)
+./deploy.sh local --ctypes init
 
-# Deploy to stage environment
-./deploy.sh stage
+# Update index templates
+./deploy.sh local --ctypes schema
+
+# Update compute/storage resources
+./deploy.sh local --ctypes resource
 ```
 
-The deployment script automatically handles all setup steps including Elasticsearch, Kibana, service user creation, and index template configuration.
+The deployment script handles all setup steps including Elasticsearch, Kibana, service user creation, and index template configuration.
 
 ## Deployment Guide
 
-The deployment infrastructure uses **Kustomize** for configuration management with a shared base and environment-specific overlays.
-
 ### Prerequisites
 
-**Local Environment:**
-
-- Docker
-- minikube or other local Kubernetes cluster
+**All Environments:**
 - kubectl
-- ECK operator installed (or use `--install-eck` flag)
+- `GE_ELASTICSEARCH_SERVICE_USER_PWD` environment variable set
 
-**Stage/Prod Environments:**
+**Local:**
+- Docker and minikube (or other local Kubernetes cluster)
 
+**Stage/Prod:**
 - Google Cloud CLI (`gcloud`) installed and authenticated
-- **Kubernetes Engine Admin** IAM role for ECK operator installation
-- kubectl installed locally
-- ECK operator installed (or use `--install-eck` flag)
-- VPC network setup completed (see `../network/README.md`)
+- **Kubernetes Engine Admin** IAM role (for ECK operator installation)
 
-### Automated Deployment
+### Deploy
 
-The simplest way to deploy is using the automated deployment script:
+Use the automated deployment script for all environments:
 
 ```bash
-# Set required environment variable
+# Set required environment variable (use fc -p to avoid shell history)
 export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 
-# Deploy to local environment
-./deploy.sh local
+# Deploy to any environment with change type
+./deploy.sh local --ctypes init              # Fresh deployment
+./deploy.sh local --ctypes schema            # Update templates
+./deploy.sh local --ctypes resource          # Update resources
+./deploy.sh local --ctypes schema,resource   # Update both
 
-# Deploy to stage with ECK installation
-./deploy.sh stage --install-eck
-
-# See all options
-./deploy.sh --help
+# Common options
+./deploy.sh local --ctypes init --install-eck   # Install ECK operator first
+./deploy.sh local --ctypes schema --dry-run     # Preview changes
+./deploy.sh local --teardown                    # Delete environment
 ```
 
-#### Deployment Script Options
+**Change Types (`--ctypes`)**:
+- **`init`** - Fresh deployment (cannot be combined with other types)
+- **`schema`** - Update index templates only
+- **`resource`** - Update Elasticsearch compute/storage resources
+- **`schema,resource`** - Update both (resources first, then schema)
 
-- `--install-eck`: Install ECK operator before deployment
-- `--skip-templates`: Skip template/alias ConfigMaps (for updates)
-- `--dry-run`: Show what would be deployed without applying
-- `--teardown`: Delete the entire environment (prompts for confirmation)
+The script:
+- Creates/updates infrastructure using Kustomize
+- Deploys Elasticsearch and Kibana via ECK operator
+- Sets up authentication and bootstrap indices
+- Tracks deployment state with git SHA checksums
 
-### Manual Deployment (Advanced)
+### Configuration Structure
 
-If you prefer manual deployment or need to customize the process:
+Kustomize base + overlay architecture:
+- **`deploy/k8s/base/`** - Shared configuration for all environments
+- **`deploy/k8s/environments/local/`** - Local overrides (2GB memory, 5GB storage)
+- **`deploy/k8s/environments/stage/`** - Stage overrides (12GB memory, 20GB storage)
+
+To customize an environment, edit the overlay in `deploy/k8s/environments/<env>/kustomization.yaml`.
+
+## Graceful Updates
+
+The deployment system supports graceful updates with zero or minimal downtime. You specify what to update using the `--ctypes` flag.
+
+### Change Types
+
+- **`init`** - Fresh deployment (first time setup)
+- **`schema`** - Update index templates for non-breaking schema changes
+- **`resource`** - Update Elasticsearch compute/storage resources via ECK rolling update
+- **`schema,resource`** - Update both (resources first, then schema)
+
+### Supported Schema Changes (Non-Breaking)
+
+The deployment system supports the following **non-breaking** schema changes without reindexing:
+
+✅ **Supported (Zero Downtime)**:
+- **Adding new fields** to existing indices (indexed or non-indexed)
+- **Adding dense_vector fields** for embeddings
+- **Creating entirely new index types** (e.g., adding a `reposts` index)
+- **Updating analyzers** (affects new documents only)
+
+When you make these changes:
+- Templates are updated via `PUT /_index_template` (idempotent operation)
+- **New documents** ingested after the update will include the new fields
+- **Existing documents** won't have the new fields (treated as `null` in queries - Elasticsearch handles this gracefully)
+- No reindexing needed - fully backward compatible
+
+❌ **Not Supported (Requires Reindexing - Out of Scope)**:
+- **Changing field data types** (e.g., `text` → `keyword`)
+- **Changing number of shards** (immutable after index creation)
+- **Changing indexed fields** to non-indexed or vice versa
+- **Major mapping restructuring**
+
+These breaking changes would require blue-green deployment with reindexing, which is not implemented in the current system. If you need to make breaking changes, you'll need to manually create new indices and reindex data.
+
+### Deployment Version Tracking
+
+The system tracks deployment state in a ConfigMap called `elasticsearch-deployment-state`:
 
 ```bash
-# 1. Set environment variables
-export GE_ENVIRONMENT=local  # or stage
-export GE_K8S_NAMESPACE=greenearth-$GE_ENVIRONMENT
-export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
+# Check current deployment version
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o yaml
 
-# 2. Create namespace
-kubectl create namespace $GE_K8S_NAMESPACE
+# View deployment metadata
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.metadata.annotations}'
 
-# 3. For stage only: Deploy DaemonSet
-kubectl apply -f deploy/k8s/environments/stage/max-map-count-daemonset.yaml
+# Check git SHA (tracks manifest version at deployment time)
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.deployment-git-sha}'
 
-# 4. Deploy all resources using Kustomize
-kubectl apply -k deploy/k8s/environments/$GE_ENVIRONMENT
+# View last schema update timestamp
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.last-schema-update}'
 
-# 5. Wait for resources to be ready
-kubectl get elasticsearch,kibana -n $GE_K8S_NAMESPACE -w
-
-# 6. Create service user secret
-kubectl create secret generic es-service-user-secret \
-  --from-literal=username="es-service-user" \
-  --from-literal=password="$GE_ELASTICSEARCH_SERVICE_USER_PWD" \
-  -n $GE_K8S_NAMESPACE
-
-# 7. Deploy and wait for service user setup job
-kubectl apply -f deploy/k8s/base/es-service-user-setup-job.yaml -n $GE_K8S_NAMESPACE
-kubectl wait --for=condition=complete --timeout=180s job/es-service-user-setup -n $GE_K8S_NAMESPACE
-
-# 8. Deploy and wait for bootstrap job
-kubectl apply -f deploy/k8s/base/bootstrap-job.yaml -n $GE_K8S_NAMESPACE
-kubectl wait --for=condition=complete --timeout=180s job/elasticsearch-bootstrap -n $GE_K8S_NAMESPACE
+# View last resource update timestamp
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.last-resource-update}'
 ```
 
-### Kustomize Configuration
+The ConfigMap tracks:
+- **last-schema-update**: Timestamp of last schema (template) update
+- **last-resource-update**: Timestamp of last resource (CPU/memory) update
+- **deployment-git-sha**: Git SHA of manifest at deployment time
+- **index-types**: Comma-separated list of index types
 
-The deployment uses Kustomize with a base + overlay structure:
+### Deploying Non-Breaking Schema Changes
 
-- **base/**: Shared configuration for all environments
-  - Elasticsearch, Kibana, bootstrap job, service user setup
-  - Index templates and aliases (shared across environments)
-- **environments/local/**: Local-specific overrides
-  - 2GB memory, mmap disabled, 5GB storage
-- **environments/stage/**: Stage-specific overrides
-  - 12GB memory, mmap enabled, 20GB storage, DaemonSet for vm.max_map_count
+**Example**: Adding a `reply_count` field to the posts index
 
-This structure eliminates configuration duplication and makes it easy to add new environments.
+1. Edit the template file:
+```bash
+vim deploy/k8s/base/templates/posts-index-template.yaml
+```
+
+Add the new field to the `properties` section:
+```yaml
+reply_count:
+  type: integer
+  index: true
+```
+
+2. Deploy the change:
+```bash
+export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-password"
+./deploy.sh local --ctypes schema  # or stage, prod
+```
+
+The deployment script will:
+- Update the `posts_template` via `PUT /_index_template/posts_template`
+- Verify cluster health remains green/yellow
+- Update deployment state ConfigMap with git SHA
+
+3. Verify the template was updated:
+```bash
+kubectl port-forward svc/greenearth-es-http 9200 -n greenearth-local &
+curl -k -u "elastic:PASSWORD" "https://localhost:9200/_index_template/posts_template"
+```
+
+4. Test with new documents:
+```bash
+# New documents can include the reply_count field
+curl -k -X POST "https://localhost:9200/posts/_doc" \
+  -u "es-service-user:PASSWORD" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"test post","reply_count":5}'
+
+# Existing documents continue to work (reply_count will be null)
+curl -k "https://localhost:9200/posts/_search?q=content:test"
+```
+
+### Deploying Resource Updates
+
+**Example**: Increasing Elasticsearch memory from 2Gi to 4Gi
+
+1. Edit the environment overlay:
+```bash
+vim deploy/k8s/environments/local/kustomization.yaml
+```
+
+Update the memory patch:
+```yaml
+- op: replace
+  path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
+  value: 4Gi
+```
+
+2. Deploy the change:
+```bash
+./deploy.sh local --ctypes resource
+```
+
+The deployment script will:
+- Verify cluster health is green/yellow before proceeding
+- Apply the updated Elasticsearch manifest
+- ECK operator performs rolling update (one pod at a time)
+- Wait for all pods to be updated and cluster to return to healthy state
+- Update deployment state ConfigMap
+
+3. Verify the update:
+```bash
+# Check pod resources
+kubectl get pod elasticsearch-es-default-0 -n greenearth-local -o jsonpath='{.spec.containers[0].resources}'
+
+# Check cluster health
+kubectl get elasticsearch greenearth -n greenearth-local -o jsonpath='{.status.health}'
+```
+
+**Expected disruption**: ~30 seconds per node during rolling update. ECK maintains cluster quorum and redistributes shards gracefully.
+
+### Rollback Procedures
+
+#### Rolling Back Schema Changes (Non-Breaking)
+
+Since non-breaking schema changes only affect future documents, rollback is straightforward:
+
+```bash
+# 1. Revert the template change in git
+git revert <commit-hash>
+
+# 2. Redeploy
+./deploy.sh local --ctypes schema
+
+# Result:
+# - Template reverted to previous version
+# - Future documents will use old schema
+# - Existing documents are unaffected (they already have whatever fields they have)
+```
+
+**Note**: If your application is already using new fields, you may need to handle `null` values gracefully when querying older documents that don't have those fields.
+
+#### Rolling Back Resource Changes
+
+```bash
+# 1. Revert the resource change in git
+git revert <commit-hash>
+
+# 2. Redeploy
+./deploy.sh local --ctypes resource
+
+# Result:
+# - ECK operator performs rolling update back to previous spec
+# - Cluster remains available during rollback
+```
+
+#### Emergency Rollback (Manual)
+
+If the automated rollback doesn't work, you can manually intervene:
+
+**For schema changes**:
+```bash
+# Get the previous template version from git or backup
+git show HEAD~1:index/deploy/k8s/base/templates/posts-index-template.yaml > /tmp/old-template.yaml
+
+# Manually update template
+kubectl port-forward svc/greenearth-es-http 9200 -n greenearth-local &
+curl -k -X PUT "https://localhost:9200/_index_template/posts_template" \
+  -u "es-service-user:PASSWORD" \
+  -H "Content-Type: application/json" \
+  -d @/tmp/old-template.json
+```
+
+**For resource changes**:
+```bash
+# Edit Elasticsearch resource directly
+kubectl edit elasticsearch greenearth -n greenearth-local
+
+# Revert the spec changes manually
+# Save and exit - ECK will roll back
+```
+
+### Best Practices for Production Deployments
+
+1. **Always test in local first**: `./deploy.sh local --ctypes schema`
+2. **Then test in stage**: `./deploy.sh stage --ctypes schema`
+3. **Review deployment state** before and after:
+   ```bash
+   kubectl get configmap elasticsearch-deployment-state -n greenearth-stage -o yaml
+   ```
+4. **Use dry-run to preview changes**:
+   ```bash
+   ./deploy.sh prod --ctypes schema --dry-run
+   ```
+5. **Monitor cluster health during and after deployment**:
+   ```bash
+   watch kubectl get elasticsearch greenearth -n greenearth-prod -o jsonpath='{.status.health}'
+   ```
+6. **Check application metrics** for errors after schema changes
+7. **Have rollback plan ready** before deploying to production
 
 ## Accessing the Cluster
 
