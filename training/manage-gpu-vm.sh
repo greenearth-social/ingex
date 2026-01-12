@@ -3,7 +3,7 @@
 set -e
 
 VM_NAME="ge-ml-training"
-ZONE="us-east1-c"
+ZONE="us-east1-d"
 MACHINE_TYPE="n1-highmem-16"
 GPU_TYPE="nvidia-tesla-t4"
 GPU_COUNT="1"
@@ -72,7 +72,7 @@ Options:
     --install-drivers          Include startup script to install NVIDIA drivers and CUDA toolkit
     --ssh-key <path>           Path to SSH public key file for direct SSH access (e.g., ~/.ssh/id_rsa.pub)
     --data-disk <disk-name>    Attach existing persistent disk instead of creating new one
-    --zone <zone>              Override default zone (default: us-east1-c)
+    --zone <zone>              Override default zone (default: us-east1-d)
     -h, --help                 Show this help message
 
 Examples:
@@ -80,9 +80,9 @@ Examples:
     $0 create --install-drivers                  Create VM with Ops Agent and NVIDIA drivers
     $0 create --ssh-key ~/.ssh/id_rsa.pub        Create VM with SSH key for direct access
     $0 create --data-disk my-training-data       Attach existing disk instead of creating new
-    $0 create --zone us-east1-d                  Create VM in different zone
+    $0 create --zone us-east1-c                  Create VM in different zone
     $0 create --install-drivers --ssh-key ~/.ssh/id_rsa.pub   Create with all features
-    $0 destroy --zone us-east1-d                 Delete VM (data disk preserved)
+    $0 destroy --zone us-east1-c                 Delete VM (data disk preserved)
     $0 status                                    Show VM status
 
 Features:
