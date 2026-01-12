@@ -7,7 +7,7 @@ ZONE="us-east1-c"
 MACHINE_TYPE="n1-highmem-16"
 GPU_TYPE="nvidia-tesla-t4"
 GPU_COUNT="1"
-BOOT_DISK_SIZE="50GB"
+BOOT_DISK_SIZE="256GB"
 DATA_DISK_NAME="${VM_NAME}-data"
 DATA_DISK_SIZE="256GB"
 DATA_DISK_TYPE="pd-ssd"
@@ -22,16 +22,28 @@ sudo bash add-google-cloud-ops-agent-repo.sh --also-install
 '
 
 DATA_DISK_SETUP_SCRIPT='
-# Setup data disk (idempotent)
-if ! grep -q "/mnt/data" /etc/fstab; then
-  echo "Formatting and mounting data disk..."
-  mkfs.ext4 -F /dev/disk/by-id/google-persistent-disk-1
-  mkdir -p /mnt/data
-  echo "/dev/disk/by-id/google-persistent-disk-1 /mnt/data ext4 defaults 0 2" >> /etc/fstab
-  mount /mnt/data
-  echo "Data disk mounted at /mnt/data"
+# Setup data disk (idempotent - checks disk itself, not fstab)
+DISK_DEVICE="/dev/disk/by-id/google-persistent-disk-1"
+
+# Check if disk already has a filesystem
+if blkid "${DISK_DEVICE}" &>/dev/null; then
+  echo "Data disk already has a filesystem, skipping format"
 else
-  echo "Data disk already configured"
+  echo "Formatting new data disk..."
+  mkfs.ext4 "${DISK_DEVICE}"
+fi
+
+# Mount if not already mounted
+if ! mountpoint -q /mnt/data; then
+  mkdir -p /mnt/data
+  mount "${DISK_DEVICE}" /mnt/data
+  echo "Data disk mounted at /mnt/data"
+fi
+
+# Add to fstab if not already there
+if ! grep -q "/mnt/data" /etc/fstab; then
+  echo "${DISK_DEVICE} /mnt/data ext4 defaults 0 2" >> /etc/fstab
+  echo "Added to /etc/fstab"
 fi
 '
 
