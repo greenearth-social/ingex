@@ -11,7 +11,7 @@ if [ -z "$GE_ELASTICSEARCH_API_KEY" ]; then
 fi
 
 echo "Removing read-only block from all indices..."
-curl -X PUT "${GE_ELASTICSEARCH_URL}/_all/_settings" \
+curl -k -X PUT "${GE_ELASTICSEARCH_URL}/_all/_settings" \
   -H "Authorization: ApiKey ${GE_ELASTICSEARCH_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
@@ -20,10 +20,10 @@ curl -X PUT "${GE_ELASTICSEARCH_URL}/_all/_settings" \
 
 echo ""
 echo "Checking cluster status..."
-curl -X GET "${GE_ELASTICSEARCH_URL}/_cluster/health?pretty" \
+curl -k -X GET "${GE_ELASTICSEARCH_URL}/_cluster/health?pretty" \
   -H "Authorization: ApiKey ${GE_ELASTICSEARCH_API_KEY}"
 
 echo ""
 echo "Checking disk usage..."
-curl -X GET "${GE_ELASTICSEARCH_URL}/_cat/allocation?v&h=node,disk.used_percent,disk.used,disk.avail,disk.total" \
+curl -k -X GET "${GE_ELASTICSEARCH_URL}/_cat/allocation?v&h=node,disk.used_percent,disk.used,disk.avail,disk.total" \
   -H "Authorization: ApiKey ${GE_ELASTICSEARCH_API_KEY}"
