@@ -10,7 +10,7 @@ require (
 	github.com/elastic/go-elasticsearch/v9 v9.2.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/parquet-go/parquet-go v0.26.4
-	modernc.org/sqlite v1.42.2
+	modernc.org/sqlite v1.43.0
 )
 
 require (
