@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v9"
@@ -72,6 +73,13 @@ type LikeTombstoneDoc struct {
 	SubjectURI string `json:"subject_uri"`
 	DeletedAt  string `json:"deleted_at"`
 	IndexedAt  string `json:"indexed_at"`
+}
+
+// HashtagUpdate represents a hashtag count update for a specific hour
+type HashtagUpdate struct {
+	Hashtag string
+	Hour    string // ISO8601 timestamp truncated to hour
+	Count   int    // Amount to increment by
 }
 
 // DeleteDoc represents a document to be deleted with routing information
@@ -1591,5 +1599,195 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	}
 
 	logger.Debug("Successfully updated like counts for %d posts", validUpdateCount)
+	return nil
+}
+
+// ExtractHashtags extracts hashtags from post content and returns them with hour bucket and count
+// The hour is derived from the post's createdAt timestamp, truncated to the hour
+func ExtractHashtags(content, createdAt string) []HashtagUpdate {
+	if content == "" {
+		return nil
+	}
+
+	// Parse the created_at timestamp to determine the hour bucket
+	var hour string
+	if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
+		// Truncate to hour
+		hour = t.Truncate(time.Hour).Format(time.RFC3339)
+	} else {
+		// Fallback to current hour if parsing fails (shouldn't happen)
+		hour = time.Now().UTC().Truncate(time.Hour).Format(time.RFC3339)
+	}
+
+	// Extract unique hashtags from content
+	hashtags := make(map[string]bool)
+	words := []rune(content)
+	inHashtag := false
+	var currentTag []rune
+
+	for i := 0; i < len(words); i++ {
+		char := words[i]
+
+		if char == '#' {
+			// Start of a hashtag
+			if len(currentTag) > 0 {
+				// Save previous hashtag
+				tag := string(currentTag)
+				if len(tag) > 0 {
+					hashtags[tag] = true
+				}
+				currentTag = currentTag[:0]
+			}
+			inHashtag = true
+		} else if inHashtag {
+			// Continue hashtag if alphanumeric or underscore
+			if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+				(char >= '0' && char <= '9') || char == '_' {
+				currentTag = append(currentTag, char)
+			} else {
+				// End of hashtag
+				if len(currentTag) > 0 {
+					tag := strings.ToLower(string(currentTag))
+					hashtags[tag] = true
+				}
+				currentTag = currentTag[:0]
+				inHashtag = false
+			}
+		}
+	}
+
+	// Don't forget the last hashtag if content ends with one
+	if len(currentTag) > 0 {
+		tag := strings.ToLower(string(currentTag))
+		if len(tag) > 0 {
+			hashtags[tag] = true
+		}
+	}
+
+	// Convert to updates (already lowercase from extraction)
+	updates := make([]HashtagUpdate, 0, len(hashtags))
+	for tag := range hashtags {
+		updates = append(updates, HashtagUpdate{
+			Hashtag: tag,
+			Hour:    hour,
+			Count:   1, // Each post counts as 1 for each unique hashtag
+		})
+	}
+
+	return updates
+}
+
+// BulkUpdateHashtagCounts updates hashtag counts in Elasticsearch using the _update API with scripted upserts
+// This increments the count for each hashtag-hour combination
+func BulkUpdateHashtagCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []HashtagUpdate, dryRun bool, logger *IngestLogger) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	if dryRun {
+		logger.Debug("Dry-run: Skipping bulk update of %d hashtag counts to index '%s'", len(updates), index)
+		return nil
+	}
+
+	var buf bytes.Buffer
+	validUpdateCount := 0
+
+	for _, update := range updates {
+		if update.Hashtag == "" || update.Hour == "" {
+			logger.Error("Skipping hashtag update with empty hashtag or hour")
+			continue
+		}
+
+		// Create a document ID that combines hashtag and hour for uniqueness
+		// Use lowercase for case-insensitive counting
+		docID := fmt.Sprintf("%s_%s", update.Hashtag, update.Hour)
+
+		meta := map[string]interface{}{
+			"update": map[string]interface{}{
+				"_index": index,
+				"_id":    docID,
+			},
+		}
+
+		validUpdateCount++
+
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			return fmt.Errorf("failed to marshal metadata: %w", err)
+		}
+
+		buf.Write(metaJSON)
+		buf.WriteByte('\n')
+
+		// Use scripted upsert to increment count or create new document
+		updateDoc := map[string]interface{}{
+			"script": map[string]interface{}{
+				"source": "ctx._source.count += params.increment",
+				"params": map[string]interface{}{
+					"increment": update.Count,
+				},
+				"lang": "painless",
+			},
+			"upsert": map[string]interface{}{
+				"hashtag": update.Hashtag,
+				"hour":    update.Hour,
+				"count":   update.Count,
+			},
+			"scripted_upsert": true,
+		}
+
+		updateJSON, err := json.Marshal(updateDoc)
+		if err != nil {
+			return fmt.Errorf("failed to marshal update document: %w", err)
+		}
+
+		buf.Write(updateJSON)
+		buf.WriteByte('\n')
+	}
+
+	if validUpdateCount == 0 {
+		logger.Error("No valid hashtag updates to perform")
+		return fmt.Errorf("no valid updates in batch")
+	}
+
+	res, err := client.Bulk(
+		bytes.NewReader(buf.Bytes()),
+		client.Bulk.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("bulk request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return fmt.Errorf("bulk request returned error: %s", res.String())
+	}
+
+	var bulkResponse struct {
+		Errors bool `json:"errors"`
+		Items  []map[string]struct {
+			Status int `json:"status"`
+			Error  *struct {
+				Type   string `json:"type"`
+				Reason string `json:"reason"`
+			} `json:"error"`
+		} `json:"items"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
+		return fmt.Errorf("failed to parse bulk response: %w", err)
+	}
+
+	if bulkResponse.Errors {
+		itemsJSON, _ := json.Marshal(bulkResponse.Items)
+		logger.Error("Bulk hashtag update failed with errors. Response items: %s", string(itemsJSON))
+		return fmt.Errorf("bulk hashtag update failed: some updates had errors (see logs for details)")
+	}
+
+	logger.Debug("Successfully updated %d hashtag counts", validUpdateCount)
 	return nil
 }
