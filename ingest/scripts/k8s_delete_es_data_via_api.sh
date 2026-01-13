@@ -138,43 +138,7 @@ echo "Deletion complete! Indices removed."
 '
 
 echo ""
-echo "Recreating indices with bootstrap job..."
-
-# Find the git repository root
-GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-if [ -z "$GIT_ROOT" ]; then
-  echo "Error: Not in a git repository. Cannot locate bootstrap job YAML file."
-  exit 1
-fi
-
-# Determine which environment overlay to use
-K8S_ENV_DIR="${GIT_ROOT}/index/deploy/k8s/environments/${GE_ENVIRONMENT}"
-if [ ! -d "$K8S_ENV_DIR" ]; then
-  echo "Warning: Environment directory not found at: ${K8S_ENV_DIR}"
-  echo "Falling back to base configuration"
-  K8S_ENV_DIR="${GIT_ROOT}/index/deploy/k8s/base"
-fi
-
-echo "Using Kubernetes configuration from: ${K8S_ENV_DIR}"
-
-# Delete existing bootstrap job if it exists (to allow recreation)
-echo "Deleting existing bootstrap job if present..."
-kubectl delete job elasticsearch-bootstrap -n "${GE_K8S_NAMESPACE}" 2>/dev/null || true
-
-# Apply all templates using Kustomize to properly substitute variables
-echo "Applying index templates, aliases ConfigMaps, and bootstrap job using Kustomize..."
-kubectl apply -k "${K8S_ENV_DIR}" -n "${GE_K8S_NAMESPACE}"
-
-echo ""
-echo "Waiting for bootstrap job to complete..."
-kubectl wait --for=condition=complete --timeout=300s job/elasticsearch-bootstrap -n "${GE_K8S_NAMESPACE}" || {
-  echo "Warning: Bootstrap job did not complete within timeout. Check job status:"
-  echo "  kubectl get jobs -n ${GE_K8S_NAMESPACE}"
-  echo "  kubectl logs -n ${GE_K8S_NAMESPACE} job/elasticsearch-bootstrap"
-}
-
-echo ""
-echo "Done! Indices have been recreated."
+echo "Next, recreate indices using index/deploy.sh $GE_ENVIRONMENT --ctype schema"
 
 # Restart ingest services for stage/prod
 if [ "$GE_ENVIRONMENT" = "stage" ] || [ "$GE_ENVIRONMENT" = "prod" ]; then
@@ -191,3 +155,6 @@ else
   echo "kubectl exec -n ${GE_K8S_NAMESPACE} <elasticsearch-pod-name> -- df -h /usr/share/elasticsearch/data"
   echo "(Run 'kubectl get pods -n ${GE_K8S_NAMESPACE}' to find the Elasticsearch pod name)"
 fi
+
+echo ""
+echo "If receiving '...index has read-only-allow-delete block...' errors, also run ./fix_es_readonly.sh"
