@@ -322,8 +322,8 @@ deploy_extract_job() {
 
     max_records=1000000      # 1M records
     window_minutes=33       # ~1/2 hour
-    indices="posts,likes"
-    log_info "$GE_ENVIRONMENT environment: 1M max records, approx. 30 min window, indices: posts,likes"
+    indices="posts,likes,hashtags"
+    log_info "$GE_ENVIRONMENT environment: 1M max records, approx. 30 min window, indices: posts,likes,hashtags"
     destination_bucket="$GE_GCP_PROJECT_ID-ingex-extract-$GE_ENVIRONMENT"
 
     # Prepare source directory (similar to expiry job)
@@ -343,7 +343,7 @@ deploy_extract_job() {
 GE_ELASTICSEARCH_TLS_SKIP_VERIFY: "true"
 GE_LOGGING_ENABLED: "true"
 GE_GIT_SHA: "$GIT_SHA"
-GE_EXTRACT_INDICES: "posts,likes"
+GE_EXTRACT_INDICES: "posts,likes,hashtags"
 GE_ELASTICSEARCH_URL: "$GE_ELASTICSEARCH_URL"
 GE_PARQUET_DESTINATION: "gs://$destination_bucket"
 GE_PARQUET_MAX_RECORDS: "$max_records"

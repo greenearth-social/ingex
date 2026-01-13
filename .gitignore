@@ -39,3 +39,7 @@ go.work.sum
 # Claude configurations
 claude.md
 .claude/
+
+ingest/extract
+ingest/elasticsearch_expiry
+ingest/megastream_ingest

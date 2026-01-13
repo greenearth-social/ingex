@@ -76,3 +76,28 @@ func LikeHitsToExtractLikes(hits []LikeHit) []ExtractLike {
 	}
 	return likes
 }
+
+// ExtractHashtag represents the Hashtag document structure for Parquet serialization
+type ExtractHashtag struct {
+	Hashtag string `json:"hashtag" parquet:"hashtag"`
+	Hour    string `json:"hour" parquet:"hour"`
+	Count   int    `json:"count" parquet:"count"`
+}
+
+// HashtagHitToExtractHashtag converts an Elasticsearch HashtagHit to an ExtractHashtag
+func HashtagHitToExtractHashtag(hit HashtagHit) ExtractHashtag {
+	return ExtractHashtag{
+		Hashtag: hit.Source.Hashtag,
+		Hour:    hit.Source.Hour,
+		Count:   hit.Source.Count,
+	}
+}
+
+// HashtagHitsToExtractHashtags converts multiple Elasticsearch HashtagHits to ExtractHashtags
+func HashtagHitsToExtractHashtags(hits []HashtagHit) []ExtractHashtag {
+	hashtags := make([]ExtractHashtag, len(hits))
+	for i, hit := range hits {
+		hashtags[i] = HashtagHitToExtractHashtag(hit)
+	}
+	return hashtags
+}

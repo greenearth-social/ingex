@@ -834,6 +834,35 @@ type LikeSearchResponse struct {
 	Hits     LikeHits   `json:"hits"`
 }
 
+// HashtagHit represents a hashtag search hit from Elasticsearch
+type HashtagHit struct {
+	ID     string        `json:"_id"`
+	Sort   []interface{} `json:"sort,omitempty"`
+	Source HashtagSource `json:"_source"`
+}
+
+// HashtagSource represents the _source field of a Hashtag document in Elasticsearch
+type HashtagSource struct {
+	Hashtag string `json:"hashtag"`
+	Hour    string `json:"hour"`
+	Count   int    `json:"count"`
+}
+
+// HashtagHits contains the hashtag search results
+type HashtagHits struct {
+	Total    TotalHits    `json:"total"`
+	MaxScore float64      `json:"max_score"`
+	Hits     []HashtagHit `json:"hits"`
+}
+
+// HashtagSearchResponse represents the response from an Elasticsearch hashtag search query
+type HashtagSearchResponse struct {
+	Took     int         `json:"took"`
+	TimedOut bool        `json:"timed_out"`
+	Shards   ShardsInfo  `json:"_shards"`
+	Hits     HashtagHits `json:"hits"`
+}
+
 // FetchPosts queries Elasticsearch with pagination using search_after
 // Parameters:
 //   - client: Elasticsearch client
@@ -1790,4 +1819,88 @@ func BulkUpdateHashtagCounts(ctx context.Context, client *elasticsearch.Client, 
 
 	logger.Debug("Successfully updated %d hashtag counts", validUpdateCount)
 	return nil
+}
+
+// FetchHashtags fetches hashtags from Elasticsearch within a time window
+// Uses the 'hour' field for filtering since hashtags are bucketed by hour
+func FetchHashtags(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger,
+	indexName, startTime, endTime, afterHour string, fetchSize int) (HashtagSearchResponse, error) {
+	
+	var response HashtagSearchResponse
+
+	if fetchSize <= 0 {
+		fetchSize = 1000
+	}
+
+	var query map[string]interface{}
+
+	// Build range query for 'hour' field if time window specified
+	if startTime != "" || endTime != "" {
+		rangeQuery := make(map[string]interface{})
+		if startTime != "" {
+			rangeQuery["gte"] = startTime
+		}
+		if endTime != "" {
+			rangeQuery["lte"] = endTime
+		}
+
+		query = map[string]interface{}{
+			"query": map[string]interface{}{
+				"range": map[string]interface{}{
+					"hour": rangeQuery,
+				},
+			},
+		}
+	} else {
+		// Fetch all if no time filter
+		query = map[string]interface{}{
+			"query": map[string]interface{}{
+				"match_all": map[string]interface{}{},
+			},
+		}
+	}
+
+	// Add pagination using search_after if provided
+	if afterHour != "" {
+		query["search_after"] = []interface{}{afterHour}
+	}
+
+	// Sort by hour ascending for pagination
+	query["sort"] = []map[string]interface{}{
+		{"hour": map[string]string{"order": "asc"}},
+	}
+	query["size"] = fetchSize
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return response, fmt.Errorf("failed to marshal query: %w", err)
+	}
+
+	logger.Debug("Executing hashtag search query on index '%s': %s", indexName, string(queryJSON))
+
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(indexName),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
+	)
+	if err != nil {
+		return response, fmt.Errorf("search request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close search response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return response, fmt.Errorf("search request returned error: %s", res.String())
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
+		return response, fmt.Errorf("failed to parse search response: %w", err)
+	}
+
+	logger.Debug("Hashtag search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
+
+	return response, nil
 }
