@@ -241,12 +241,15 @@ deploy_expiry_job() {
     # Stage: 2 hours (aggressive cleanup for limited 8-hour capacity)
     # Prod: 720 hours = 30 days (standard retention)
     local retention_hours
+    local hashtag_retention_hours
     if [ "$GE_ENVIRONMENT" = "stage" ]; then
         retention_hours=2
-        log_info "Stage environment: Using 2-hour retention period"
+        hashtag_retention_hours=72  # 3 days
+        log_info "Stage environment: Using 2-hour retention period, 3-day hashtag retention"
     else
         retention_hours=720
-        log_info "Production environment: Using 720-hour (30-day) retention period"
+        hashtag_retention_hours=1440  # 60 days
+        log_info "Production environment: Using 720-hour (30-day) retention period, 60-day hashtag retention"
     fi
 
     # Create a temporary directory structure for buildpacks
@@ -303,7 +306,7 @@ EOF
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=3600 \
-        --args="--retention-hours,$retention_hours"
+        --args="--retention-hours,$retention_hours,--hashtag-retention-hours,$hashtag_retention_hours"
 
     cleanup_old_revisions "job" "elasticsearch-expiry"
 }

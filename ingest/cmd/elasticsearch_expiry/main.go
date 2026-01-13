@@ -18,6 +18,7 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "Run in dry-run mode (show what would be deleted without actually deleting)")
 	skipTLSVerify := flag.Bool("skip-tls-verify", false, "Skip TLS certificate verification (use for local development only)")
 	retentionHours := flag.Int("retention-hours", 1440, "Number of hours to retain data (default: 1440 hours = 60 days)")
+	hashtagRetentionHours := flag.Int("hashtag-retention-hours", 0, "Number of hours to retain hashtag data (0 = use retention-hours)")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
@@ -28,6 +29,14 @@ func main() {
 
 	logger.Info("Green Earth Ingex - Elasticsearch Expiry Service")
 	logger.Info("Retention period: %d hours (%.1f days)", *retentionHours, float64(*retentionHours)/24.0)
+
+	// Use retention-hours for hashtags if hashtag-retention-hours not specified
+	if *hashtagRetentionHours == 0 {
+		*hashtagRetentionHours = *retentionHours
+	}
+	if *hashtagRetentionHours != *retentionHours {
+		logger.Info("Hashtag retention period: %d hours (%.1f days)", *hashtagRetentionHours, float64(*hashtagRetentionHours)/24.0)
+	}
 
 	if *dryRun {
 		logger.Info("Running in DRY-RUN mode - no documents will be deleted")
@@ -71,7 +80,7 @@ func main() {
 	}()
 
 	// Run the expiry process
-	if err := runExpiry(ctx, config, logger, healthServer, *dryRun, *skipTLSVerify, *retentionHours); err != nil {
+	if err := runExpiry(ctx, config, logger, healthServer, *dryRun, *skipTLSVerify, *retentionHours, *hashtagRetentionHours); err != nil {
 		logger.Error("Expiry process failed: %v", err)
 		os.Exit(1)
 	}
@@ -79,7 +88,7 @@ func main() {
 	logger.Info("Expiry process completed successfully")
 }
 
-func runExpiry(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify bool, retentionHours int) error {
+func runExpiry(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify bool, retentionHours, hashtagRetentionHours int) error {
 	// Default graceful timeout for delete operations during shutdown
 	const graceTimeout = 30 * time.Second
 	// Initialize Elasticsearch client
@@ -112,6 +121,7 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 	// Define the collections to clean up
 	// For now, always use the indexed_at field for expiry, since we care about how long the row has
 	// been in our database, not the time the original event occurred.
+	// Exception: hashtags use the 'hour' field since they are time-bucketed data
 	collections := []elasticsearch_expiry.Collection{
 		{
 			IndexAlias: "posts",
@@ -130,6 +140,11 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 			DateField:  "indexed_at",
 		},
 	}
+
+	// Add hashtags collection with separate retention
+	hashtagCutoffDate := time.Now().UTC().Add(-time.Duration(hashtagRetentionHours) * time.Hour)
+	logger.Info("Hashtags: deleting records older than: %s (retention: %d hours / %.1f days)",
+		hashtagCutoffDate.Format(time.RFC3339), hashtagRetentionHours, float64(hashtagRetentionHours)/24.0)
 
 	// Process each collection with graceful shutdown handling
 	totalDeleted := 0
@@ -177,6 +192,51 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 				return "deleted"
 			}())
 	}
+
+	// Process hashtags separately with different cutoff date
+	select {
+	case <-ctx.Done():
+		logger.Info("Shutdown requested, skipping hashtags expiry")
+		return ctx.Err()
+	default:
+	}
+
+	deleteCtx, deleteCancel := context.WithCancel(context.Background())
+	go func() {
+		<-ctx.Done()
+		logger.Info("Shutdown requested, allowing %v for hashtags to complete...", graceTimeout)
+		timer := time.NewTimer(graceTimeout)
+		defer timer.Stop()
+		<-timer.C
+		logger.Info("Grace timeout expired for hashtags, cancelling operations")
+		deleteCancel()
+	}()
+
+	logger.Info("Processing collection: hashtags (date field: hour)")
+	// Create a separate expiry service instance for hashtags with different cutoff
+	hashtagExpiryConfig := elasticsearch_expiry.Config{
+		CutoffDate: hashtagCutoffDate,
+		DryRun:     dryRun,
+	}
+	hashtagExpiryService := elasticsearch_expiry.NewService(esClient, hashtagExpiryConfig, logger)
+	deletedCount, err := hashtagExpiryService.ExpireCollection(deleteCtx, elasticsearch_expiry.Collection{
+		IndexAlias: "hashtags",
+		DateField:  "hour",
+	})
+	deleteCancel()
+
+	if err != nil {
+		return fmt.Errorf("failed to expire hashtags collection: %w", err)
+	}
+
+	totalDeleted += deletedCount
+	logger.Info("Processed hashtags: %d documents %s", deletedCount,
+		func() string {
+			if dryRun {
+				return "would be deleted"
+			}
+			return "deleted"
+		}())
 
 	action := "deleted"
 	if dryRun {
