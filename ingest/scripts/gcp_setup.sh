@@ -163,54 +163,62 @@ create_service_account() {
 }
 
 create_secrets() {
-    # TODO: Update to support prod environment.
     log_info "Creating secrets in Secret Manager..."
 
     SA_EMAIL="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
 
+    # Determine secret name suffix based on environment
+    # Stage uses no suffix for backwards compatibility, prod uses -prod suffix
+    SECRET_SUFFIX=""
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        SECRET_SUFFIX="-prod"
+    fi
+
     # Elasticsearch API key
+    ES_SECRET_NAME="elasticsearch-api-key${SECRET_SUFFIX}"
     if [ -n "$GE_ELASTICSEARCH_API_KEY" ] && [ "$GE_ELASTICSEARCH_API_KEY" != "your-api-key" ]; then
-        if ! gcloud secrets describe elasticsearch-api-key > /dev/null 2>&1; then
-            echo -n "$GE_ELASTICSEARCH_API_KEY" | gcloud secrets create elasticsearch-api-key --data-file=-
-            log_info "Elasticsearch API key secret created."
+        if ! gcloud secrets describe "$ES_SECRET_NAME" > /dev/null 2>&1; then
+            echo -n "$GE_ELASTICSEARCH_API_KEY" | gcloud secrets create "$ES_SECRET_NAME" --data-file=-
+            log_info "Elasticsearch API key secret created: $ES_SECRET_NAME"
         else
             log_info "Elasticsearch API key secret already exists. Updating..."
-            echo -n "$GE_ELASTICSEARCH_API_KEY" | gcloud secrets versions add elasticsearch-api-key --data-file=-
-            log_info "Elasticsearch API key secret updated."
+            echo -n "$GE_ELASTICSEARCH_API_KEY" | gcloud secrets versions add "$ES_SECRET_NAME" --data-file=-
+            log_info "Elasticsearch API key secret updated: $ES_SECRET_NAME"
         fi
 
         # Grant service account access to elasticsearch-api-key
-        gcloud secrets add-iam-policy-binding elasticsearch-api-key \
+        gcloud secrets add-iam-policy-binding "$ES_SECRET_NAME" \
             --member="serviceAccount:$SA_EMAIL" \
             --role="roles/secretmanager.secretAccessor" \
             --condition=None
     else
         log_warn "Elasticsearch API key not provided. Skipping secret creation."
         log_info "Ensuring service account has access to existing secret..."
-        if gcloud secrets describe elasticsearch-api-key > /dev/null 2>&1; then
+        if gcloud secrets describe "$ES_SECRET_NAME" > /dev/null 2>&1; then
             # Grant service account access even if we're not creating/updating the secret
-            gcloud secrets add-iam-policy-binding elasticsearch-api-key \
+            gcloud secrets add-iam-policy-binding "$ES_SECRET_NAME" \
                 --member="serviceAccount:$SA_EMAIL" \
                 --role="roles/secretmanager.secretAccessor" \
-                --condition=None 2>/dev/null || log_info "Service account already has access to elasticsearch-api-key"
+                --condition=None 2>/dev/null || log_info "Service account already has access to $ES_SECRET_NAME"
         else
-            log_warn "Elasticsearch API key secret does not exist. You'll need to create it manually or re-run with --elasticsearch-api-key"
+            log_warn "Elasticsearch API key secret does not exist: $ES_SECRET_NAME. You'll need to create it manually or re-run with --elasticsearch-api-key"
         fi
     fi
 
     # AWS S3 Access Key
+    AWS_ACCESS_SECRET_NAME="aws-s3-access-key${SECRET_SUFFIX}"
     if [ -n "$GE_AWS_S3_ACCESS_KEY" ]; then
-        if ! gcloud secrets describe aws-s3-access-key > /dev/null 2>&1; then
-            echo -n "$GE_AWS_S3_ACCESS_KEY" | gcloud secrets create aws-s3-access-key --data-file=-
-            log_info "AWS S3 access key secret created."
+        if ! gcloud secrets describe "$AWS_ACCESS_SECRET_NAME" > /dev/null 2>&1; then
+            echo -n "$GE_AWS_S3_ACCESS_KEY" | gcloud secrets create "$AWS_ACCESS_SECRET_NAME" --data-file=-
+            log_info "AWS S3 access key secret created: $AWS_ACCESS_SECRET_NAME"
         else
             log_info "AWS S3 access key secret already exists. Updating..."
-            echo -n "$GE_AWS_S3_ACCESS_KEY" | gcloud secrets versions add aws-s3-access-key --data-file=-
-            log_info "AWS S3 access key secret updated."
+            echo -n "$GE_AWS_S3_ACCESS_KEY" | gcloud secrets versions add "$AWS_ACCESS_SECRET_NAME" --data-file=-
+            log_info "AWS S3 access key secret updated: $AWS_ACCESS_SECRET_NAME"
         fi
 
         # Grant service account access to aws-s3-access-key
-        gcloud secrets add-iam-policy-binding aws-s3-access-key \
+        gcloud secrets add-iam-policy-binding "$AWS_ACCESS_SECRET_NAME" \
             --member="serviceAccount:$SA_EMAIL" \
             --role="roles/secretmanager.secretAccessor" \
             --condition=None
@@ -220,18 +228,19 @@ create_secrets() {
     fi
 
     # AWS S3 Secret Key
+    AWS_SECRET_SECRET_NAME="aws-s3-secret-key${SECRET_SUFFIX}"
     if [ -n "$GE_AWS_S3_SECRET_KEY" ]; then
-        if ! gcloud secrets describe aws-s3-secret-key > /dev/null 2>&1; then
-            echo -n "$GE_AWS_S3_SECRET_KEY" | gcloud secrets create aws-s3-secret-key --data-file=-
-            log_info "AWS S3 secret key secret created."
+        if ! gcloud secrets describe "$AWS_SECRET_SECRET_NAME" > /dev/null 2>&1; then
+            echo -n "$GE_AWS_S3_SECRET_KEY" | gcloud secrets create "$AWS_SECRET_SECRET_NAME" --data-file=-
+            log_info "AWS S3 secret key secret created: $AWS_SECRET_SECRET_NAME"
         else
             log_info "AWS S3 secret key secret already exists. Updating..."
-            echo -n "$GE_AWS_S3_SECRET_KEY" | gcloud secrets versions add aws-s3-secret-key --data-file=-
-            log_info "AWS S3 secret key secret updated."
+            echo -n "$GE_AWS_S3_SECRET_KEY" | gcloud secrets versions add "$AWS_SECRET_SECRET_NAME" --data-file=-
+            log_info "AWS S3 secret key secret updated: $AWS_SECRET_SECRET_NAME"
         fi
 
         # Grant service account access to aws-s3-secret-key
-        gcloud secrets add-iam-policy-binding aws-s3-secret-key \
+        gcloud secrets add-iam-policy-binding "$AWS_SECRET_SECRET_NAME" \
             --member="serviceAccount:$SA_EMAIL" \
             --role="roles/secretmanager.secretAccessor" \
             --condition=None
@@ -355,30 +364,38 @@ setup_firewall_rules() {
 }
 
 setup_expiry_cloud_scheduler() {
-    # TODO: Update to support prod environment.
     log_info "Setting up Cloud Scheduler for elasticsearch-expiry..."
 
     # Get project number for default compute service account
     PROJECT_NUMBER=$(gcloud projects describe "$GE_GCP_PROJECT_ID" --format="value(projectNumber)")
     COMPUTE_SERVICE_ACCOUNT="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
 
-    # Use Cloud Run v2 API endpoint format
-    JOB_URI="https://run.googleapis.com/v2/projects/$GE_GCP_PROJECT_ID/locations/$GE_GCP_REGION/jobs/elasticsearch-expiry:run"
+    # Use Cloud Run v2 API endpoint format with environment-specific job name
+    JOB_URI="https://run.googleapis.com/v2/projects/$GE_GCP_PROJECT_ID/locations/$GE_GCP_REGION/jobs/elasticsearch-expiry-$GE_ENVIRONMENT:run"
 
-    # Only configure for stage environment (hourly cleanup for limited capacity cluster)
-    if [ "$GE_ENVIRONMENT" != "stage" ]; then
-        log_info "Skipping Cloud Scheduler setup for $GE_ENVIRONMENT (only stage is configured)"
+    # Configure schedule based on environment
+    local schedule
+    local job_name
+    local description
+
+    if [ "$GE_ENVIRONMENT" = "stage" ]; then
+        schedule="*/30 * * * *"  # Every 30 minutes
+        job_name="elasticsearch-expiry-halfhourly-stage"
+        description="Half-hourly Elasticsearch data expiry for stage (limited capacity)"
+        log_info "Stage environment: Configuring 30-minute expiry schedule"
+    elif [ "$GE_ENVIRONMENT" = "prod" ]; then
+        schedule="0 2 * * *"  # Daily at 2 AM UTC
+        job_name="elasticsearch-expiry-daily-prod"
+        description="Daily Elasticsearch data expiry for production"
+        log_info "Production environment: Configuring daily expiry schedule (2 AM UTC)"
+    else
+        log_info "Skipping Cloud Scheduler setup for $GE_ENVIRONMENT (only stage and prod are configured)"
         return 0
     fi
 
-    local schedule="*/30 * * * *"  # Every 30 minutes
-    local job_name="elasticsearch-expiry-halfhourly-stage"
-    local description="Half-hourly Elasticsearch data expiry for stage (limited capacity)"
-    log_info "Stage environment: Configuring 30-minute expiry schedule"
-
     # Grant the default compute service account permission to invoke the Cloud Run job
     log_info "Granting default compute service account permission to invoke Cloud Run job..."
-    gcloud run jobs add-iam-policy-binding elasticsearch-expiry \
+    gcloud run jobs add-iam-policy-binding "elasticsearch-expiry-$GE_ENVIRONMENT" \
         --region="$GE_GCP_REGION" \
         --member="serviceAccount:$COMPUTE_SERVICE_ACCOUNT" \
         --role="roles/run.invoker" \
@@ -409,30 +426,38 @@ setup_expiry_cloud_scheduler() {
 }
 
 setup_extract_cloud_scheduler() {
-    # TODO: Update to support prod environment.
     log_info "Setting up Cloud Scheduler for extract job..."
 
     # Get project number for default compute service account
     PROJECT_NUMBER=$(gcloud projects describe "$GE_GCP_PROJECT_ID" --format="value(projectNumber)")
     COMPUTE_SERVICE_ACCOUNT="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
 
-    # Use Cloud Run v2 API endpoint format
-    JOB_URI="https://run.googleapis.com/v2/projects/$GE_GCP_PROJECT_ID/locations/$GE_GCP_REGION/jobs/extract:run"
+    # Use Cloud Run v2 API endpoint format with environment-specific job name
+    JOB_URI="https://run.googleapis.com/v2/projects/$GE_GCP_PROJECT_ID/locations/$GE_GCP_REGION/jobs/extract-$GE_ENVIRONMENT:run"
 
-    # Only configure for stage environment
-    if [ "$GE_ENVIRONMENT" != "stage" ]; then
-        log_info "Skipping extract Cloud Scheduler setup for $GE_ENVIRONMENT (only stage is configured)"
+    # Configure schedule based on environment
+    local schedule
+    local job_name
+    local description
+
+    if [ "$GE_ENVIRONMENT" = "stage" ]; then
+        schedule="*/30 * * * *"  # Every 30 minutes
+        job_name="extract-halfhourly-stage"
+        description="Half hourly extract job for stage"
+        log_info "Stage environment: Configuring half hourly extract schedule"
+    elif [ "$GE_ENVIRONMENT" = "prod" ]; then
+        schedule="*/30 * * * *"  # Every 30 minutes
+        job_name="extract-halfhourly-prod"
+        description="Half hourly extract job for production"
+        log_info "Production environment: Configuring half hourly extract schedule"
+    else
+        log_info "Skipping extract Cloud Scheduler setup for $GE_ENVIRONMENT (only stage and prod are configured)"
         return 0
     fi
 
-    local schedule="*/30 * * * *"  # Every 1/2 hour at the top and middle of the hour
-    local job_name="extract-halfhourly-stage"
-    local description="Half hourly extract job for stage"
-    log_info "Stage environment: Configuring half hourly extract schedule"
-
     # Grant the default compute service account permission to invoke the Cloud Run job
     log_info "Granting default compute service account permission to invoke extract job..."
-    gcloud run jobs add-iam-policy-binding extract \
+    gcloud run jobs add-iam-policy-binding "extract-$GE_ENVIRONMENT" \
         --region="$GE_GCP_REGION" \
         --member="serviceAccount:$COMPUTE_SERVICE_ACCOUNT" \
         --role="roles/run.invoker" \

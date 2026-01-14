@@ -5,12 +5,14 @@
 set -e
 
 # Configuration
+GE_ENVIRONMENT="${GE_ENVIRONMENT:-stage}"
+GE_GCP_PROJECT_ID="${GE_GCP_PROJECT_ID:-greenearth-471522}"
 GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
-# TODO: Update to support prod environment.
+
 SERVICES=(
-    "jetstream-ingest"
-    "megastream-ingest"
-    # "elasticsearch-expiry"
+    "jetstream-ingest-${GE_ENVIRONMENT}"
+    "megastream-ingest-${GE_ENVIRONMENT}"
+    # "elasticsearch-expiry-${GE_ENVIRONMENT}"
 )
 
 # Colors for output
@@ -23,7 +25,9 @@ NC='\033[0m' # No Color
 # Check if a service exists
 service_exists() {
     local service=$1
-    gcloud run services describe "$service" --region="$GE_GCP_REGION" > /dev/null 2>&1
+    gcloud run services describe "$service" \
+        --region="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" > /dev/null 2>&1
 }
 
 # Get service status (simplified)
@@ -38,10 +42,12 @@ get_service_status() {
     # Check manual instance count (0 = stopped)
     local instance_count=$(gcloud run services describe "$service" \
         --region="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" \
         --format="value(spec.template.metadata.annotations['run.googleapis.com/scaling-mode'])" 2>/dev/null || echo "")
 
     local manual_count=$(gcloud run services describe "$service" \
         --region="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" \
         --format="value(spec.template.metadata.annotations['run.googleapis.com/manual-scaling'])" 2>/dev/null || echo "")
 
     if [[ "$manual_count" == "0" ]]; then
@@ -52,6 +58,7 @@ get_service_status() {
         # Check ready condition
         local ready=$(gcloud run services describe "$service" \
             --region="$GE_GCP_REGION" \
+            --project="$GE_GCP_PROJECT_ID" \
             --format="value(status.url)" 2>/dev/null)
 
         if [[ -n "$ready" ]]; then
@@ -75,6 +82,7 @@ start_service() {
 
     gcloud run services update "$service" \
         --region="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" \
         --scaling=1 \
         --quiet
 
@@ -94,6 +102,7 @@ stop_service() {
 
     gcloud run services update "$service" \
         --region="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" \
         --scaling=0 \
         --quiet
 
@@ -140,6 +149,7 @@ show_details() {
 
     gcloud run services describe "$service" \
         --region="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" \
         --format="table(
             metadata.name,
             status.url,

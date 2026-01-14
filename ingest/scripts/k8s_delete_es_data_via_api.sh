@@ -7,8 +7,18 @@ set -e
 
 GE_ENVIRONMENT="${GE_ENVIRONMENT:-local}"
 GE_K8S_NAMESPACE="greenearth-${GE_ENVIRONMENT}"
+GE_K8S_CLUSTER="greenearth-${GE_ENVIRONMENT}-cluster"
+GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
+GE_GCP_PROJECT_ID="${GE_GCP_PROJECT_ID:-greenearth-471522}"
 
-# TODO: Set appropriate kubectl context based on environment first.
+# Set up kubectl context for the target environment
+if [ "$GE_ENVIRONMENT" != "local" ]; then
+    echo "Setting kubectl context for ${GE_ENVIRONMENT} environment..."
+    gcloud container clusters get-credentials "$GE_K8S_CLUSTER" \
+        --location="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID"
+    echo ""
+fi
 
 echo "Running ES index deletion and recreation in ${GE_ENVIRONMENT} environment (namespace: ${GE_K8S_NAMESPACE})"
 echo ""
