@@ -54,7 +54,7 @@ patches:
         value: "-Xms2g -Xmx2g"
       - op: replace
         path: /spec/nodeSets/0/volumeClaimTemplates/0/spec/resources/requests/storage
-        value: 15Gi
+        value: 16Gi
       - op: add
         path: /spec/nodeSets/-
         value:
@@ -94,7 +94,7 @@ patches:
               - ReadWriteOnce
               resources:
                 requests:
-                  storage: 500Gi
+                  storage: 256Gi
   - target:
       kind: Kibana
       name: greenearth

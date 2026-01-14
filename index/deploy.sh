@@ -241,7 +241,7 @@ setup_kubectl_context() {
                         --machine-type="n2-standard-2" \
                         --num-nodes=2 \
                         --node-labels=workload=es-master \
-                        --disk-size=50 \
+                        --disk-size=32 \
                         --disk-type=pd-standard \
                         --enable-autorepair \
                         --enable-autoupgrade \
@@ -261,7 +261,7 @@ setup_kubectl_context() {
                         --machine-type="n2-highmem-2" \
                         --num-nodes=4 \
                         --node-labels=workload=es-data \
-                        --disk-size=100 \
+                        --disk-size=256 \
                         --disk-type=pd-standard \
                         --enable-autorepair \
                         --enable-autoupgrade
