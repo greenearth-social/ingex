@@ -6,6 +6,7 @@ set -e
 
 # Configuration
 GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
+# TODO: Update to support prod environment.
 SERVICES=(
     "jetstream-ingest"
     "megastream-ingest"

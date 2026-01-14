@@ -8,6 +8,8 @@ set -e
 GE_ENVIRONMENT="${GE_ENVIRONMENT:-local}"
 GE_K8S_NAMESPACE="greenearth-${GE_ENVIRONMENT}"
 
+# TODO: Set appropriate kubectl context based on environment first.
+
 echo "Running ES index deletion and recreation in ${GE_ENVIRONMENT} environment (namespace: ${GE_K8S_NAMESPACE})"
 echo ""
 

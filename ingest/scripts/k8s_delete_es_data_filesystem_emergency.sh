@@ -14,6 +14,8 @@ echo "Namespace: ${GE_K8S_NAMESPACE}"
 echo "Pod: ${K8S_POD}"
 echo ""
 
+# TODO: Update to configure kubectl context first.
+
 # Check current disk usage
 echo "Current disk usage:"
 kubectl exec -n "${GE_K8S_NAMESPACE}" "${K8S_POD}" -- df -h /usr/share/elasticsearch/data

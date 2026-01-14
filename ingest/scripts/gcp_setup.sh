@@ -163,6 +163,7 @@ create_service_account() {
 }
 
 create_secrets() {
+    # TODO: Update to support prod environment.
     log_info "Creating secrets in Secret Manager..."
 
     SA_EMAIL="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
@@ -354,6 +355,7 @@ setup_firewall_rules() {
 }
 
 setup_expiry_cloud_scheduler() {
+    # TODO: Update to support prod environment.
     log_info "Setting up Cloud Scheduler for elasticsearch-expiry..."
 
     # Get project number for default compute service account
@@ -407,6 +409,7 @@ setup_expiry_cloud_scheduler() {
 }
 
 setup_extract_cloud_scheduler() {
+    # TODO: Update to support prod environment.
     log_info "Setting up Cloud Scheduler for extract job..."
 
     # Get project number for default compute service account

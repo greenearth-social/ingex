@@ -11,6 +11,8 @@ echo "Environment: ${GE_ENVIRONMENT}"
 echo "Namespace: ${GE_K8S_NAMESPACE}"
 echo ""
 
+# TODO: Set appropriate kubectl context depending on environment first.
+
 # Get elastic superuser credentials (required for creating API keys)
 ELASTICSEARCH_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n "${GE_K8S_NAMESPACE}" -o jsonpath='{.data.elastic}' | base64 -d)
 
@@ -59,6 +61,7 @@ echo "Created API key (base64 encoded): $ENCODED_KEY"
 echo ""
 echo "Updating Google Secret Manager..."
 
+# TODO: Update to store the key for the appropriate environment that is set.
 # Update the secret in Google Secret Manager
 echo -n "$ENCODED_KEY" | gcloud secrets versions add elasticsearch-api-key --data-file=-
 
