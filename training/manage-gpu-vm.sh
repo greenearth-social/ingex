@@ -2,19 +2,18 @@
 
 set -e
 
-VM_NAME="ge-ml-training"
-ZONE="us-east1-c"
+# VM_NAME will be set from positional argument
+ZONE="us-east1-d"
 MACHINE_TYPE="n1-highmem-16"
 GPU_TYPE="nvidia-tesla-t4"
 GPU_COUNT="1"
-BOOT_DISK_SIZE="50GB"
-DATA_DISK_NAME="${VM_NAME}-data"
+BOOT_DISK_SIZE="256GB"
 DATA_DISK_SIZE="256GB"
 DATA_DISK_TYPE="pd-ssd"
 IMAGE_FAMILY="ubuntu-2404-lts-amd64"
 IMAGE_PROJECT="ubuntu-os-cloud"
-SNAPSHOT_POLICY_NAME="${VM_NAME}-daily-backup"
-STATIC_IP_NAME="${VM_NAME}-ip"
+SNAPSHOT_POLICY_NAME="ge-ml-training-daily-backup"
+# STATIC_IP_NAME will be derived from VM_NAME
 
 OPS_AGENT_SCRIPT='#!/bin/bash
 curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
@@ -22,16 +21,28 @@ sudo bash add-google-cloud-ops-agent-repo.sh --also-install
 '
 
 DATA_DISK_SETUP_SCRIPT='
-# Setup data disk (idempotent)
-if ! grep -q "/mnt/data" /etc/fstab; then
-  echo "Formatting and mounting data disk..."
-  mkfs.ext4 -F /dev/disk/by-id/google-persistent-disk-1
-  mkdir -p /mnt/data
-  echo "/dev/disk/by-id/google-persistent-disk-1 /mnt/data ext4 defaults 0 2" >> /etc/fstab
-  mount /mnt/data
-  echo "Data disk mounted at /mnt/data"
+# Setup data disk (idempotent - checks disk itself, not fstab)
+DISK_DEVICE="/dev/disk/by-id/google-persistent-disk-1"
+
+# Check if disk already has a filesystem
+if blkid "${DISK_DEVICE}" &>/dev/null; then
+  echo "Data disk already has a filesystem, skipping format"
 else
-  echo "Data disk already configured"
+  echo "Formatting new data disk..."
+  mkfs.ext4 "${DISK_DEVICE}"
+fi
+
+# Mount if not already mounted
+if ! mountpoint -q /mnt/data; then
+  mkdir -p /mnt/data
+  mount "${DISK_DEVICE}" /mnt/data
+  echo "Data disk mounted at /mnt/data"
+fi
+
+# Add to fstab if not already there
+if ! grep -q "/mnt/data" /etc/fstab; then
+  echo "${DISK_DEVICE} /mnt/data ext4 defaults 0 2" >> /etc/fstab
+  echo "Added to /etc/fstab"
 fi
 '
 
@@ -49,7 +60,7 @@ python3 cuda_installer.pyz install_cuda
 
 usage() {
     cat << EOF
-Usage: $0 <command> [options]
+Usage: $0 <vm-name> <command> [options]
 
 Commands:
     create [OPTIONS]           Create the GPU VM with optional features
@@ -57,33 +68,58 @@ Commands:
     status                     Check the status of the GPU VM
 
 Options:
-    --install-drivers          Include startup script to install NVIDIA drivers and CUDA toolkit
-    --ssh-key <path>           Path to SSH public key file for direct SSH access (e.g., ~/.ssh/id_rsa.pub)
-    --data-disk <disk-name>    Attach existing persistent disk instead of creating new one
-    --zone <zone>              Override default zone (default: us-east1-c)
+    --attach-disk <disk-name>  Attach existing persistent disk instead of creating new one
+    --create-disk <disk-name>  Create new persistent disk with specified name
+    --zone <zone>              Override default zone (default: us-east1-d)
     -h, --help                 Show this help message
 
 Examples:
-    $0 create                                    Create VM with Ops Agent only
-    $0 create --install-drivers                  Create VM with Ops Agent and NVIDIA drivers
-    $0 create --ssh-key ~/.ssh/id_rsa.pub        Create VM with SSH key for direct access
-    $0 create --data-disk my-training-data       Attach existing disk instead of creating new
-    $0 create --zone us-east1-d                  Create VM in different zone
-    $0 create --install-drivers --ssh-key ~/.ssh/id_rsa.pub   Create with all features
-    $0 destroy --zone us-east1-d                 Delete VM (data disk preserved)
-    $0 status                                    Show VM status
+    $0 my-vm create                                    Create VM with boot disk only
+    $0 my-vm create --create-disk my-data              Create VM with new named data disk
+    $0 my-vm create --attach-disk existing-data        Attach existing disk instead of creating new
+    $0 my-vm create --zone us-east1-c                  Create VM in different zone
+    $0 my-vm destroy --zone us-east1-c                 Delete VM (data disk preserved)
+    $0 my-vm status                                    Show VM status
 
 Features:
     - Static external IP address (preserved across VM recreations)
     - HTTP/HTTPS firewall rules enabled by default
     - Google Cloud Ops Agent installed for logs and metrics
-    - Daily backups at 3am UTC (7 day retention)
-    - 256GB SSD data disk attached (or use existing disk with --data-disk)
+    - NVIDIA drivers and CUDA toolkit installed automatically
+    - Daily backups at 3am UTC (7 day retention, policy: ge-ml-training-daily-backup)
+    - Optional 256GB SSD data disk (use --create-disk or --attach-disk)
     - Data disks are preserved when VM is destroyed
+    - SSH keys must be added manually via GCP Console
 
 Recommended zones for T4 GPU availability (US East Coast):
     - us-east1-d, us-east4-a, us-east4-b, us-central1-a
 EOF
+}
+
+validate_vm_name() {
+    local vm_name="$1"
+
+    # GCP resource naming requirements:
+    # - Must start with a lowercase letter
+    # - Can contain lowercase letters, numbers, and hyphens
+    # - Must end with a lowercase letter or number
+    # - Length: 1-63 characters
+
+    if [[ ! "${vm_name}" =~ ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+        echo "Error: Invalid VM name '${vm_name}'"
+        echo ""
+        echo "VM name must:"
+        echo "  - Start with a lowercase letter"
+        echo "  - Contain only lowercase letters, numbers, and hyphens"
+        echo "  - End with a lowercase letter or number"
+        echo "  - Be 1-63 characters long"
+        echo ""
+        echo "Examples of valid names:"
+        echo "  - my-vm"
+        echo "  - ge-ml-training"
+        echo "  - vm-2026-01-12-212802"
+        exit 1
+    fi
 }
 
 create_snapshot_policy() {
@@ -91,6 +127,7 @@ create_snapshot_policy() {
 
     if gcloud compute resource-policies describe "${SNAPSHOT_POLICY_NAME}" --region="${ZONE%-*}" &>/dev/null; then
         echo "Snapshot policy already exists."
+        CREATED_SNAPSHOT_POLICY=false
         return 0
     fi
 
@@ -103,10 +140,14 @@ create_snapshot_policy() {
         --storage-location=us
 
     echo "Snapshot policy created successfully."
+    CREATED_SNAPSHOT_POLICY=true
 }
 
 ensure_firewall_rules() {
     echo "Ensuring firewall rules exist for HTTP/HTTPS traffic..."
+
+    CREATED_HTTP_FIREWALL=false
+    CREATED_HTTPS_FIREWALL=false
 
     if ! gcloud compute firewall-rules describe default-allow-http &>/dev/null; then
         echo "Creating firewall rule for HTTP traffic..."
@@ -115,6 +156,7 @@ ensure_firewall_rules() {
             --target-tags=http-server \
             --source-ranges=0.0.0.0/0 \
             --description="Allow HTTP traffic"
+        CREATED_HTTP_FIREWALL=true
     else
         echo "HTTP firewall rule already exists."
     fi
@@ -126,6 +168,7 @@ ensure_firewall_rules() {
             --target-tags=https-server \
             --source-ranges=0.0.0.0/0 \
             --description="Allow HTTPS traffic"
+        CREATED_HTTPS_FIREWALL=true
     else
         echo "HTTPS firewall rule already exists."
     fi
@@ -134,19 +177,75 @@ ensure_firewall_rules() {
 }
 
 ensure_static_ip() {
-    echo "Ensuring static IP address exists: ${STATIC_IP_NAME}..." >&2
+    echo "Ensuring static IP address exists: ${STATIC_IP_NAME}..."
 
     if gcloud compute addresses describe "${STATIC_IP_NAME}" --region="${ZONE%-*}" &>/dev/null; then
-        echo "Static IP already exists." >&2
+        echo "Static IP already exists."
+        CREATED_STATIC_IP=false
     else
-        echo "Creating static IP address..." >&2
+        echo "Creating static IP address..."
         gcloud compute addresses create "${STATIC_IP_NAME}" --region="${ZONE%-*}"
-        echo "Static IP created successfully." >&2
+        echo "Static IP created successfully."
+        CREATED_STATIC_IP=true
     fi
 
-    local static_ip=$(gcloud compute addresses describe "${STATIC_IP_NAME}" --region="${ZONE%-*}" --format="value(address)")
-    echo "Static IP address: ${static_ip}" >&2
-    echo "${static_ip}"
+    STATIC_IP_ADDRESS=$(gcloud compute addresses describe "${STATIC_IP_NAME}" --region="${ZONE%-*}" --format="value(address)")
+    echo "Static IP address: ${STATIC_IP_ADDRESS}"
+}
+
+cleanup_on_failure() {
+    echo ""
+    echo "Cleaning up newly created resources due to VM creation failure..."
+
+    # Check if a data disk was potentially created during failed VM creation
+    if [[ "${CREATING_DATA_DISK}" == "true" ]] && [[ -n "${DATA_DISK_TO_CLEANUP}" ]]; then
+        if gcloud compute disks describe "${DATA_DISK_TO_CLEANUP}" --zone="${ZONE}" &>/dev/null; then
+            echo "Deleting data disk: ${DATA_DISK_TO_CLEANUP}..."
+            if gcloud compute disks delete "${DATA_DISK_TO_CLEANUP}" --zone="${ZONE}" --quiet 2>/dev/null; then
+                echo "  Data disk deleted."
+            else
+                echo "  Warning: Failed to delete data disk."
+            fi
+        fi
+    fi
+
+    if [[ "${CREATED_STATIC_IP}" == "true" ]]; then
+        echo "Deleting static IP: ${STATIC_IP_NAME}..."
+        if gcloud compute addresses delete "${STATIC_IP_NAME}" --region="${ZONE%-*}" --quiet 2>/dev/null; then
+            echo "  Static IP deleted."
+        else
+            echo "  Warning: Failed to delete static IP."
+        fi
+    fi
+
+    if [[ "${CREATED_SNAPSHOT_POLICY}" == "true" ]]; then
+        echo "Deleting snapshot policy: ${SNAPSHOT_POLICY_NAME}..."
+        if gcloud compute resource-policies delete "${SNAPSHOT_POLICY_NAME}" --region="${ZONE%-*}" --quiet 2>/dev/null; then
+            echo "  Snapshot policy deleted."
+        else
+            echo "  Warning: Failed to delete snapshot policy."
+        fi
+    fi
+
+    if [[ "${CREATED_HTTP_FIREWALL}" == "true" ]]; then
+        echo "Deleting HTTP firewall rule..."
+        if gcloud compute firewall-rules delete default-allow-http --quiet 2>/dev/null; then
+            echo "  HTTP firewall rule deleted."
+        else
+            echo "  Warning: Failed to delete HTTP firewall rule."
+        fi
+    fi
+
+    if [[ "${CREATED_HTTPS_FIREWALL}" == "true" ]]; then
+        echo "Deleting HTTPS firewall rule..."
+        if gcloud compute firewall-rules delete default-allow-https --quiet 2>/dev/null; then
+            echo "  HTTPS firewall rule deleted."
+        else
+            echo "  Warning: Failed to delete HTTPS firewall rule."
+        fi
+    fi
+
+    echo "Cleanup complete."
 }
 
 validate_existing_disk() {
@@ -172,35 +271,26 @@ validate_existing_disk() {
 }
 
 create_vm() {
-    local install_drivers="$1"
-    local ssh_key_file="$2"
-    local data_disk_name="$3"
-    local ssh_username=""
-    local ssh_key_content=""
+    local disk_operation="$1"  # "attach", "create", or empty
+    local disk_name="$2"       # disk name if operation specified
 
-    local use_existing_disk="false"
-    local disk_name="${DATA_DISK_NAME}"
+    # Initialize resource tracking variables
+    CREATED_SNAPSHOT_POLICY=false
+    CREATED_HTTP_FIREWALL=false
+    CREATED_HTTPS_FIREWALL=false
+    CREATED_STATIC_IP=false
+    CREATING_DATA_DISK=false
+    DATA_DISK_TO_CLEANUP=""
 
-    if [[ -n "${data_disk_name}" ]]; then
+    local use_existing_disk="none"
+
+    if [[ "${disk_operation}" == "attach" ]]; then
         use_existing_disk="true"
-        disk_name="${data_disk_name}"
         validate_existing_disk "${disk_name}"
-    fi
-
-    if [[ -n "${ssh_key_file}" ]]; then
-        if [[ ! -f "${ssh_key_file}" ]]; then
-            echo "Error: SSH key file not found: ${ssh_key_file}"
-            exit 1
-        fi
-
-        ssh_key_content=$(cat "${ssh_key_file}")
-
-        ssh_username=$(echo "${ssh_key_content}" | awk '{print $3}' | cut -d'@' -f1)
-        if [[ -z "${ssh_username}" ]]; then
-            ssh_username="${USER}"
-        fi
-
-        echo "SSH key will be added for user: ${ssh_username}"
+    elif [[ "${disk_operation}" == "create" ]]; then
+        use_existing_disk="false"
+        CREATING_DATA_DISK=true
+        DATA_DISK_TO_CLEANUP="${disk_name}"
     fi
 
     echo "Creating GPU VM: ${VM_NAME}..."
@@ -209,12 +299,13 @@ create_vm() {
     echo "  Zone: ${ZONE}"
     echo "  Boot Disk: ${BOOT_DISK_SIZE}"
     if [[ "${use_existing_disk}" == "true" ]]; then
-        echo "  Data Disk: ${disk_name} (existing)"
+        echo "  Data Disk: ${disk_name} (attaching existing)"
+    elif [[ "${use_existing_disk}" == "false" ]]; then
+        echo "  Data Disk: ${disk_name} (creating new ${DATA_DISK_SIZE} ${DATA_DISK_TYPE})"
     else
-        echo "  Data Disk: ${disk_name} (new ${DATA_DISK_SIZE} ${DATA_DISK_TYPE})"
+        echo "  Data Disk: none (boot disk only)"
     fi
-    echo "  Install Drivers: ${install_drivers}"
-    echo "  SSH Key: ${ssh_key_file:-none}"
+    echo "  NVIDIA Drivers: will be installed"
     echo "  Ops Agent: enabled"
     echo "  HTTP/HTTPS: enabled"
     echo "  Static IP: enabled"
@@ -222,27 +313,31 @@ create_vm() {
 
     create_snapshot_policy
     ensure_firewall_rules
-    local static_ip=$(ensure_static_ip)
+    ensure_static_ip
     echo ""
 
     local temp_script=$(mktemp)
     echo "#!/bin/bash" > "${temp_script}"
     echo "" >> "${temp_script}"
     echo "${OPS_AGENT_SCRIPT}" >> "${temp_script}"
-    echo "" >> "${temp_script}"
-    echo "${DATA_DISK_SETUP_SCRIPT}" >> "${temp_script}"
 
-    if [[ "${install_drivers}" == "true" ]]; then
+    # Only add disk setup if we're creating or attaching a persistent disk
+    if [[ "${use_existing_disk}" != "none" ]]; then
         echo "" >> "${temp_script}"
-        echo "${NVIDIA_DRIVER_SCRIPT}" >> "${temp_script}"
+        echo "${DATA_DISK_SETUP_SCRIPT}" >> "${temp_script}"
     fi
+
+    # Always install NVIDIA drivers
+    echo "" >> "${temp_script}"
+    echo "${NVIDIA_DRIVER_SCRIPT}" >> "${temp_script}"
 
     local disk_arg=""
     if [[ "${use_existing_disk}" == "true" ]]; then
         disk_arg="--disk=name=${disk_name},mode=rw,boot=no,auto-delete=no"
-    else
+    elif [[ "${use_existing_disk}" == "false" ]]; then
         disk_arg="--create-disk=name=${disk_name},size=${DATA_DISK_SIZE},type=${DATA_DISK_TYPE},mode=rw,auto-delete=no"
     fi
+    # If use_existing_disk is "none", disk_arg remains empty
 
     local create_cmd=(
         gcloud compute instances create "${VM_NAME}"
@@ -253,14 +348,14 @@ create_vm() {
         --boot-disk-size="${BOOT_DISK_SIZE}"
         --image-family="${IMAGE_FAMILY}"
         --image-project="${IMAGE_PROJECT}"
-        ${disk_arg}
         --tags=http-server,https-server
         --metadata-from-file=startup-script="${temp_script}"
-        --address="${static_ip}"
+        --address="${STATIC_IP_ADDRESS}"
     )
 
-    if [[ -n "${ssh_key_file}" ]]; then
-        create_cmd+=(--metadata=ssh-keys="${ssh_username}:${ssh_key_content}")
+    # Add disk argument if present
+    if [[ -n "${disk_arg}" ]]; then
+        create_cmd+=(${disk_arg})
     fi
 
     if "${create_cmd[@]}"; then
@@ -277,61 +372,64 @@ create_vm() {
             echo "Warning: Failed to attach snapshot policy to boot disk."
         fi
 
-        echo "Attaching snapshot policy to data disk..."
-        if gcloud compute disks add-resource-policies "${disk_name}" \
-            --resource-policies="${SNAPSHOT_POLICY_NAME}" \
-            --zone="${ZONE}"; then
-            echo "Data disk snapshot policy attached successfully."
-        else
-            echo "Warning: Failed to attach snapshot policy to data disk."
+        # Only attach to data disk if one was created or attached
+        if [[ "${use_existing_disk}" != "none" ]]; then
+            echo "Attaching snapshot policy to data disk..."
+            if gcloud compute disks add-resource-policies "${disk_name}" \
+                --resource-policies="${SNAPSHOT_POLICY_NAME}" \
+                --zone="${ZONE}"; then
+                echo "Data disk snapshot policy attached successfully."
+            else
+                echo "Warning: Failed to attach snapshot policy to data disk."
+            fi
         fi
         echo ""
 
-        echo "Static IP Address: ${static_ip} (reserved)"
+        echo "Static IP Address: ${STATIC_IP_ADDRESS} (reserved)"
         echo ""
-
-        if [[ -n "${ssh_key_file}" ]]; then
-            echo "SSH Access (direct):"
-            echo "  ssh ${ssh_username}@${static_ip}"
-            echo ""
-        fi
 
         echo "SSH Access (via gcloud):"
         echo "  gcloud compute ssh ${VM_NAME} --zone=${ZONE}"
         echo ""
+        echo "Note: For direct SSH access, add SSH keys manually via GCP Console"
+        echo ""
 
         echo "Startup script is running and will:"
         echo "  - Install Google Cloud Ops Agent for logs and metrics"
-        echo "  - Format and mount data disk at /mnt/data"
-        if [[ "${install_drivers}" == "true" ]]; then
-            echo "  - Install NVIDIA drivers and CUDA toolkit"
+        if [[ "${use_existing_disk}" != "none" ]]; then
+            echo "  - Format and mount data disk at /mnt/data"
         fi
+        echo "  - Install NVIDIA drivers and CUDA toolkit"
         echo ""
 
-        if [[ "${install_drivers}" == "true" ]]; then
-            echo "NVIDIA driver installation may take several minutes."
-            echo "Check installation status:"
-            echo "  gcloud compute ssh ${VM_NAME} --zone=${ZONE} --command='tail -f /var/log/syslog | grep cuda'"
-            echo ""
-            echo "Verify driver installation:"
-            echo "  gcloud compute ssh ${VM_NAME} --zone=${ZONE} --command='nvidia-smi'"
-            echo ""
-        fi
+        echo "NVIDIA driver installation may take several minutes."
+        echo "Check installation status:"
+        echo "  gcloud compute ssh ${VM_NAME} --zone=${ZONE} --command='tail -f /var/log/syslog | grep cuda'"
+        echo ""
+        echo "Verify driver installation:"
+        echo "  gcloud compute ssh ${VM_NAME} --zone=${ZONE} --command='nvidia-smi'"
+        echo ""
 
-        echo "Data disk will be automatically formatted and mounted at /mnt/data"
+        if [[ "${use_existing_disk}" != "none" ]]; then
+            echo "Data disk will be automatically formatted and mounted at /mnt/data"
+        fi
         echo "HTTP/HTTPS traffic is allowed via firewall rules."
 
         rm -f "${temp_script}"
     else
         echo ""
         echo "Failed to create VM."
+        rm -f "${temp_script}"
+
+        # Clean up any resources that were created during this attempt
+        cleanup_on_failure
+
         echo ""
         echo "If you encountered a ZONE_RESOURCE_POOL_EXHAUSTED error, try a different zone:"
-        echo "  ./training/manage-gpu-vm.sh create --zone us-east1-d"
-        echo "  ./training/manage-gpu-vm.sh create --zone us-east4-a"
-        echo "  ./training/manage-gpu-vm.sh create --zone us-central1-a"
+        echo "  ./training/manage-gpu-vm.sh ${VM_NAME} create --zone us-east1-d"
+        echo "  ./training/manage-gpu-vm.sh ${VM_NAME} create --zone us-east4-a"
+        echo "  ./training/manage-gpu-vm.sh ${VM_NAME} create --zone us-central1-a"
         echo ""
-        rm -f "${temp_script}"
         exit 1
     fi
 }
@@ -409,35 +507,56 @@ main() {
         exit 1
     fi
 
+    # First argument is VM name
+    VM_NAME="$1"
+    shift
+
+    # Validate VM name meets GCP requirements
+    validate_vm_name "${VM_NAME}"
+
+    if [[ $# -eq 0 ]]; then
+        echo "Error: Command required after VM name"
+        usage
+        exit 1
+    fi
+
+    # Derive STATIC_IP_NAME from VM name
+    STATIC_IP_NAME="${VM_NAME}-ip"
+
     local command="$1"
     shift
 
     case "${command}" in
         create)
-            local install_drivers="false"
-            local ssh_key_file=""
-            local data_disk_name=""
+            local disk_operation=""
+            local disk_name=""
             local zone_override=""
             while [[ $# -gt 0 ]]; do
                 case "$1" in
-                    --install-drivers)
-                        install_drivers="true"
-                        shift
-                        ;;
-                    --ssh-key)
+                    --attach-disk)
                         if [[ -z "$2" || "$2" == --* ]]; then
-                            echo "Error: --ssh-key requires a file path argument"
+                            echo "Error: --attach-disk requires a disk name argument"
                             exit 1
                         fi
-                        ssh_key_file="$2"
+                        if [[ -n "${disk_operation}" ]]; then
+                            echo "Error: Cannot use both --attach-disk and --create-disk"
+                            exit 1
+                        fi
+                        disk_operation="attach"
+                        disk_name="$2"
                         shift 2
                         ;;
-                    --data-disk)
+                    --create-disk)
                         if [[ -z "$2" || "$2" == --* ]]; then
-                            echo "Error: --data-disk requires a disk name argument"
+                            echo "Error: --create-disk requires a disk name argument"
                             exit 1
                         fi
-                        data_disk_name="$2"
+                        if [[ -n "${disk_operation}" ]]; then
+                            echo "Error: Cannot use both --attach-disk and --create-disk"
+                            exit 1
+                        fi
+                        disk_operation="create"
+                        disk_name="$2"
                         shift 2
                         ;;
                     --zone)
@@ -464,7 +583,7 @@ main() {
                 ZONE="${zone_override}"
             fi
 
-            create_vm "${install_drivers}" "${ssh_key_file}" "${data_disk_name}"
+            create_vm "${disk_operation}" "${disk_name}"
             ;;
         destroy)
             local zone_override=""
