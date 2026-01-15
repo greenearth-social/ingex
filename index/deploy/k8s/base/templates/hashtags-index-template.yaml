@@ -8,8 +8,8 @@ data:
       "index_patterns": ["hashtags_v1*"],
       "template": {
         "settings": {
-          "number_of_shards": $(INDEX_SHARDS),
-          "number_of_replicas": $(INDEX_REPLICAS)
+          "number_of_shards": $(HASHTAG_INDEX_SHARDS),
+          "number_of_replicas": $(HASHTAG_INDEX_REPLICAS)
         },
         "mappings": {
           "properties": {
