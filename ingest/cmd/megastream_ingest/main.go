@@ -284,21 +284,6 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					}
 					msgs = msgs[:0]
 
-					// Flush hashtag updates
-					if len(hashtagUpdates) > 0 {
-						if err := common.BulkUpdateHashtagCounts(batchCtx, esClient, "hashtags", hashtagUpdates, dryRun, logger); err != nil {
-							logger.Error("Failed to bulk update hashtag counts before account deletion: %v", err)
-						} else {
-							hashtagCount += len(hashtagUpdates)
-							if dryRun {
-								logger.Debug("Dry-run: Would update %d hashtag counts before account deletion", len(hashtagUpdates))
-							} else {
-								logger.Debug("Updated %d hashtag counts before account deletion", len(hashtagUpdates))
-							}
-						}
-						hashtagUpdates = hashtagUpdates[:0]
-					}
-
 					cancelBatchCtx()
 				}
 
