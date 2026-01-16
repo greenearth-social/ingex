@@ -91,17 +91,6 @@ patches:
       - op: replace
         path: /spec/podTemplate/spec/containers/0/resources/limits/cpu
         value: "500m"
-      - op: add
-        path: /spec/podTemplate/spec/affinity
-        value:
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-              - matchExpressions:
-                - key: workload
-                  operator: In
-                  values:
-                  - es-master
 
 configMapGenerator:
   - name: index-settings
