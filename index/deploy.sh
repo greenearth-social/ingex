@@ -213,16 +213,18 @@ setup_kubectl_context() {
                 fi
 
                 log_info "Creating GKE Autopilot cluster: $GE_K8S_CLUSTER"
-                gcloud container clusters create-auto "$GKE_CLUSTER" \
-                    --location="$GKE_REGION" \
-                    --project="$GKE_PROJECT_ID" \
+                local cluster_cidr=""
+                if ["$environment" = "stage"]; then
+                    cluster_cidr="172.16.0.0/28"
+                else # prod
+                    cluster_cidr="172.16.0.16/28"
+                fi
+                gcloud container clusters create-auto "$GE_K8S_CLUSTER" \
+                    --location="$GE_GCP_REGION" \
+                    --project="$GE_GCP_PROJECT_ID" \
                     --release-channel=regular \
-                    --enable-ip-alias \
                     --enable-private-nodes \
-                    --master-ipv4-cidr="172.16.0.0/28" \
-                    --no-enable-master-authorized-networks \
-                    --no-enable-basic-auth \
-                    --no-issue-client-certificate
+                    --master-ipv4-cidr="$cluster_cidr"
                 log_success "Cluster created successfully"
             else
                 log_error "GKE cluster $GE_K8S_CLUSTER does not exist in project $GE_GCP_PROJECT_ID"
