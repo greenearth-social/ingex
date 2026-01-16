@@ -3,7 +3,7 @@
 
 set -e
 
-GE_ENVIRONMENT="${1:-stage}"
+GE_ENVIRONMENT="${GE_ENVIRONMENT:-stage}"
 GE_K8S_NAMESPACE="greenearth-${GE_ENVIRONMENT}"
 GE_K8S_CLUSTER="greenearth-${GE_ENVIRONMENT}-cluster"
 GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
