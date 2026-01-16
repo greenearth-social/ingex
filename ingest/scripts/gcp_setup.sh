@@ -310,11 +310,16 @@ create_vpc_connector() {
 
     # Create VPC connector
     # Use a small IP range for the connector (only needs a few IPs for Cloud Run)
-    # Using 192.168.1.0/28 to avoid conflicts with existing subnets
+    # Stage uses 192.168.1.0/28, prod uses 192.168.1.16/28 to avoid conflicts
+    local connector_cidr="192.168.1.0/28"
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        connector_cidr="192.168.1.16/28"
+    fi
+
     gcloud compute networks vpc-access connectors create "$CONNECTOR_NAME" \
         --network=default \
         --region="$GE_GCP_REGION" \
-        --range=192.168.1.0/28 \
+        --range="$connector_cidr" \
         --min-instances=2 \
         --max-instances=10 \
         --machine-type=e2-micro
@@ -323,7 +328,7 @@ create_vpc_connector() {
 
     # Grant the default Cloud Run service account permission to use VPC connectors
     gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
-        --member="serviceAccount:$GE_GCP_PROJECT_ID-compute@developer.gserviceaccount.com" \
+        --member="serviceAccount:21637448064-compute@developer.gserviceaccount.com" \
         --role="roles/vpcaccess.user"
 
     log_info "VPC connector permissions configured"
@@ -332,6 +337,12 @@ create_vpc_connector() {
 setup_firewall_rules() {
     log_info "Setting up firewall rules for VPC access..."
 
+    # Determine VPC connector CIDR based on environment
+    local connector_cidr="192.168.1.0/28"
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        connector_cidr="192.168.1.16/28"
+    fi
+
     # Allow Cloud Run services to access Elasticsearch through internal load balancer
     FIREWALL_RULE_NAME="allow-cloud-run-to-elasticsearch-$GE_ENVIRONMENT"
 
@@ -339,7 +350,7 @@ setup_firewall_rules() {
         gcloud compute firewall-rules create "$FIREWALL_RULE_NAME" \
             --network=default \
             --allow=tcp:9200,tcp:9300 \
-            --source-ranges=192.168.1.0/28 \
+            --source-ranges="$connector_cidr" \
             --target-tags=gke-greenearth-$GE_ENVIRONMENT \
             --description="Allow Cloud Run services to access Elasticsearch internal load balancer"
         log_info "Firewall rule created: $FIREWALL_RULE_NAME"
@@ -368,7 +379,7 @@ setup_expiry_cloud_scheduler() {
 
     # Get project number for default compute service account
     PROJECT_NUMBER=$(gcloud projects describe "$GE_GCP_PROJECT_ID" --format="value(projectNumber)")
-    COMPUTE_SERVICE_ACCOUNT="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
+    COMPUTE_SERVICE_ACCOUNT="21637448064-compute@developer.gserviceaccount.com"
 
     # Use Cloud Run v2 API endpoint format with environment-specific job name
     JOB_URI="https://run.googleapis.com/v2/projects/$GE_GCP_PROJECT_ID/locations/$GE_GCP_REGION/jobs/elasticsearch-expiry-$GE_ENVIRONMENT:run"
@@ -430,7 +441,7 @@ setup_extract_cloud_scheduler() {
 
     # Get project number for default compute service account
     PROJECT_NUMBER=$(gcloud projects describe "$GE_GCP_PROJECT_ID" --format="value(projectNumber)")
-    COMPUTE_SERVICE_ACCOUNT="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
+    COMPUTE_SERVICE_ACCOUNT="21637448064-compute@developer.gserviceaccount.com"
 
     # Use Cloud Run v2 API endpoint format with environment-specific job name
     JOB_URI="https://run.googleapis.com/v2/projects/$GE_GCP_PROJECT_ID/locations/$GE_GCP_REGION/jobs/extract-$GE_ENVIRONMENT:run"
