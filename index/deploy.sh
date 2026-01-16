@@ -214,11 +214,13 @@ setup_kubectl_context() {
 
                 log_info "Creating GKE Autopilot cluster: $GE_K8S_CLUSTER"
                 local cluster_cidr=""
-                if ["$environment" = "stage"]; then
+                if [ "$environment" = "stage" ]; then
                     cluster_cidr="172.16.0.0/28"
-                else # prod
+                else
+                    # Prod environment
                     cluster_cidr="172.16.0.16/28"
                 fi
+                log_info "GKE cluster will use private CIDR: $cluster_cidr"
                 gcloud container clusters create-auto "$GE_K8S_CLUSTER" \
                     --location="$GE_GCP_REGION" \
                     --project="$GE_GCP_PROJECT_ID" \
