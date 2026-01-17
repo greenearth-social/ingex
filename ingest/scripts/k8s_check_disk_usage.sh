@@ -23,8 +23,9 @@ if [ -n "$ES_PODS" ]; then
   echo "Checking disk space for all Elasticsearch pods..."
   echo "================================================="
   for ES_POD in $ES_PODS; do
-    DISK_USAGE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" "$ES_POD" -- df -h /usr/share/elasticsearch/data 2>/dev/null | tail -n 1 | awk '{print $5}')
-    echo "$ES_POD: $DISK_USAGE"
+    echo "Pod: $ES_POD"
+    kubectl exec -n "${GE_K8S_NAMESPACE}" "$ES_POD" -- df -h /usr/share/elasticsearch/data 2>/dev/null | awk 'NR==2 {printf "  Total: %s | Used: %s | Available: %s | Use%%: %s\n", $2, $3, $4, $5}'
+    echo ""
   done
 else
   echo "No Elasticsearch pods found in namespace ${GE_K8S_NAMESPACE}"
