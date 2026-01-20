@@ -26,17 +26,6 @@ patches:
       - op: add
         path: /spec/nodeSets/0/config/node.store.allow_mmap
         value: true
-      - op: add
-        path: /spec/nodeSets/0/podTemplate/spec/affinity
-        value:
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-              - matchExpressions:
-                - key: workload
-                  operator: In
-                  values:
-                  - es-master
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
         value: 4Gi
@@ -54,7 +43,7 @@ patches:
         value: "-Xms2g -Xmx2g"
       - op: replace
         path: /spec/nodeSets/0/volumeClaimTemplates/0/spec/resources/requests/storage
-        value: 15Gi
+        value: 16Gi
       - op: add
         path: /spec/nodeSets/-
         value:
@@ -65,15 +54,6 @@ patches:
             node.store.allow_mmap: true
           podTemplate:
             spec:
-              affinity:
-                nodeAffinity:
-                  requiredDuringSchedulingIgnoredDuringExecution:
-                    nodeSelectorTerms:
-                    - matchExpressions:
-                      - key: workload
-                        operator: In
-                        values:
-                        - es-data
               containers:
               - name: elasticsearch
                 resources:
@@ -94,7 +74,7 @@ patches:
               - ReadWriteOnce
               resources:
                 requests:
-                  storage: 500Gi
+                  storage: 256Gi
   - target:
       kind: Kibana
       name: greenearth
@@ -111,17 +91,6 @@ patches:
       - op: replace
         path: /spec/podTemplate/spec/containers/0/resources/limits/cpu
         value: "500m"
-      - op: add
-        path: /spec/podTemplate/spec/affinity
-        value:
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-              - matchExpressions:
-                - key: workload
-                  operator: In
-                  values:
-                  - es-master
 
 configMapGenerator:
   - name: index-settings

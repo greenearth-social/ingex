@@ -3,12 +3,23 @@
 
 set -e
 
-GE_ENVIRONMENT="${1:-stage}"
+GE_ENVIRONMENT="${GE_ENVIRONMENT:-stage}"
 GE_K8S_NAMESPACE="greenearth-${GE_ENVIRONMENT}"
+GE_K8S_CLUSTER="greenearth-${GE_ENVIRONMENT}-cluster"
+GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
+GE_GCP_PROJECT_ID="${GE_GCP_PROJECT_ID:-greenearth-471522}"
 
 echo "Creating new Elasticsearch API key..."
 echo "Environment: ${GE_ENVIRONMENT}"
 echo "Namespace: ${GE_K8S_NAMESPACE}"
+echo ""
+
+# Set up kubectl context for the target environment
+echo "Setting kubectl context for ${GE_ENVIRONMENT} environment..."
+gcloud container clusters get-credentials "$GE_K8S_CLUSTER" \
+    --location="$GE_GCP_REGION" \
+    --project="$GE_GCP_PROJECT_ID"
+
 echo ""
 
 # Get elastic superuser credentials (required for creating API keys)
@@ -19,10 +30,19 @@ if [ -z "$ELASTICSEARCH_PASSWORD" ]; then
   exit 1
 fi
 
+# Determine pod name based on environment
+# Prod has dedicated data nodes, stage has data-only nodes
+if [ "$GE_ENVIRONMENT" = "prod" ]; then
+    ES_POD="greenearth-es-data-0"
+else
+    ES_POD="greenearth-es-data-only-0"
+fi
+
 echo "Creating API key with permissions for ingest services..."
+echo "Using pod: ${ES_POD}"
 
 # Create API key with full permissions for all indices
-API_KEY_RESPONSE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" greenearth-es-data-only-0 -- curl -k -s -X POST \
+API_KEY_RESPONSE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" "${ES_POD}" -- curl -k -s -X POST \
   -u "elastic:${ELASTICSEARCH_PASSWORD}" \
   "https://localhost:9200/_security/api_key" \
   -H "Content-Type: application/json" \
@@ -59,8 +79,16 @@ echo "Created API key (base64 encoded): $ENCODED_KEY"
 echo ""
 echo "Updating Google Secret Manager..."
 
+# Determine secret name based on environment
+# Stage uses no suffix for backwards compatibility, prod uses -prod suffix
+SECRET_NAME="elasticsearch-api-key"
+if [ "$GE_ENVIRONMENT" = "prod" ]; then
+    SECRET_NAME="elasticsearch-api-key-prod"
+fi
+
 # Update the secret in Google Secret Manager
-echo -n "$ENCODED_KEY" | gcloud secrets versions add elasticsearch-api-key --data-file=-
+echo "Storing in secret: $SECRET_NAME"
+echo -n "$ENCODED_KEY" | gcloud secrets versions add "$SECRET_NAME" --data-file=-
 
 echo ""
 echo "Done! API key has been recreated and stored in Secret Manager."

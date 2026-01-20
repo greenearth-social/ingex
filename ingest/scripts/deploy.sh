@@ -156,6 +156,13 @@ verify_vpc_connector() {
 deploy_jetstream_service() {
     log_info "Deploying jetstream-ingest service from source..."
 
+    # Determine secret names based on environment
+    # Stage uses no suffix for backwards compatibility, prod uses -prod suffix
+    local es_api_key_secret="elasticsearch-api-key"
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        es_api_key_secret="elasticsearch-api-key-prod"
+    fi
+
     # Set max-rewind based on environment
     # Stage: 15 minutes (prevent disk overflow on restart)
     # Prod: 0 (unlimited rewind for data integrity)
@@ -166,7 +173,7 @@ deploy_jetstream_service() {
         max_rewind=0
     fi
 
-    gcloud run deploy jetstream-ingest \
+    gcloud run deploy "jetstream-ingest-$GE_ENVIRONMENT" \
         --source=. \
         --region="$GE_GCP_REGION" \
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
@@ -179,7 +186,7 @@ deploy_jetstream_service() {
         --set-env-vars="GE_JETSTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/jetstream_state.json" \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
-        --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
+        --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --scaling="$GE_JETSTREAM_INSTANCES" \
         --cpu=1 \
         --memory=512Mi \
@@ -189,11 +196,22 @@ deploy_jetstream_service() {
         --allow-unauthenticated \
         --args="--max-rewind,$max_rewind"
 
-    cleanup_old_revisions "service" "jetstream-ingest"
+    cleanup_old_revisions "service" "jetstream-ingest-$GE_ENVIRONMENT"
 }
 
 deploy_megastream_service() {
     log_info "Deploying megastream-ingest service from source..."
+
+    # Determine secret names based on environment
+    # Stage uses no suffix for backwards compatibility, prod uses -prod suffix
+    local es_api_key_secret="elasticsearch-api-key"
+    local aws_access_key_secret="aws-s3-access-key"
+    local aws_secret_key_secret="aws-s3-secret-key"
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        es_api_key_secret="elasticsearch-api-key-prod"
+        aws_access_key_secret="aws-s3-access-key-prod"
+        aws_secret_key_secret="aws-s3-secret-key-prod"
+    fi
 
     # Set max-rewind based on environment
     # Stage: 15 minutes (prevent disk overflow on restart)
@@ -205,7 +223,7 @@ deploy_megastream_service() {
         max_rewind=0
     fi
 
-    gcloud run deploy megastream-ingest \
+    gcloud run deploy "megastream-ingest-$GE_ENVIRONMENT" \
         --source=. \
         --region="$GE_GCP_REGION" \
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
@@ -221,7 +239,7 @@ deploy_megastream_service() {
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-env-vars="GE_AWS_S3_BUCKET=$GE_AWS_S3_BUCKET" \
         --set-env-vars="GE_AWS_S3_PREFIX=$GE_AWS_S3_PREFIX" \
-        --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest,GE_AWS_S3_ACCESS_KEY=aws-s3-access-key:latest,GE_AWS_S3_SECRET_KEY=aws-s3-secret-key:latest" \
+        --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest,GE_AWS_S3_ACCESS_KEY=$aws_access_key_secret:latest,GE_AWS_S3_SECRET_KEY=$aws_secret_key_secret:latest" \
         --scaling="$GE_MEGASTREAM_INSTANCES" \
         --cpu=1 \
         --memory=1Gi \
@@ -231,11 +249,18 @@ deploy_megastream_service() {
         --allow-unauthenticated \
         --args="--source,s3,--mode,spool,--max-rewind,$max_rewind"
 
-    cleanup_old_revisions "service" "megastream-ingest"
+    cleanup_old_revisions "service" "megastream-ingest-$GE_ENVIRONMENT"
 }
 
 deploy_expiry_job() {
     log_info "Deploying elasticsearch-expiry job from source..."
+
+    # Determine secret names based on environment
+    # Stage uses no suffix for backwards compatibility, prod uses -prod suffix
+    local es_api_key_secret="elasticsearch-api-key"
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        es_api_key_secret="elasticsearch-api-key-prod"
+    fi
 
     # Set retention hours based on environment
     # Stage: 2 hours (aggressive cleanup for limited 8-hour capacity)
@@ -289,7 +314,7 @@ EOF
 
     log_info "Deploying elasticsearch-expiry job with buildpacks..."
 
-    gcloud run jobs deploy elasticsearch-expiry \
+    gcloud run jobs deploy "elasticsearch-expiry-$GE_ENVIRONMENT" \
         --source="$temp_dir" \
         --region="$GE_GCP_REGION" \
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
@@ -297,7 +322,7 @@ EOF
         --vpc-egress=private-ranges-only \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
-        --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
+        --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --cpu=1 \
@@ -305,11 +330,18 @@ EOF
         --task-timeout=3600 \
         --args="--retention-hours,$retention_hours"
 
-    cleanup_old_revisions "job" "elasticsearch-expiry"
+    cleanup_old_revisions "job" "elasticsearch-expiry-$GE_ENVIRONMENT"
 }
 
 deploy_extract_job() {
     log_info "Deploying extract job from source..."
+
+    # Determine secret names based on environment
+    # Stage uses no suffix for backwards compatibility, prod uses -prod suffix
+    local es_api_key_secret="elasticsearch-api-key"
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        es_api_key_secret="elasticsearch-api-key-prod"
+    fi
 
     # Set extraction parameters based on environment
     local max_records
@@ -348,20 +380,20 @@ EOF
 
     log_info "Deploying extract job with buildpacks..."
 
-    gcloud run jobs deploy extract \
+    gcloud run jobs deploy "extract-$GE_ENVIRONMENT" \
         --source="$temp_dir" \
         --region="$GE_GCP_REGION" \
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
         --env-vars-file="$temp_var_dir/extract-env-vars.yaml" \
-        --set-secrets="GE_ELASTICSEARCH_API_KEY=elasticsearch-api-key:latest" \
+        --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --cpu=2 \
         --memory=2Gi \
         --task-timeout=7200 \
         --args="--window-size-min,$window_minutes"
 
-    cleanup_old_revisions "job" "extract"
+    cleanup_old_revisions "job" "extract-$GE_ENVIRONMENT"
 }
 
 deploy_all_services() {
@@ -380,24 +412,24 @@ show_service_status() {
 
     echo
     echo "=== Cloud Run Services ==="
-    gcloud run services list --region="$GE_GCP_REGION" --filter="metadata.name:(jetstream-ingest OR megastream-ingest)"
+    gcloud run services list --region="$GE_GCP_REGION" --filter="metadata.name:(jetstream-ingest-$GE_ENVIRONMENT OR megastream-ingest-$GE_ENVIRONMENT)"
 
     echo
     echo "=== Cloud Run Jobs ==="
-    gcloud run jobs list --region="$GE_GCP_REGION" --filter="metadata.name:(elasticsearch-expiry OR extract)"
+    gcloud run jobs list --region="$GE_GCP_REGION" --filter="metadata.name:(elasticsearch-expiry-$GE_ENVIRONMENT OR extract-$GE_ENVIRONMENT)"
 
     echo
     echo "=== Service URLs ==="
-    local jetstream_url=$(gcloud run services describe jetstream-ingest --region="$GE_GCP_REGION" --format="value(status.url)" 2>/dev/null || echo "Not deployed")
-    local megastream_url=$(gcloud run services describe megastream-ingest --region="$GE_GCP_REGION" --format="value(status.url)" 2>/dev/null || echo "Not deployed")
+    local jetstream_url=$(gcloud run services describe "jetstream-ingest-$GE_ENVIRONMENT" --region="$GE_GCP_REGION" --format="value(status.url)" 2>/dev/null || echo "Not deployed")
+    local megastream_url=$(gcloud run services describe "megastream-ingest-$GE_ENVIRONMENT" --region="$GE_GCP_REGION" --format="value(status.url)" 2>/dev/null || echo "Not deployed")
 
-    echo "Jetstream Ingest: $jetstream_url"
-    echo "Megastream Ingest: $megastream_url"
+    echo "Jetstream Ingest ($GE_ENVIRONMENT): $jetstream_url"
+    echo "Megastream Ingest ($GE_ENVIRONMENT): $megastream_url"
     echo
 
     log_info "Use 'gcloud run services logs read SERVICE_NAME --region=$GE_GCP_REGION' to view logs"
-    log_info "Use 'gcloud run jobs execute elasticsearch-expiry --region=$GE_GCP_REGION' to manually run expiry"
-    log_info "Use 'gcloud run jobs execute extract --region=$GE_GCP_REGION' to manually run extract"
+    log_info "Use 'gcloud run jobs execute elasticsearch-expiry-$GE_ENVIRONMENT --region=$GE_GCP_REGION' to manually run expiry"
+    log_info "Use 'gcloud run jobs execute extract-$GE_ENVIRONMENT --region=$GE_GCP_REGION' to manually run extract"
 }
 
 main() {

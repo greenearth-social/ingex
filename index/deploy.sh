@@ -212,62 +212,22 @@ setup_kubectl_context() {
                     exit 0
                 fi
 
+                log_info "Creating GKE Autopilot cluster: $GE_K8S_CLUSTER"
+                local cluster_cidr=""
                 if [ "$environment" = "stage" ]; then
-                    log_info "Creating standard GKE cluster for stage: $GE_K8S_CLUSTER"
-                    gcloud container clusters create "$GE_K8S_CLUSTER" \
-                        --location="$GE_GCP_REGION" \
-                        --project="$GE_GCP_PROJECT_ID" \
-                        --machine-type="n2-highmem-2" \
-                        --num-nodes=2 \
-                        --disk-size=50 \
-                        --disk-type=pd-standard \
-                        --enable-autorepair \
-                        --enable-autoupgrade \
-                        --release-channel=regular \
-                        --enable-ip-alias \
-                        --enable-private-nodes \
-                        --master-ipv4-cidr="172.16.0.0/28" \
-                        --no-enable-master-authorized-networks \
-                        --no-enable-basic-auth \
-                        --no-issue-client-certificate
-                    log_success "Stage cluster created successfully"
-
-                elif [ "$environment" = "prod" ]; then
-                    log_info "Creating standard GKE cluster for prod: $GE_K8S_CLUSTER"
-
-                    gcloud container clusters create "$GE_K8S_CLUSTER" \
-                        --location="$GE_GCP_REGION" \
-                        --project="$GE_GCP_PROJECT_ID" \
-                        --machine-type="n2-standard-2" \
-                        --num-nodes=2 \
-                        --node-labels=workload=es-master \
-                        --disk-size=50 \
-                        --disk-type=pd-standard \
-                        --enable-autorepair \
-                        --enable-autoupgrade \
-                        --release-channel=regular \
-                        --enable-ip-alias \
-                        --enable-private-nodes \
-                        --master-ipv4-cidr="172.16.0.16/28" \
-                        --no-enable-master-authorized-networks \
-                        --no-enable-basic-auth \
-                        --no-issue-client-certificate
-
-                    log_info "Creating data node pool for prod..."
-                    gcloud container node-pools create data-pool \
-                        --cluster="$GE_K8S_CLUSTER" \
-                        --location="$GE_GCP_REGION" \
-                        --project="$GE_GCP_PROJECT_ID" \
-                        --machine-type="n2-highmem-2" \
-                        --num-nodes=4 \
-                        --node-labels=workload=es-data \
-                        --disk-size=100 \
-                        --disk-type=pd-standard \
-                        --enable-autorepair \
-                        --enable-autoupgrade
-
-                    log_success "Prod cluster with node pools created successfully"
+                    cluster_cidr="172.16.0.0/28"
+                else
+                    # Prod environment
+                    cluster_cidr="172.16.0.16/28"
                 fi
+                log_info "GKE cluster will use private CIDR: $cluster_cidr"
+                gcloud container clusters create-auto "$GE_K8S_CLUSTER" \
+                    --location="$GE_GCP_REGION" \
+                    --project="$GE_GCP_PROJECT_ID" \
+                    --release-channel=regular \
+                    --enable-private-nodes \
+                    --master-ipv4-cidr="$cluster_cidr"
+                log_success "Cluster created successfully"
             else
                 log_error "GKE cluster $GE_K8S_CLUSTER does not exist in project $GE_GCP_PROJECT_ID"
                 exit 1
