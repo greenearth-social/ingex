@@ -83,7 +83,24 @@ data:
             "like_count": {
               "type": "integer",
               "index": true
-            }
+            },
+            "media": {
+              "type": "nested",
+              "properties": {
+                "id": {"type": "keyword", "index": true},
+                "media_type": {"type": "keyword", "index": true},
+                "mime_type": {"type": "keyword", "index": true},
+                "size": {"type": "long", "index": true},
+                "aspect_ratio": {"type": "float", "index": true},
+                "width": {"type": "integer", "index": true},
+                "height": {"type": "integer", "index": true}
+              }
+            },
+            "contains_images": {"type": "boolean", "index": true},
+            "contains_video": {"type": "boolean", "index": true},
+            "image_count": {"type": "integer", "index": true},
+            "video_count": {"type": "integer", "index": true},
+            "media_count": {"type": "integer", "index": true}
           }
         }
       }
