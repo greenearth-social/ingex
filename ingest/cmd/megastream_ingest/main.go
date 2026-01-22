@@ -227,10 +227,12 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	var msgs []common.MegaStreamMessage
 	var tombstoneBatch []common.PostTombstoneDoc
 	var deleteBatch []common.DeleteDoc
+	var hashtagUpdates []common.HashtagUpdate
 	const batchSize = 100
 	processedCount := 0
 	deletedCount := 0
 	skippedCount := 0
+	hashtagCount := 0
 
 	for {
 		select {
@@ -281,6 +283,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						}
 					}
 					msgs = msgs[:0]
+
 					cancelBatchCtx()
 				}
 
@@ -355,6 +358,10 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Post creation - accumulate messages first
 				msgs = append(msgs, msg)
 
+				// Extract hashtags from the post content
+				hashtags := common.ExtractHashtags(msg.GetContent(), msg.GetCreatedAt())
+				hashtagUpdates = append(hashtagUpdates, hashtags...)
+
 				if len(msgs) >= batchSize {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
 					count, err := queryLikeCountsAndIndexPosts(batchCtx, msgs, esClient, dryRun, logger)
@@ -381,6 +388,22 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						}
 					}
 					msgs = msgs[:0]
+
+					// Flush hashtag updates when posts batch is flushed
+					if len(hashtagUpdates) > 0 {
+						if err := common.BulkUpdateHashtagCounts(batchCtx, esClient, "hashtags", hashtagUpdates, dryRun, logger); err != nil {
+							logger.Error("Failed to bulk update hashtag counts: %v", err)
+						} else {
+							hashtagCount += len(hashtagUpdates)
+							if dryRun {
+								logger.Debug("Dry-run: Would update %d hashtag counts (total: %d)", len(hashtagUpdates), hashtagCount)
+							} else {
+								logger.Debug("Updated %d hashtag counts (total: %d)", len(hashtagUpdates), hashtagCount)
+							}
+						}
+						hashtagUpdates = hashtagUpdates[:0]
+					}
+
 					cancelBatchCtx()
 				}
 			}
@@ -403,6 +426,20 @@ cleanup:
 				logger.Debug("Dry-run: Would index final batch: %d documents", count)
 			} else {
 				logger.Debug("Indexed final batch: %d documents", count)
+			}
+		}
+	}
+
+	// Update remaining hashtag counts
+	if len(hashtagUpdates) > 0 {
+		if err := common.BulkUpdateHashtagCounts(cleanupCtx, esClient, "hashtags", hashtagUpdates, dryRun, logger); err != nil {
+			logger.Error("Failed to bulk update final hashtag counts: %v", err)
+		} else {
+			hashtagCount += len(hashtagUpdates)
+			if dryRun {
+				logger.Debug("Dry-run: Would update final %d hashtag counts", len(hashtagUpdates))
+			} else {
+				logger.Debug("Updated final %d hashtag counts", len(hashtagUpdates))
 			}
 		}
 	}
@@ -431,7 +468,7 @@ cleanup:
 		}
 	}
 
-	logger.Info("Spooler ingestion complete. Processed: %d, Deleted: %d, Skipped: %d", processedCount, deletedCount, skippedCount)
+	logger.Info("Spooler ingestion complete. Processed: %d, Deleted: %d, Skipped: %d, Hashtag updates: %d", processedCount, deletedCount, skippedCount, hashtagCount)
 	return nil
 }
 

@@ -185,6 +185,8 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 			exportErr = runExportForPosts(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
 		case IndexTypeLikes:
 			exportErr = runExportForLikes(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
+		case IndexTypeHashtags:
+			exportErr = runExportForHashtags(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
 		case IndexTypeUnknown:
 			logger.Error("Skipping index %s: unknown index type", indexName)
 			continue
@@ -354,6 +356,80 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 	return nil
 }
 
+func runExportForHashtags(ctx context.Context, esClient *elasticsearch.Client, logger *common.IngestLogger,
+	dryRun bool, outputPath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName, startTime, endTime string, config *common.Config) error {
+
+	maxRecordsPerFile := config.ParquetMaxRecords
+	fetchSize := config.ExtractFetchSize
+
+	var fileNum = 1
+	var totalRecords int64 = 0
+	var afterHour string
+	var currentFileBatch []common.ExtractHashtag
+
+	for {
+		select {
+		case <-ctx.Done():
+			if len(currentFileBatch) > 0 && !dryRun {
+				if err := writeHashtagsParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
+					logger.Error("Failed to write final parquet file: %v", err)
+				}
+			}
+			return ctx.Err()
+		default:
+		}
+
+		response, err := common.FetchHashtags(ctx, esClient, logger, indexName, startTime, endTime, afterHour, fetchSize)
+		if err != nil {
+			return fmt.Errorf("failed to fetch hashtags: %w", err)
+		}
+
+		if len(response.Hits.Hits) == 0 {
+			logger.Debug("No more records to fetch")
+			break
+		}
+
+		batchHashtags := common.HashtagHitsToExtractHashtags(response.Hits.Hits)
+		currentFileBatch = append(currentFileBatch, batchHashtags...)
+		totalRecords += int64(len(batchHashtags))
+
+		logger.Debug("Fetched %d records (total: %d)", len(batchHashtags), totalRecords)
+
+		if maxRecordsPerFile > 0 && int64(len(currentFileBatch)) >= maxRecordsPerFile {
+			if !dryRun {
+				if err := writeHashtagsParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
+					return fmt.Errorf("failed to write parquet file: %w", err)
+				}
+				fileNum++
+			} else {
+				lastHashtag := currentFileBatch[len(currentFileBatch)-1]
+				filename := generateFilename(indexName, lastHashtag.Hour, logger)
+				logger.Debug("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
+				fileNum++
+			}
+			currentFileBatch = currentFileBatch[:0]
+		}
+
+		lastHit := response.Hits.Hits[len(response.Hits.Hits)-1]
+		afterHour = lastHit.Source.Hour
+	}
+
+	if len(currentFileBatch) > 0 {
+		if !dryRun {
+			if err := writeHashtagsParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
+				return fmt.Errorf("failed to write final parquet file: %w", err)
+			}
+		} else {
+			lastHashtag := currentFileBatch[len(currentFileBatch)-1]
+			filename := generateFilename(indexName, lastHashtag.Hour, logger)
+			logger.Debug("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
+		}
+	}
+
+	logger.Info("Export complete: %d total records in %d files", totalRecords, fileNum)
+	return nil
+}
+
 func generateFilename(indexName, lastPostTimestamp string, logger *common.IngestLogger) string {
 	// Parse the timestamp to extract date/time
 	// Expected format: "2025-10-12T09:05:56.961Z" or similar RFC3339
@@ -372,6 +448,8 @@ func generateFilename(indexName, lastPostTimestamp string, logger *common.Ingest
 		typeStr = "posts"
 	case IndexTypeLikes:
 		typeStr = "likes"
+	case IndexTypeHashtags:
+		typeStr = "hashtags"
 	case IndexTypeUnknown:
 		typeStr = "unknown"
 	default:
@@ -385,9 +463,10 @@ func generateFilename(indexName, lastPostTimestamp string, logger *common.Ingest
 type IndexType string
 
 const (
-	IndexTypePosts   IndexType = "posts"
-	IndexTypeLikes   IndexType = "likes"
-	IndexTypeUnknown IndexType = ""
+	IndexTypePosts    IndexType = "posts"
+	IndexTypeLikes    IndexType = "likes"
+	IndexTypeHashtags IndexType = "hashtags"
+	IndexTypeUnknown  IndexType = ""
 )
 
 func parseIndices(indicesStr string) []string {
@@ -420,7 +499,11 @@ func ParseIndexType(indexName string) (IndexType, error) {
 		return IndexTypeLikes, nil
 	}
 
-	return IndexTypeUnknown, fmt.Errorf("index name '%s' does not contain 'posts' or 'likes'", indexName)
+	if strings.Contains(lowerName, "hashtag") {
+		return IndexTypeHashtags, nil
+	}
+
+	return IndexTypeUnknown, fmt.Errorf("index name '%s' does not contain 'posts', 'likes', or 'hashtags'", indexName)
 }
 
 func getIndexType(indexName string, logger *common.IngestLogger) IndexType {
@@ -545,6 +628,65 @@ func writeLikesParquetFile(ctx context.Context, basePath string, isGCS bool, gcs
 		}
 
 		logger.Debug("Successfully wrote %d like records to %s", len(likes), fullPath)
+	}
+
+	return nil
+}
+
+func writeHashtagsParquetFile(ctx context.Context, basePath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName string, hashtags []common.ExtractHashtag, logger *common.IngestLogger) error {
+	if len(hashtags) == 0 {
+		return fmt.Errorf("no hashtags to write")
+	}
+
+	lastHashtag := hashtags[len(hashtags)-1]
+	filename := generateFilename(indexName, lastHashtag.Hour, logger)
+
+	if isGCS {
+		// Write to GCS using streaming parquet writer
+		fullPath := gcsPrefix + filename
+		logger.Debug("Writing %d hashtag records to: gs://%s/%s", len(hashtags), gcsBucket, fullPath)
+
+		obj := gcsClient.Bucket(gcsBucket).Object(fullPath)
+		gcsWriter := obj.NewWriter(ctx)
+
+		// Use GenericWriter for streaming
+		parquetWriter := parquet.NewGenericWriter[common.ExtractHashtag](gcsWriter)
+
+		// Write hashtags in batch
+		if _, err := parquetWriter.Write(hashtags); err != nil {
+			if err := parquetWriter.Close(); err != nil {
+				logger.Error("Failed to close parquet writer: %v", err)
+			}
+			if err := gcsClient.Close(); err != nil {
+				logger.Error("Failed to close GSC writer: %v", err)
+			}
+			return fmt.Errorf("failed to write parquet data: %w", err)
+		}
+
+		// Close parquet writer (writes footer)
+		if err := parquetWriter.Close(); err != nil {
+			if err := gcsClient.Close(); err != nil {
+				logger.Error("Failed to close GSC writer: %v", err)
+			}
+			return fmt.Errorf("failed to close parquet writer: %w", err)
+		}
+
+		// Close GCS writer (finalizes upload)
+		if err := gcsWriter.Close(); err != nil {
+			return fmt.Errorf("failed to close GCS writer: %w", err)
+		}
+
+		logger.Debug("Successfully wrote %d hashtag records to gs://%s/%s", len(hashtags), gcsBucket, fullPath)
+	} else {
+		// Write to local file (existing logic)
+		fullPath := filepath.Join(basePath, filename)
+		logger.Debug("Writing %d hashtag records to: %s", len(hashtags), fullPath)
+
+		if err := parquet.WriteFile(fullPath, hashtags); err != nil {
+			return fmt.Errorf("failed to write parquet file: %w", err)
+		}
+
+		logger.Debug("Successfully wrote %d hashtag records to %s", len(hashtags), fullPath)
 	}
 
 	return nil

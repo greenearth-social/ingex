@@ -98,3 +98,5 @@ configMapGenerator:
     literals:
       - index_shards=60
       - index_replicas=1
+      - hashtag_index_shards=10
+      - hashtag_index_replicas=1

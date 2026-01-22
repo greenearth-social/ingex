@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hashtags-alias
+data:
+  hashtags-alias.json: |
+    {
+      "actions": [
+        {
+          "add": {
+            "index": "hashtags_v1",
+            "alias": "hashtags"
+          }
+        }
+      ]
+    }

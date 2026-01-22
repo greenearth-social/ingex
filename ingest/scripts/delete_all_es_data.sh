@@ -70,6 +70,18 @@ curl -X POST "${GE_ELASTICSEARCH_URL}/post-tombstones/_delete_by_query?conflicts
 
 echo ""
 echo ""
+echo "Deleting all documents from hashtags index..."
+curl -X POST "${GE_ELASTICSEARCH_URL}/hashtags/_delete_by_query?conflicts=proceed&wait_for_completion=false" \
+  -H "Authorization: ApiKey ${GE_ELASTICSEARCH_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": {
+      "match_all": {}
+    }
+  }'
+
+echo ""
+echo ""
 echo "Deletion tasks started asynchronously."
 echo ""
 echo "Check progress with:"
