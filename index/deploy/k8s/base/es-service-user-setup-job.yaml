@@ -38,9 +38,9 @@ spec:
             sleep 10
           done
 
-          echo "Elasticsearch is ready! Creating es-service-user role and user..."
+          echo "Elasticsearch is ready! Creating/updating es-service-user role and user..."
 
-          # Create the es_service_role with specific privileges
+          # Create / update the es_service_role with specific privileges
           curl -k -X POST "https://greenearth-es-http:9200/_security/role/es_service_role" \
             -u "elastic:$ELASTIC_PASSWORD" \
             -H "Content-Type: application/json" \
@@ -55,9 +55,9 @@ spec:
             }'
 
           echo ""
-          echo "Role created successfully!"
+          echo "Role created/updated successfully!"
 
-          # Create the service user with the role
+          # Create / update the service user with the role
           curl -k -X POST "https://greenearth-es-http:9200/_security/user/$ES_SERVICE_USERNAME" \
             -u "elastic:$ELASTIC_PASSWORD" \
             -H "Content-Type: application/json" \
@@ -69,7 +69,7 @@ spec:
             }"
 
           echo ""
-          echo "User created successfully!"
+          echo "User created/updated successfully!"
           echo "es-service-user setup completed!"
       serviceAccountName: es-service-user-setup-sa
 ---
