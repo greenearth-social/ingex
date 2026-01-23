@@ -40,7 +40,7 @@ GE_ELASTICSEARCH_URL="https://greenearth-es-http:9200"
 
 echo "Will connect to: ${GE_ELASTICSEARCH_URL}"
 echo "WARNING: This will DELETE and RECREATE all data indices!"
-echo "This deletes the actual indices: posts_v1, likes_v1, post_tombstones_v1, like_tombstones_v1"
+echo "This deletes the actual indices: posts_v1, likes_v1, post_tombstones_v1, like_tombstones_v1, hashtags_v1"
 echo "The indices will be recreated from templates automatically."
 echo ""
 read -p "Are you sure you want to continue? (type 'yes' to confirm): " confirm
@@ -118,6 +118,13 @@ echo "Deleting like_tombstones_v1 index (if exists)..."
 curl -k -X DELETE "${GE_ELASTICSEARCH_URL}/like_tombstones_v1" \
   -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}" \
   2>/dev/null || echo "like_tombstones_v1 does not exist, skipping"
+
+echo ""
+echo ""
+echo "Deleting hashtags_v1 index (if exists)..."
+curl -k -X DELETE "${GE_ELASTICSEARCH_URL}/hashtags_v1" \
+  -u "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}" \
+  2>/dev/null || echo "hashtags_v1 does not exist, skipping"
 
 echo ""
 echo ""

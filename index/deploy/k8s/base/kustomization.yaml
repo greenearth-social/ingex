@@ -11,10 +11,12 @@ resources:
   - templates/post-tombstones-index-template.yaml
   - templates/likes-index-template.yaml
   - templates/like-tombstones-index-template.yaml
+  - templates/hashtags-index-template.yaml
   - templates/posts-alias.yaml
   - templates/post-tombstones-alias.yaml
   - templates/likes-alias.yaml
   - templates/like-tombstones-alias.yaml
+  - templates/hashtags-alias.yaml
 
 configMapGenerator:
   - name: index-settings
@@ -23,6 +25,8 @@ configMapGenerator:
     literals:
       - index_shards=1
       - index_replicas=0
+      - hashtag_index_shards=1
+      - hashtag_index_replicas=0
 
 configurations:
   - varreference.yaml
@@ -42,3 +46,17 @@ vars:
       apiVersion: v1
     fieldref:
       fieldpath: data.index_replicas
+  - name: HASHTAG_INDEX_SHARDS
+    objref:
+      kind: ConfigMap
+      name: index-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.hashtag_index_shards
+  - name: HASHTAG_INDEX_REPLICAS
+    objref:
+      kind: ConfigMap
+      name: index-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.hashtag_index_replicas

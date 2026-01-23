@@ -266,12 +266,15 @@ deploy_expiry_job() {
     # Stage: 2 hours (aggressive cleanup for limited 8-hour capacity)
     # Prod: 720 hours = 30 days (standard retention)
     local retention_hours
+    local hashtag_retention_hours
     if [ "$GE_ENVIRONMENT" = "stage" ]; then
         retention_hours=2
-        log_info "Stage environment: Using 2-hour retention period"
+        hashtag_retention_hours=72  # 3 days
+        log_info "Stage environment: Using 2-hour retention period, 3-day hashtag retention"
     else
         retention_hours=720
-        log_info "Production environment: Using 720-hour (30-day) retention period"
+        hashtag_retention_hours=1440  # 60 days
+        log_info "Production environment: Using 720-hour (30-day) retention period, 60-day hashtag retention"
     fi
 
     # Create a temporary directory structure for buildpacks
@@ -328,7 +331,7 @@ EOF
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=3600 \
-        --args="--retention-hours,$retention_hours"
+        --args="--retention-hours,$retention_hours,--hashtag-retention-hours,$hashtag_retention_hours"
 
     cleanup_old_revisions "job" "elasticsearch-expiry-$GE_ENVIRONMENT"
 }
@@ -351,8 +354,8 @@ deploy_extract_job() {
 
     max_records=1000000      # 1M records
     window_minutes=33       # ~1/2 hour
-    indices="posts,likes"
-    log_info "$GE_ENVIRONMENT environment: 1M max records, approx. 30 min window, indices: posts,likes"
+    indices="posts,likes,hashtags"
+    log_info "$GE_ENVIRONMENT environment: 1M max records, approx. 30 min window, indices: posts,likes,hashtags"
     destination_bucket="$GE_GCP_PROJECT_ID-ingex-extract-$GE_ENVIRONMENT"
 
     # Prepare source directory (similar to expiry job)
@@ -372,7 +375,7 @@ deploy_extract_job() {
 GE_ELASTICSEARCH_TLS_SKIP_VERIFY: "true"
 GE_LOGGING_ENABLED: "true"
 GE_GIT_SHA: "$GIT_SHA"
-GE_EXTRACT_INDICES: "posts,likes"
+GE_EXTRACT_INDICES: "posts,likes,hashtags"
 GE_ELASTICSEARCH_URL: "$GE_ELASTICSEARCH_URL"
 GE_PARQUET_DESTINATION: "gs://$destination_bucket"
 GE_PARQUET_MAX_RECORDS: "$max_records"
