@@ -377,6 +377,19 @@ deploy_schema_update() {
     log_info "Applying updated ConfigMaps (templates)..."
     kubectl apply -k "$kustomize_dir"
 
+    log_info "Cleaning up previous service user setup job..."
+    kubectl delete job es-service-user-setup -n "$namespace" --ignore-not-found=true
+    kubectl wait --for=delete job/es-service-user-setup -n "$namespace" --timeout=30s 2>/dev/null || true
+
+    log_info "Running service user setup job to update permissions..."
+    kubectl apply -f "$K8S_DIR/base/es-service-user-setup-job.yaml" -n "$namespace"
+
+    wait_for_job "es-service-user-setup" "$namespace" 180 || {
+        log_error "Service user setup job failed"
+        kubectl logs -l job-name=es-service-user-setup -n "$namespace" --tail=100 2>/dev/null || true
+        exit 1
+    }
+
     log_info "Cleaning up previous bootstrap job..."
     kubectl delete job elasticsearch-bootstrap -n "$namespace" --ignore-not-found=true
     kubectl wait --for=delete job/elasticsearch-bootstrap -n "$namespace" --timeout=30s 2>/dev/null || true
