@@ -15,6 +15,7 @@ type MegaStreamMessage interface {
 	GetThreadParentPost() string
 	GetQuotePost() string
 	GetEmbeddings() map[string][]float32
+	GetMedia() []MediaItem
 	GetTimeUs() int64
 	IsDelete() bool
 	IsAccountDeletion() bool
@@ -31,6 +32,7 @@ type megaStreamMessage struct {
 	threadParentPost string
 	quotePost        string
 	embeddings       map[string][]float32
+	media            []MediaItem
 	timeUs           int64
 	isDelete         bool
 	accountStatus    string
@@ -126,6 +128,109 @@ func (m *megaStreamMessage) parseRawPost(rawPostJSON string, logger *IngestLogge
 			m.quotePost, _ = qPost["uri"].(string)
 		}
 	}
+
+	if embed, ok := record["embed"].(map[string]interface{}); ok {
+		m.parseEmbed(embed)
+	}
+}
+
+// parseEmbed extracts media items from the embed field
+func (m *megaStreamMessage) parseEmbed(embed map[string]interface{}) {
+	embedType, _ := embed["$type"].(string)
+
+	switch embedType {
+	case "app.bsky.embed.video":
+		m.parseVideoEmbed(embed)
+	case "app.bsky.embed.images":
+		m.parseImagesEmbed(embed)
+	case "app.bsky.embed.recordWithMedia":
+		if media, ok := embed["media"].(map[string]interface{}); ok {
+			m.parseEmbed(media)
+		}
+	}
+}
+
+// parseVideoEmbed extracts video metadata from a video embed
+func (m *megaStreamMessage) parseVideoEmbed(embed map[string]interface{}) {
+	video, ok := embed["video"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	item := MediaItem{
+		MediaType: "video",
+	}
+
+	if ref, ok := video["ref"].(map[string]interface{}); ok {
+		item.ID, _ = ref["$link"].(string)
+	}
+
+	item.MimeType, _ = video["mimeType"].(string)
+
+	if size, ok := video["size"].(float64); ok {
+		item.Size = int64(size)
+	}
+
+	if aspectRatio, ok := embed["aspectRatio"].(map[string]interface{}); ok {
+		if width, ok := aspectRatio["width"].(float64); ok {
+			item.Width = int(width)
+		}
+		if height, ok := aspectRatio["height"].(float64); ok {
+			item.Height = int(height)
+		}
+		if item.Width > 0 && item.Height > 0 {
+			item.AspectRatio = float64(item.Width) / float64(item.Height)
+		}
+	}
+
+	if item.ID != "" {
+		m.media = append(m.media, item)
+	}
+}
+
+// parseImagesEmbed extracts image metadata from an images embed
+func (m *megaStreamMessage) parseImagesEmbed(embed map[string]interface{}) {
+	images, ok := embed["images"].([]interface{})
+	if !ok {
+		return
+	}
+
+	for _, img := range images {
+		imgMap, ok := img.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		item := MediaItem{
+			MediaType: "image",
+		}
+
+		if image, ok := imgMap["image"].(map[string]interface{}); ok {
+			if ref, ok := image["ref"].(map[string]interface{}); ok {
+				item.ID, _ = ref["$link"].(string)
+			}
+			item.MimeType, _ = image["mimeType"].(string)
+			if size, ok := image["size"].(float64); ok {
+				item.Size = int64(size)
+			}
+		}
+
+		if aspectRatio, ok := imgMap["aspectRatio"].(map[string]interface{}); ok {
+			if width, ok := aspectRatio["width"].(float64); ok {
+				item.Width = int(width)
+			}
+			if height, ok := aspectRatio["height"].(float64); ok {
+				item.Height = int(height)
+			}
+			if item.Width > 0 && item.Height > 0 {
+				item.AspectRatio = float64(item.Width) / float64(item.Height)
+			}
+		}
+
+		if item.ID != "" {
+			m.media = append(m.media, item)
+		}
+	}
 }
 
 // parseInferences parses the inferences JSON and extracts embeddings
@@ -211,4 +316,11 @@ func (m *megaStreamMessage) IsAccountDeletion() bool {
 
 func (m *megaStreamMessage) GetAccountStatus() string {
 	return m.accountStatus
+}
+
+func (m *megaStreamMessage) GetMedia() []MediaItem {
+	if len(m.media) == 0 {
+		return nil
+	}
+	return m.media
 }

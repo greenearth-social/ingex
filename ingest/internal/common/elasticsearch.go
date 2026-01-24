@@ -29,6 +29,17 @@ func (f Float32Array) MarshalJSON() ([]byte, error) {
 	return json.Marshal(float64Array)
 }
 
+// MediaItem represents an embedded media item (image or video) in a post
+type MediaItem struct {
+	ID          string  `json:"id"`
+	MediaType   string  `json:"media_type"`
+	MimeType    string  `json:"mime_type"`
+	Size        int64   `json:"size"`
+	AspectRatio float64 `json:"aspect_ratio"`
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+}
+
 // ElasticsearchDoc represents the document structure for indexing
 type ElasticsearchDoc struct {
 	AtURI            string                  `json:"at_uri"`
@@ -41,6 +52,12 @@ type ElasticsearchDoc struct {
 	Embeddings       map[string]Float32Array `json:"embeddings,omitempty"`
 	IndexedAt        string                  `json:"indexed_at"`
 	LikeCount        int                     `json:"like_count"`
+	Media            []MediaItem             `json:"media,omitempty"`
+	ContainsImages   bool                    `json:"contains_images"`
+	ContainsVideo    bool                    `json:"contains_video"`
+	ImageCount       int                     `json:"image_count"`
+	VideoCount       int                     `json:"video_count"`
+	MediaCount       int                     `json:"media_count"`
 }
 
 // PostTombstoneDoc represents the document structure for post deletion tombstones
@@ -421,6 +438,21 @@ func CreateElasticsearchDoc(msg MegaStreamMessage, likeCount int) ElasticsearchD
 		}
 	}
 
+	// Extract media and compute summary fields
+	media := msg.GetMedia()
+	var imageCount, videoCount int
+	for _, item := range media {
+		switch item.MediaType {
+		case "image":
+			imageCount++
+		case "video":
+			videoCount++
+		}
+	}
+	mediaCount := len(media)
+	containsImages := imageCount > 0
+	containsVideo := videoCount > 0
+
 	return ElasticsearchDoc{
 		AtURI:            msg.GetAtURI(),
 		AuthorDID:        msg.GetAuthorDID(),
@@ -432,6 +464,12 @@ func CreateElasticsearchDoc(msg MegaStreamMessage, likeCount int) ElasticsearchD
 		Embeddings:       embeddings,
 		IndexedAt:        time.Now().UTC().Format(time.RFC3339),
 		LikeCount:        likeCount,
+		Media:            media,
+		ContainsImages:   containsImages,
+		ContainsVideo:    containsVideo,
+		ImageCount:       imageCount,
+		VideoCount:       videoCount,
+		MediaCount:       mediaCount,
 	}
 }
 
@@ -799,6 +837,12 @@ type PostData struct {
 	QuotePost        string               `json:"quote_post,omitempty"`
 	Embeddings       map[string][]float32 `json:"embeddings,omitempty"`
 	IndexedAt        string               `json:"indexed_at"`
+	Media            []MediaItem          `json:"media,omitempty"`
+	ContainsImages   bool                 `json:"contains_images"`
+	ContainsVideo    bool                 `json:"contains_video"`
+	ImageCount       int                  `json:"image_count"`
+	VideoCount       int                  `json:"video_count"`
+	MediaCount       int                  `json:"media_count"`
 }
 
 // LikeData represents the _source field of a like search hit
