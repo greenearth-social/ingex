@@ -54,7 +54,8 @@ API_KEY_RESPONSE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" "${ES_POD}" -- curl -k 
         "cluster": ["monitor", "manage_index_templates"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "likes", "likes_*", "post_tombstones", "post_tombstones_*", "like_tombstones", "like_tombstones_*"],
+            "names": ["posts", "posts_*", "likes", "likes_*", "post_tombstones", 
+              "post_tombstones_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*"],
             "privileges": ["all", "maintenance", "create_index", "auto_configure"]
           }
         ]
