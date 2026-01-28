@@ -37,6 +37,7 @@ func main() {
 	config := common.LoadConfig()
 	logger := common.NewLogger(config.LoggingEnabled)
 	logger.SetDebugEnabled(*debug)
+	logger.SetMetricCollector(common.NewInMemoryMetricCollector(), config.MetricSamplingRatio)
 
 	logger.Info("Green Earth Ingex - BlueSky Ingest Service")
 	if *dryRun {
@@ -369,6 +370,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						logger.Error("Failed to bulk index batch: %v", err)
 					} else {
 						processedCount += count
+						if lastMsg := msgs[len(msgs)-1]; lastMsg.GetTimeUs() > 0 {
+							logger.Metric("megastream.freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
+						}
 						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
 						if processedCount%1000 == 0 {
 							if stateManager.CheckForNewerInstance(myStartTime) {
