@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -216,5 +217,36 @@ func TestMetricZeroSamplingRatio(t *testing.T) {
 	}
 	if summary.Count != 1 {
 		t.Errorf("Expected count 1, got %d", summary.Count)
+	}
+}
+
+func TestMetricConcurrentAccess(t *testing.T) {
+	logger := NewLogger(true)
+	mc := NewInMemoryMetricCollector()
+	logger.SetMetricCollector(mc, 0.01)
+
+	var wg sync.WaitGroup
+	numGoroutines := 10
+	numIterations := 100
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numIterations; j++ {
+				logger.Metric("concurrent.metric", float64(j))
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	summary := mc.Summary("concurrent.metric")
+	if summary == nil {
+		t.Fatal("Expected metric to be recorded")
+	}
+	expectedCount := int64(numGoroutines * numIterations)
+	if summary.Count != expectedCount {
+		t.Errorf("Expected count %d, got %d", expectedCount, summary.Count)
 	}
 }

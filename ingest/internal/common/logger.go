@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"sync"
 )
 
 // IngestLogger implements the Logger interface with configurable output
@@ -15,6 +16,7 @@ type IngestLogger struct {
 	metricCollector MetricCollector
 	samplingRatio   float64
 	metricCounts    map[string]int64
+	metricMu        sync.Mutex
 	enabled         bool
 	debugEnabled    bool
 	gitSHA          string
@@ -88,14 +90,17 @@ func (l *IngestLogger) Metric(name string, value float64) {
 		return
 	}
 
+	l.metricMu.Lock()
 	l.metricCounts[name]++
+	count := l.metricCounts[name]
+	l.metricMu.Unlock()
 
 	interval := int64(1.0 / l.samplingRatio)
 	if interval < 1 {
 		interval = 1
 	}
 
-	if l.metricCounts[name]%interval == 0 {
+	if count%interval == 0 {
 		summary := l.metricCollector.Summary(name)
 		if summary != nil {
 			l.metricLogger.Printf("%s=%.2f (count=%d, avg=%.2f, min=%.2f, max=%.2f)",
