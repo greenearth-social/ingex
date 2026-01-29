@@ -186,7 +186,7 @@ deploy_jetstream_service() {
         --set-env-vars="GE_JETSTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/jetstream_state.json" \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
-        --set-env-vars="GE_METRIC_SAMPLING_RATIO=0.01" \
+        --set-env-vars="GE_METRIC_SAMPLING_RATIO=0.005" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --scaling="$GE_JETSTREAM_INSTANCES" \
         --cpu=1 \
