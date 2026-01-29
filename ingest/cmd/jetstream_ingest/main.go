@@ -37,6 +37,7 @@ func main() {
 	config := common.LoadConfig()
 	logger := common.NewLogger(config.LoggingEnabled)
 	logger.SetDebugEnabled(*debug)
+	logger.SetMetricCollector(common.NewInMemoryMetricCollector(), config.MetricSamplingRatio)
 
 	logger.Info("Green Earth Ingex - BlueSky Jetstream Ingest Service")
 	if *dryRun {
@@ -202,7 +203,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 							hasPendingUpdate = false
 							// Log summary of batches processed since last log
 							if pendingBatchCount > 0 {
-								freshnessSeconds := calculateFreshness(pendingCursor)
+								freshnessSeconds := common.CalculateFreshness(pendingCursor)
 								logger.Debug("Indexed %d likes (skipped: %d, freshness: %ds)", pendingBatchCount, pendingSkipCount, freshnessSeconds)
 								pendingBatchCount = 0
 								pendingSkipCount = 0
@@ -477,7 +478,8 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 	for job := range batchChan {
 		batchCounter++
 		// Calculate freshness once at start
-		freshnessSeconds := calculateFreshness(job.timeUs)
+		freshnessSeconds := common.CalculateFreshness(job.timeUs)
+		logger.Metric("jetstream.freshness_sec", float64(freshnessSeconds))
 		success := true
 
 		// Handle tombstone and deletion batch
@@ -573,12 +575,3 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 	}
 }
 
-// calculateFreshness returns the lag in seconds between the given timestamp and now
-func calculateFreshness(timeUs int64) int64 {
-	if timeUs == 0 {
-		return 0
-	}
-	nowUs := time.Now().UnixMicro()
-	lagUs := nowUs - timeUs
-	return lagUs / 1_000_000 // Convert microseconds to seconds
-}

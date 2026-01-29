@@ -197,10 +197,12 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 		return fmt.Errorf("no valid documents in batch")
 	}
 
+	start := time.Now()
 	res, err := client.Bulk(
 		bytes.NewReader(buf.Bytes()),
 		client.Bulk.WithContext(ctx),
 	)
+	logger.Metric("es.bulk_index.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return fmt.Errorf("bulk request failed: %w", err)
 	}
@@ -215,6 +217,7 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 	}
 
 	var bulkResponse struct {
+		Took   int  `json:"took"`
 		Errors bool `json:"errors"`
 		Items  []map[string]struct {
 			Error *struct {
@@ -227,6 +230,8 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
 		return fmt.Errorf("failed to parse bulk response: %w", err)
 	}
+
+	logger.Metric("es.bulk_index.took_ms", float64(bulkResponse.Took))
 
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
@@ -289,10 +294,12 @@ func BulkIndexPostTombstones(ctx context.Context, client *elasticsearch.Client, 
 		return fmt.Errorf("no valid tombstones in batch")
 	}
 
+	start := time.Now()
 	res, err := client.Bulk(
 		bytes.NewReader(buf.Bytes()),
 		client.Bulk.WithContext(ctx),
 	)
+	logger.Metric("es.bulk_index_tombstones.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return fmt.Errorf("bulk tombstone request failed: %w", err)
 	}
@@ -307,6 +314,7 @@ func BulkIndexPostTombstones(ctx context.Context, client *elasticsearch.Client, 
 	}
 
 	var bulkResponse struct {
+		Took   int  `json:"took"`
 		Errors bool `json:"errors"`
 		Items  []map[string]struct {
 			Error *struct {
@@ -319,6 +327,8 @@ func BulkIndexPostTombstones(ctx context.Context, client *elasticsearch.Client, 
 	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
 		return fmt.Errorf("failed to parse bulk tombstone response: %w", err)
 	}
+
+	logger.Metric("es.bulk_index_tombstones.took_ms", float64(bulkResponse.Took))
 
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
@@ -373,10 +383,12 @@ func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string,
 		return fmt.Errorf("no valid document IDs in batch")
 	}
 
+	start := time.Now()
 	res, err := client.Bulk(
 		bytes.NewReader(buf.Bytes()),
 		client.Bulk.WithContext(ctx),
 	)
+	logger.Metric("es.bulk_delete.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return fmt.Errorf("bulk delete request failed: %w", err)
 	}
@@ -391,6 +403,7 @@ func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string,
 	}
 
 	var bulkResponse struct {
+		Took   int  `json:"took"`
 		Errors bool `json:"errors"`
 		Items  []map[string]struct {
 			Error *struct {
@@ -404,6 +417,8 @@ func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string,
 	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
 		return fmt.Errorf("failed to parse bulk delete response: %w", err)
 	}
+
+	logger.Metric("es.bulk_delete.took_ms", float64(bulkResponse.Took))
 
 	if bulkResponse.Errors {
 		hasRealErrors := false
@@ -571,10 +586,12 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 		return fmt.Errorf("no valid likes in batch")
 	}
 
+	start := time.Now()
 	res, err := client.Bulk(
 		bytes.NewReader(buf.Bytes()),
 		client.Bulk.WithContext(ctx),
 	)
+	logger.Metric("es.bulk_index_likes.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return fmt.Errorf("bulk like request failed: %w", err)
 	}
@@ -589,6 +606,7 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 	}
 
 	var bulkResponse struct {
+		Took   int  `json:"took"`
 		Errors bool `json:"errors"`
 		Items  []map[string]struct {
 			Error *struct {
@@ -601,6 +619,8 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
 		return fmt.Errorf("failed to parse bulk like response: %w", err)
 	}
+
+	logger.Metric("es.bulk_index_likes.took_ms", float64(bulkResponse.Took))
 
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
@@ -648,10 +668,12 @@ func BulkGetLikes(ctx context.Context, client *elasticsearch.Client, index strin
 	}
 
 	// Execute mget request
+	start := time.Now()
 	res, err := client.Mget(
 		bytes.NewReader(bodyJSON),
 		client.Mget.WithContext(ctx),
 	)
+	logger.Metric("es.bulk_get_likes.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return nil, fmt.Errorf("mget request failed: %w", err)
 	}
@@ -748,10 +770,12 @@ func BulkIndexLikeTombstones(ctx context.Context, client *elasticsearch.Client, 
 		return fmt.Errorf("no valid like tombstones in batch")
 	}
 
+	start := time.Now()
 	res, err := client.Bulk(
 		bytes.NewReader(buf.Bytes()),
 		client.Bulk.WithContext(ctx),
 	)
+	logger.Metric("es.bulk_index_like_tombstones.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return fmt.Errorf("bulk like tombstone request failed: %w", err)
 	}
@@ -766,6 +790,7 @@ func BulkIndexLikeTombstones(ctx context.Context, client *elasticsearch.Client, 
 	}
 
 	var bulkResponse struct {
+		Took   int  `json:"took"`
 		Errors bool `json:"errors"`
 		Items  []map[string]struct {
 			Error *struct {
@@ -778,6 +803,8 @@ func BulkIndexLikeTombstones(ctx context.Context, client *elasticsearch.Client, 
 	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
 		return fmt.Errorf("failed to parse bulk like tombstone response: %w", err)
 	}
+
+	logger.Metric("es.bulk_index_like_tombstones.took_ms", float64(bulkResponse.Took))
 
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
@@ -963,11 +990,13 @@ func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *Inges
 
 	logger.Debug("Executing search query on index '%s': %s", index, string(queryJSON))
 
+	start := time.Now()
 	res, err := client.Search(
 		client.Search.WithContext(ctx),
 		client.Search.WithIndex(index),
 		client.Search.WithBody(bytes.NewReader(queryJSON)),
 	)
+	logger.Metric("es.fetch_posts.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return response, fmt.Errorf("search request failed: %w", err)
 	}
@@ -985,6 +1014,7 @@ func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *Inges
 		return response, fmt.Errorf("failed to parse search response: %w", err)
 	}
 
+	logger.Metric("es.fetch_posts.took_ms", float64(response.Took))
 	logger.Debug("Search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
 
 	return response, nil
@@ -1040,11 +1070,13 @@ func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *Inges
 
 	logger.Debug("Executing like search query on index '%s': %s", index, string(queryJSON))
 
+	start := time.Now()
 	res, err := client.Search(
 		client.Search.WithContext(ctx),
 		client.Search.WithIndex(index),
 		client.Search.WithBody(bytes.NewReader(queryJSON)),
 	)
+	logger.Metric("es.fetch_likes.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return response, fmt.Errorf("like search request failed: %w", err)
 	}
@@ -1062,6 +1094,7 @@ func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *Inges
 		return response, fmt.Errorf("failed to parse like search response: %w", err)
 	}
 
+	logger.Metric("es.fetch_likes.took_ms", float64(response.Took))
 	logger.Debug("Like search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
 
 	return response, nil
@@ -1104,11 +1137,13 @@ func BulkGetPosts(ctx context.Context, client *elasticsearch.Client, index strin
 	}
 
 	// Execute search request
+	start := time.Now()
 	res, err := client.Search(
 		client.Search.WithContext(ctx),
 		client.Search.WithIndex(index),
 		client.Search.WithBody(bytes.NewReader(bodyJSON)),
 	)
+	logger.Metric("es.bulk_get_posts.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return nil, fmt.Errorf("search request failed: %w", err)
 	}
@@ -1458,11 +1493,13 @@ func BulkCountLikesBySubjectURIs(ctx context.Context, client *elasticsearch.Clie
 
 	logger.Debug("Executing aggregation query for %d subject URIs", len(subjectURIs))
 
+	start := time.Now()
 	res, err := client.Search(
 		client.Search.WithContext(ctx),
 		client.Search.WithIndex(index),
 		client.Search.WithBody(bytes.NewReader(queryJSON)),
 	)
+	logger.Metric("es.count_likes.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return nil, fmt.Errorf("aggregation request failed: %w", err)
 	}
@@ -1607,10 +1644,12 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 		logger.Debug("Skipped %d post like-count updates while looking for routing info due to missing posts", skippedNoRouting)
 	}
 
+	start := time.Now()
 	res, err := client.Bulk(
 		bytes.NewReader(buf.Bytes()),
 		client.Bulk.WithContext(ctx),
 	)
+	logger.Metric("es.update_like_counts.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return fmt.Errorf("bulk update request failed: %w", err)
 	}
@@ -1625,6 +1664,7 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	}
 
 	var bulkResponse struct {
+		Took   int  `json:"took"`
 		Errors bool `json:"errors"`
 		Items  []map[string]struct {
 			Status int `json:"status"`
@@ -1638,6 +1678,8 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
 		return fmt.Errorf("failed to parse bulk update response: %w", err)
 	}
+
+	logger.Metric("es.update_like_counts.took_ms", float64(bulkResponse.Took))
 
 	if bulkResponse.Errors {
 		hasRealErrors := false
@@ -1823,10 +1865,12 @@ func BulkUpdateHashtagCounts(ctx context.Context, client *elasticsearch.Client, 
 		return fmt.Errorf("no valid updates in batch")
 	}
 
+	start := time.Now()
 	res, err := client.Bulk(
 		bytes.NewReader(buf.Bytes()),
 		client.Bulk.WithContext(ctx),
 	)
+	logger.Metric("es.update_hashtags.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return fmt.Errorf("bulk request failed: %w", err)
 	}
@@ -1841,6 +1885,7 @@ func BulkUpdateHashtagCounts(ctx context.Context, client *elasticsearch.Client, 
 	}
 
 	var bulkResponse struct {
+		Took   int  `json:"took"`
 		Errors bool `json:"errors"`
 		Items  []map[string]struct {
 			Status int `json:"status"`
@@ -1854,6 +1899,8 @@ func BulkUpdateHashtagCounts(ctx context.Context, client *elasticsearch.Client, 
 	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
 		return fmt.Errorf("failed to parse bulk response: %w", err)
 	}
+
+	logger.Metric("es.update_hashtags.took_ms", float64(bulkResponse.Took))
 
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
@@ -1922,11 +1969,13 @@ func FetchHashtags(ctx context.Context, client *elasticsearch.Client, logger *In
 
 	logger.Debug("Executing hashtag search query on index '%s': %s", indexName, string(queryJSON))
 
+	start := time.Now()
 	res, err := client.Search(
 		client.Search.WithContext(ctx),
 		client.Search.WithIndex(indexName),
 		client.Search.WithBody(bytes.NewReader(queryJSON)),
 	)
+	logger.Metric("es.fetch_hashtags.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return response, fmt.Errorf("search request failed: %w", err)
 	}
@@ -1944,6 +1993,7 @@ func FetchHashtags(ctx context.Context, client *elasticsearch.Client, logger *In
 		return response, fmt.Errorf("failed to parse search response: %w", err)
 	}
 
+	logger.Metric("es.fetch_hashtags.took_ms", float64(response.Took))
 	logger.Debug("Hashtag search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
 
 	return response, nil

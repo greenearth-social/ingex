@@ -92,6 +92,39 @@ func TestLoadConfig_InvalidValues(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_MetricSamplingRatio_Default(t *testing.T) {
+	clearEnvVars()
+	config := LoadConfig()
+
+	if config.MetricSamplingRatio != 0.01 {
+		t.Errorf("Expected default MetricSamplingRatio 0.01, got %f", config.MetricSamplingRatio)
+	}
+}
+
+func TestLoadConfig_MetricSamplingRatio_EnvOverride(t *testing.T) {
+	clearEnvVars()
+	setEnvForTest(t, "GE_METRIC_SAMPLING_RATIO", "0.5")
+	defer clearEnvVars()
+
+	config := LoadConfig()
+
+	if config.MetricSamplingRatio != 0.5 {
+		t.Errorf("Expected MetricSamplingRatio 0.5, got %f", config.MetricSamplingRatio)
+	}
+}
+
+func TestLoadConfig_MetricSamplingRatio_InvalidFallback(t *testing.T) {
+	clearEnvVars()
+	setEnvForTest(t, "GE_METRIC_SAMPLING_RATIO", "invalid")
+	defer clearEnvVars()
+
+	config := LoadConfig()
+
+	if config.MetricSamplingRatio != 0.01 {
+		t.Errorf("Expected default MetricSamplingRatio 0.01 for invalid value, got %f", config.MetricSamplingRatio)
+	}
+}
+
 func clearEnvVars() {
 	envVars := []string{
 		"GE_ELASTICSEARCH_URL",
@@ -99,6 +132,7 @@ func clearEnvVars() {
 		"GE_ELASTICSEARCH_WORKERS",
 		"GE_WORKER_TIMEOUT",
 		"GE_LOGGING_ENABLED",
+		"GE_METRIC_SAMPLING_RATIO",
 		"PORT",
 	}
 

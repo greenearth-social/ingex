@@ -35,6 +35,9 @@ type Config struct {
 	// Logging configuration
 	LoggingEnabled bool
 
+	// Metric configuration
+	MetricSamplingRatio float64
+
 	// Extract/Export configuration
 	ParquetDestination string // Supports local paths (./output) or GCS paths (gs://bucket/path)
 	ParquetMaxRecords  int64
@@ -62,6 +65,7 @@ func LoadConfig() *Config {
 		AWSS3AccessKey:             getEnv("GE_AWS_S3_ACCESS_KEY", ""),
 		AWSS3SecretKey:             getEnv("GE_AWS_S3_SECRET_KEY", ""),
 		LoggingEnabled:             getEnvBool("GE_LOGGING_ENABLED", true),
+		MetricSamplingRatio:        getEnvFloat64("GE_METRIC_SAMPLING_RATIO", 0.01),
 		ParquetDestination:         getEnv("GE_PARQUET_DESTINATION", ""),
 		ParquetMaxRecords:          int64(getEnvInt("GE_PARQUET_MAX_RECORDS", 100000)),
 		ExtractFetchSize:           getEnvInt("GE_EXTRACT_FETCH_SIZE", 1000),
@@ -92,6 +96,16 @@ func getEnvBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
 		if boolValue, err := strconv.ParseBool(value); err == nil {
 			return boolValue
+		}
+	}
+	return defaultValue
+}
+
+// getEnvFloat64 returns the float64 value of an environment variable or a default value
+func getEnvFloat64(key string, defaultValue float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
+			return floatValue
 		}
 	}
 	return defaultValue
