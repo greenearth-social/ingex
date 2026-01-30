@@ -115,8 +115,8 @@ func TestBulkUpdatePostLikeCounts_DryRun(t *testing.T) {
 		{SubjectURI: "at://test", Increment: 1},
 	}
 
-	// Dry-run should not error with nil client
-	err := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", updates, true, logger)
+	// Dry-run should not error with nil client and nil cache
+	err := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", updates, nil, true, logger)
 	if err != nil {
 		t.Errorf("Expected no error in dry-run mode, got: %v", err)
 	}
@@ -126,13 +126,13 @@ func TestBulkUpdatePostLikeCounts_EmptyBatch(t *testing.T) {
 	logger := NewLogger(false)
 
 	// Empty batch should not error
-	err := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", []LikeCountUpdate{}, false, logger)
+	err := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", []LikeCountUpdate{}, nil, false, logger)
 	if err != nil {
 		t.Errorf("Expected no error for empty batch, got: %v", err)
 	}
 
 	// Nil batch should not error
-	err2 := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", nil, false, logger)
+	err2 := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", nil, nil, false, logger)
 	if err2 != nil {
 		t.Errorf("Expected no error for nil batch, got: %v", err2)
 	}
@@ -147,7 +147,7 @@ func TestBulkUpdatePostLikeCounts_EmptySubjectURI(t *testing.T) {
 	}
 
 	// Should return error when all updates have empty subject_uri
-	err := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", updates, false, logger)
+	err := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", updates, nil, false, logger)
 	if err == nil {
 		t.Error("Expected error when all updates have empty subject_uri")
 	}
@@ -180,38 +180,6 @@ func TestBulkUpdatePostLikeCounts_MixedEmptyAndValid(t *testing.T) {
 
 	if aggregated["at://valid"] != 1 {
 		t.Errorf("Expected valid post to have 1 update, got %d", aggregated["at://valid"])
-	}
-}
-
-func TestBulkCountLikesBySubjectURIs_EmptyInput(t *testing.T) {
-	logger := NewLogger(false)
-
-	// Empty slice should return empty map without error
-	result, err := BulkCountLikesBySubjectURIs(context.TODO(), nil, "likes", []string{}, logger)
-	if err != nil {
-		t.Errorf("Expected no error for empty input, got: %v", err)
-	}
-
-	if result == nil {
-		t.Error("Expected non-nil result")
-	}
-
-	if len(result) != 0 {
-		t.Errorf("Expected empty result map, got %d entries", len(result))
-	}
-
-	// Nil slice should also return empty map without error
-	result2, err2 := BulkCountLikesBySubjectURIs(context.TODO(), nil, "likes", nil, logger)
-	if err2 != nil {
-		t.Errorf("Expected no error for nil input, got: %v", err2)
-	}
-
-	if result2 == nil {
-		t.Error("Expected non-nil result for nil input")
-	}
-
-	if len(result2) != 0 {
-		t.Errorf("Expected empty result map for nil input, got %d entries", len(result2))
 	}
 }
 

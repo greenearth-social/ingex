@@ -1461,84 +1461,6 @@ type LikeCountUpdate struct {
 	Increment  int // Positive for like creation, negative for deletion
 }
 
-// BulkCountLikesBySubjectURIs queries the likes index and returns a map of subject_uri -> like count
-// Uses a terms aggregation to efficiently count likes for multiple posts in a single query
-func BulkCountLikesBySubjectURIs(ctx context.Context, client *elasticsearch.Client, index string, subjectURIs []string, logger *IngestLogger) (map[string]int, error) {
-	if len(subjectURIs) == 0 {
-		return make(map[string]int), nil
-	}
-
-	// Build aggregation query with terms bucket
-	query := map[string]interface{}{
-		"size": 0, // We only want aggregations, not individual documents
-		"query": map[string]interface{}{
-			"terms": map[string]interface{}{
-				"subject_uri": subjectURIs,
-			},
-		},
-		"aggs": map[string]interface{}{
-			"likes_per_post": map[string]interface{}{
-				"terms": map[string]interface{}{
-					"field": "subject_uri",
-					"size":  len(subjectURIs), // Get all buckets
-				},
-			},
-		},
-	}
-
-	queryJSON, err := json.Marshal(query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal aggregation query: %w", err)
-	}
-
-	logger.Debug("Executing aggregation query for %d subject URIs", len(subjectURIs))
-
-	start := time.Now()
-	res, err := client.Search(
-		client.Search.WithContext(ctx),
-		client.Search.WithIndex(index),
-		client.Search.WithBody(bytes.NewReader(queryJSON)),
-	)
-	logger.Metric("es.count_likes.duration_ms", float64(time.Since(start).Milliseconds()))
-	if err != nil {
-		return nil, fmt.Errorf("aggregation request failed: %w", err)
-	}
-	defer func() {
-		if err := res.Body.Close(); err != nil {
-			logger.Error("Failed to close aggregation response body: %v", err)
-		}
-	}()
-
-	if res.IsError() {
-		return nil, fmt.Errorf("aggregation request returned error: %s", res.String())
-	}
-
-	// Parse aggregation response
-	var aggResponse struct {
-		Aggregations struct {
-			LikesPerPost struct {
-				Buckets []struct {
-					Key      string `json:"key"`
-					DocCount int    `json:"doc_count"`
-				} `json:"buckets"`
-			} `json:"likes_per_post"`
-		} `json:"aggregations"`
-	}
-
-	if err := json.NewDecoder(res.Body).Decode(&aggResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse aggregation response: %w", err)
-	}
-
-	// Build result map
-	result := make(map[string]int)
-	for _, bucket := range aggResponse.Aggregations.LikesPerPost.Buckets {
-		result[bucket.Key] = bucket.DocCount
-	}
-
-	logger.Debug("Aggregation returned like counts for %d posts", len(result))
-	return result, nil
-}
-
 // aggregateLikeCountUpdates aggregates multiple updates to the same post
 // Returns a map of subject_uri -> total increment
 func aggregateLikeCountUpdates(updates []LikeCountUpdate) map[string]int {
@@ -1552,8 +1474,9 @@ func aggregateLikeCountUpdates(updates []LikeCountUpdate) map[string]int {
 }
 
 // BulkUpdatePostLikeCounts updates like_count fields on posts using the ES update API
-// Fetches posts first to get author_did for routing (required by posts index)
-func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) error {
+// Uses cache to reduce ES lookups for routing info (author_did)
+// cache parameter is optional (nil-safe) - if nil, all lookups go to ES
+func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, cache *PostRoutingCache, dryRun bool, logger *IngestLogger) error {
 	if len(updates) == 0 {
 		return nil
 	}
@@ -1576,10 +1499,35 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 		return fmt.Errorf("no valid updates in batch")
 	}
 
-	// Fetch posts to get author_did for routing
-	routingMap, err := BulkGetPosts(ctx, client, index, subjectURIs, logger)
-	if err != nil {
-		return fmt.Errorf("failed to fetch posts for routing: %w", err)
+	// Check cache first for routing info, then fetch remaining from ES
+	var routingMap map[string]string
+	var missingURIs []string
+	if cache != nil {
+		routingMap, missingURIs = cache.BulkGet(subjectURIs)
+	} else {
+		routingMap = make(map[string]string)
+		missingURIs = subjectURIs
+	}
+
+	// Log cache hit rate
+	if len(subjectURIs) > 0 {
+		hitRate := float64(len(routingMap)) / float64(len(subjectURIs))
+		logger.Metric("cache.post_routing.hit_rate", hitRate)
+	}
+
+	// Only query ES for cache misses
+	if len(missingURIs) > 0 {
+		esResults, err := BulkGetPosts(ctx, client, index, missingURIs, logger)
+		if err != nil {
+			return fmt.Errorf("failed to fetch posts for routing: %w", err)
+		}
+		// Merge ES results into routing map and populate cache
+		for uri, did := range esResults {
+			routingMap[uri] = did
+		}
+		if cache != nil {
+			cache.BulkAdd(esResults)
+		}
 	}
 
 	var buf bytes.Buffer

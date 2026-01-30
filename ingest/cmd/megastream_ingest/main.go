@@ -264,7 +264,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Flush post creation batch
 				if len(msgs) > 0 {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count, err := queryLikeCountsAndIndexPosts(batchCtx, msgs, esClient, dryRun, logger)
+					count, err := indexPosts(batchCtx, msgs, esClient, dryRun, logger)
 					if err != nil {
 						logger.Error("Failed to index batch before account deletion: %v", err)
 					} else {
@@ -365,7 +365,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 				if len(msgs) >= batchSize {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count, err := queryLikeCountsAndIndexPosts(batchCtx, msgs, esClient, dryRun, logger)
+					count, err := indexPosts(batchCtx, msgs, esClient, dryRun, logger)
 					if err != nil {
 						logger.Error("Failed to bulk index batch: %v", err)
 					} else {
@@ -421,7 +421,7 @@ cleanup:
 
 	// Index remaining documents in batch
 	if len(msgs) > 0 {
-		count, err := queryLikeCountsAndIndexPosts(cleanupCtx, msgs, esClient, dryRun, logger)
+		count, err := indexPosts(cleanupCtx, msgs, esClient, dryRun, logger)
 		if err != nil {
 			logger.Error("Failed to bulk index final batch: %v", err)
 		} else {
@@ -476,35 +476,20 @@ cleanup:
 	return nil
 }
 
-// queryLikeCountsAndIndexPosts queries like counts for messages and indexes them as posts
+// indexPosts creates Elasticsearch documents from messages and indexes them
+// Like counts start at 0 and are incremented by jetstream when likes arrive
 // Returns the number of documents indexed
-func queryLikeCountsAndIndexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, dryRun bool, logger *common.IngestLogger) (int, error) {
+func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, dryRun bool, logger *common.IngestLogger) (int, error) {
 	if len(msgs) == 0 {
 		return 0, nil
 	}
 
-	// Extract at_uris for like count query
-	atURIs := make([]string, len(msgs))
-	for i, m := range msgs {
-		atURIs[i] = m.GetAtURI()
-	}
-
-	// Query like counts
-	likeCounts, err := common.BulkCountLikesBySubjectURIs(ctx, esClient, "likes", atURIs, logger)
-	if err != nil {
-		logger.Error("Failed to query like counts: %v (proceeding with zero counts)", err)
-		likeCounts = make(map[string]int)
-	}
-
-	// Create docs with like counts
 	batch := make([]common.ElasticsearchDoc, 0, len(msgs))
 	for _, m := range msgs {
-		likeCount := likeCounts[m.GetAtURI()]
-		doc := common.CreateElasticsearchDoc(m, likeCount)
+		doc := common.CreateElasticsearchDoc(m, 0)
 		batch = append(batch, doc)
 	}
 
-	// Index batch
 	if err := common.BulkIndex(ctx, esClient, "posts", batch, dryRun, logger); err != nil {
 		return 0, fmt.Errorf("failed to bulk index batch: %w", err)
 	}
