@@ -43,6 +43,9 @@ type Config struct {
 	ParquetMaxRecords  int64
 	ExtractFetchSize   int
 	ExtractIndices     string
+
+	// Cache configuration
+	PostRoutingCacheSize int
 }
 
 // LoadConfig loads configuration from environment variables with defaults
@@ -70,6 +73,7 @@ func LoadConfig() *Config {
 		ParquetMaxRecords:          int64(getEnvInt("GE_PARQUET_MAX_RECORDS", 100000)),
 		ExtractFetchSize:           getEnvInt("GE_EXTRACT_FETCH_SIZE", 1000),
 		ExtractIndices:             getEnv("GE_EXTRACT_INDICES", "posts"),
+		PostRoutingCacheSize:       getEnvInt("GE_POST_ROUTING_CACHE_SIZE", 500000),
 	}
 }
 

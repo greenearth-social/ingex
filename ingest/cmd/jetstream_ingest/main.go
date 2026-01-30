@@ -102,6 +102,14 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		os.Exit(1)
 	}
 
+	// Create post routing cache to reduce ES lookups for author_did
+	routingCache, err := common.NewPostRoutingCache(config.PostRoutingCacheSize)
+	if err != nil {
+		logger.Error("Failed to create routing cache: %v", err)
+		os.Exit(1)
+	}
+	logger.Info("Created post routing cache with capacity %d", config.PostRoutingCacheSize)
+
 	// Write instance coordination file with current timestamp
 	// This allows other instances to detect when a new instance has started
 	myStartTime := time.Now().UnixMicro()
@@ -223,7 +231,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		var wg sync.WaitGroup
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, &wg)
+			go esWorker(ctx, i, batchChan, esClient, routingCache, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, &wg)
 		}
 		wg.Wait()
 		close(workersDone)
@@ -471,7 +479,7 @@ cleanup:
 }
 
 // esWorker processes batches of documents and writes them to Elasticsearch
-func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, wg *sync.WaitGroup) {
+func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, routingCache *common.PostRoutingCache, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	batchCounter := 0
@@ -516,7 +524,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 							}
 						}
 
-						if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
+						if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, routingCache, dryRun, logger); err != nil {
 							logger.Error("Worker %d: Failed to decrement post like counts: %v", id, err)
 							// Don't set success=false - this is a secondary operation
 						}
@@ -546,7 +554,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 					}
 				}
 
-				if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
+				if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, routingCache, dryRun, logger); err != nil {
 					logger.Error("Worker %d: Failed to update post like counts: %v", id, err)
 					// Don't set success=false - this is a secondary operation
 				}
