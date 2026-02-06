@@ -159,6 +159,11 @@ create_service_account() {
         --member="serviceAccount:$SA_EMAIL" \
         --role="roles/vpcaccess.user"
 
+    # Permission to write custom metrics to Cloud Monitoring
+    gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
+        --member="serviceAccount:$SA_EMAIL" \
+        --role="roles/monitoring.metricWriter"
+
     log_info "Service account permissions configured."
 }
 

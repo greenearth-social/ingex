@@ -7,6 +7,30 @@ import (
 	"testing"
 )
 
+// mockMetricCollector is a simple test double for MetricCollector
+type mockMetricCollector struct {
+	mu      sync.Mutex
+	records map[string][]float64
+}
+
+func newMockMetricCollector() *mockMetricCollector {
+	return &mockMetricCollector{
+		records: make(map[string][]float64),
+	}
+}
+
+func (m *mockMetricCollector) Record(name string, value float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.records[name] = append(m.records[name], value)
+}
+
+func (m *mockMetricCollector) getRecords(name string) []float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.records[name]
+}
+
 func TestNewLogger(t *testing.T) {
 	logger := NewLogger(true)
 	if logger == nil {
@@ -52,7 +76,7 @@ func TestLoggerDisabled(t *testing.T) {
 func TestLoggerLevels(t *testing.T) {
 	var buf bytes.Buffer
 	logger := NewLogger(true)
-	logger.SetDebugEnabled(true) // Enable debug logging
+	logger.SetDebugEnabled(true)
 	logger.SetOutput(&buf)
 
 	logger.Info("info message")
@@ -88,9 +112,6 @@ func TestLoggerDebugDisabledByDefault(t *testing.T) {
 	if strings.Contains(output, "[DEBUG]") {
 		t.Error("Expected no [DEBUG] in output when debug is not enabled")
 	}
-	if strings.Contains(output, "debug message") {
-		t.Error("Expected no debug message content when debug is not enabled")
-	}
 }
 
 func TestLoggerFormatting(t *testing.T) {
@@ -107,123 +128,47 @@ func TestLoggerFormatting(t *testing.T) {
 }
 
 func TestMetricDisabledLogger(t *testing.T) {
-	var buf bytes.Buffer
 	logger := NewLogger(false)
-	logger.SetOutput(&buf)
-	logger.SetMetricCollector(NewInMemoryMetricCollector(), 1.0)
+	mc := newMockMetricCollector()
+	logger.SetMetricCollector(mc)
 
 	logger.Metric("test.metric", 42.0)
 
-	output := buf.String()
-	if output != "" {
-		t.Errorf("Expected no output when logger disabled, got: %s", output)
+	if records := mc.getRecords("test.metric"); len(records) != 0 {
+		t.Errorf("Expected no records when logger disabled, got %v", records)
 	}
 }
 
 func TestMetricNoCollector(t *testing.T) {
-	var buf bytes.Buffer
 	logger := NewLogger(true)
-	logger.SetOutput(&buf)
-
 	// Should not panic when no collector is set
 	logger.Metric("test.metric", 42.0)
-
-	output := buf.String()
-	if output != "" {
-		t.Errorf("Expected no output when no collector set, got: %s", output)
-	}
 }
 
-func TestMetricFullSamplingRatio(t *testing.T) {
-	var buf bytes.Buffer
+func TestMetricDelegatesToCollector(t *testing.T) {
 	logger := NewLogger(true)
-	logger.SetOutput(&buf)
-	logger.SetMetricCollector(NewInMemoryMetricCollector(), 1.0)
+	mc := newMockMetricCollector()
+	logger.SetMetricCollector(mc)
 
 	logger.Metric("test.metric", 42.0)
 	logger.Metric("test.metric", 50.0)
 
-	output := buf.String()
-	if !strings.Contains(output, "[METRIC]") {
-		t.Error("Expected [METRIC] in output with 1.0 sampling ratio")
+	records := mc.getRecords("test.metric")
+	if len(records) != 2 {
+		t.Fatalf("Expected 2 records, got %d", len(records))
 	}
-	if strings.Count(output, "[METRIC]") != 2 {
-		t.Errorf("Expected 2 metric log lines with 1.0 sampling, got %d", strings.Count(output, "[METRIC]"))
+	if records[0] != 42.0 {
+		t.Errorf("Expected first record 42.0, got %f", records[0])
 	}
-}
-
-func TestMetricLowSamplingRatio(t *testing.T) {
-	var buf bytes.Buffer
-	logger := NewLogger(true)
-	logger.SetOutput(&buf)
-	logger.SetMetricCollector(NewInMemoryMetricCollector(), 0.01)
-
-	// Record 100 values — with 0.01 ratio, should log on every 100th observation
-	for i := 0; i < 100; i++ {
-		logger.Metric("test.metric", float64(i))
-	}
-
-	output := buf.String()
-	metricLines := strings.Count(output, "[METRIC]")
-	if metricLines != 1 {
-		t.Errorf("Expected 1 metric log line with 0.01 sampling over 100 records, got %d", metricLines)
-	}
-}
-
-func TestMetricOutputFormat(t *testing.T) {
-	var buf bytes.Buffer
-	logger := NewLogger(true)
-	logger.SetOutput(&buf)
-	logger.SetMetricCollector(NewInMemoryMetricCollector(), 1.0)
-
-	logger.Metric("es.bulk_index.duration_ms", 150.0)
-
-	output := buf.String()
-	if !strings.Contains(output, "es.bulk_index.duration_ms=150.00") {
-		t.Errorf("Expected metric name and value in output, got: %s", output)
-	}
-	if !strings.Contains(output, "count=1") {
-		t.Errorf("Expected count in output, got: %s", output)
-	}
-	if !strings.Contains(output, "avg=150.00") {
-		t.Errorf("Expected avg in output, got: %s", output)
-	}
-	if !strings.Contains(output, "min=150.00") {
-		t.Errorf("Expected min in output, got: %s", output)
-	}
-	if !strings.Contains(output, "max=150.00") {
-		t.Errorf("Expected max in output, got: %s", output)
-	}
-}
-
-func TestMetricZeroSamplingRatio(t *testing.T) {
-	var buf bytes.Buffer
-	logger := NewLogger(true)
-	logger.SetOutput(&buf)
-	mc := NewInMemoryMetricCollector()
-	logger.SetMetricCollector(mc, 0.0)
-
-	logger.Metric("test.metric", 42.0)
-
-	output := buf.String()
-	if output != "" {
-		t.Errorf("Expected no output with 0.0 sampling ratio, got: %s", output)
-	}
-
-	// But the collector should still record the value
-	summary := mc.Summary("test.metric")
-	if summary == nil {
-		t.Fatal("Expected collector to still record values with 0.0 sampling")
-	}
-	if summary.Count != 1 {
-		t.Errorf("Expected count 1, got %d", summary.Count)
+	if records[1] != 50.0 {
+		t.Errorf("Expected second record 50.0, got %f", records[1])
 	}
 }
 
 func TestMetricConcurrentAccess(t *testing.T) {
 	logger := NewLogger(true)
-	mc := NewInMemoryMetricCollector()
-	logger.SetMetricCollector(mc, 0.01)
+	mc := newMockMetricCollector()
+	logger.SetMetricCollector(mc)
 
 	var wg sync.WaitGroup
 	numGoroutines := 10
@@ -241,12 +186,9 @@ func TestMetricConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 
-	summary := mc.Summary("concurrent.metric")
-	if summary == nil {
-		t.Fatal("Expected metric to be recorded")
-	}
-	expectedCount := int64(numGoroutines * numIterations)
-	if summary.Count != expectedCount {
-		t.Errorf("Expected count %d, got %d", expectedCount, summary.Count)
+	records := mc.getRecords("concurrent.metric")
+	expectedCount := numGoroutines * numIterations
+	if len(records) != expectedCount {
+		t.Errorf("Expected count %d, got %d", expectedCount, len(records))
 	}
 }

@@ -36,7 +36,12 @@ type Config struct {
 	LoggingEnabled bool
 
 	// Metric configuration
-	MetricSamplingRatio float64
+	MetricExportIntervalSec int
+
+	// GCP configuration
+	GCPProjectID string
+	GCPRegion    string
+	Environment  string
 
 	// Extract/Export configuration
 	ParquetDestination string // Supports local paths (./output) or GCS paths (gs://bucket/path)
@@ -68,7 +73,10 @@ func LoadConfig() *Config {
 		AWSS3AccessKey:             getEnv("GE_AWS_S3_ACCESS_KEY", ""),
 		AWSS3SecretKey:             getEnv("GE_AWS_S3_SECRET_KEY", ""),
 		LoggingEnabled:             getEnvBool("GE_LOGGING_ENABLED", true),
-		MetricSamplingRatio:        getEnvFloat64("GE_METRIC_SAMPLING_RATIO", 0.01),
+		MetricExportIntervalSec:    getEnvInt("GE_METRIC_EXPORT_INTERVAL_SEC", 60),
+		GCPProjectID:               getEnv("GE_GCP_PROJECT_ID", ""),
+		GCPRegion:                  getEnv("GE_GCP_REGION", "us-east1"),
+		Environment:                getEnv("GE_ENVIRONMENT", "local"),
 		ParquetDestination:         getEnv("GE_PARQUET_DESTINATION", ""),
 		ParquetMaxRecords:          int64(getEnvInt("GE_PARQUET_MAX_RECORDS", 100000)),
 		ExtractFetchSize:           getEnvInt("GE_EXTRACT_FETCH_SIZE", 1000),
@@ -100,16 +108,6 @@ func getEnvBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
 		if boolValue, err := strconv.ParseBool(value); err == nil {
 			return boolValue
-		}
-	}
-	return defaultValue
-}
-
-// getEnvFloat64 returns the float64 value of an environment variable or a default value
-func getEnvFloat64(key string, defaultValue float64) float64 {
-	if value := os.Getenv(key); value != "" {
-		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
-			return floatValue
 		}
 	}
 	return defaultValue

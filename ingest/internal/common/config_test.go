@@ -92,36 +92,55 @@ func TestLoadConfig_InvalidValues(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_MetricSamplingRatio_Default(t *testing.T) {
+func TestLoadConfig_MetricExportIntervalSec_Default(t *testing.T) {
 	clearEnvVars()
 	config := LoadConfig()
 
-	if config.MetricSamplingRatio != 0.01 {
-		t.Errorf("Expected default MetricSamplingRatio 0.01, got %f", config.MetricSamplingRatio)
+	if config.MetricExportIntervalSec != 60 {
+		t.Errorf("Expected default MetricExportIntervalSec 60, got %d", config.MetricExportIntervalSec)
 	}
 }
 
-func TestLoadConfig_MetricSamplingRatio_EnvOverride(t *testing.T) {
+func TestLoadConfig_MetricExportIntervalSec_EnvOverride(t *testing.T) {
 	clearEnvVars()
-	setEnvForTest(t, "GE_METRIC_SAMPLING_RATIO", "0.5")
+	setEnvForTest(t, "GE_METRIC_EXPORT_INTERVAL_SEC", "30")
 	defer clearEnvVars()
 
 	config := LoadConfig()
 
-	if config.MetricSamplingRatio != 0.5 {
-		t.Errorf("Expected MetricSamplingRatio 0.5, got %f", config.MetricSamplingRatio)
+	if config.MetricExportIntervalSec != 30 {
+		t.Errorf("Expected MetricExportIntervalSec 30, got %d", config.MetricExportIntervalSec)
 	}
 }
 
-func TestLoadConfig_MetricSamplingRatio_InvalidFallback(t *testing.T) {
+func TestLoadConfig_GCPFields(t *testing.T) {
 	clearEnvVars()
-	setEnvForTest(t, "GE_METRIC_SAMPLING_RATIO", "invalid")
-	defer clearEnvVars()
 
 	config := LoadConfig()
+	if config.GCPProjectID != "" {
+		t.Errorf("Expected default GCPProjectID empty, got %s", config.GCPProjectID)
+	}
+	if config.GCPRegion != "us-east1" {
+		t.Errorf("Expected default GCPRegion us-east1, got %s", config.GCPRegion)
+	}
+	if config.Environment != "local" {
+		t.Errorf("Expected default Environment local, got %s", config.Environment)
+	}
 
-	if config.MetricSamplingRatio != 0.01 {
-		t.Errorf("Expected default MetricSamplingRatio 0.01 for invalid value, got %f", config.MetricSamplingRatio)
+	setEnvForTest(t, "GE_GCP_PROJECT_ID", "my-project")
+	setEnvForTest(t, "GE_GCP_REGION", "us-west1")
+	setEnvForTest(t, "GE_ENVIRONMENT", "prod")
+	defer clearEnvVars()
+
+	config = LoadConfig()
+	if config.GCPProjectID != "my-project" {
+		t.Errorf("Expected GCPProjectID my-project, got %s", config.GCPProjectID)
+	}
+	if config.GCPRegion != "us-west1" {
+		t.Errorf("Expected GCPRegion us-west1, got %s", config.GCPRegion)
+	}
+	if config.Environment != "prod" {
+		t.Errorf("Expected Environment prod, got %s", config.Environment)
 	}
 }
 
@@ -132,7 +151,10 @@ func clearEnvVars() {
 		"GE_ELASTICSEARCH_WORKERS",
 		"GE_WORKER_TIMEOUT",
 		"GE_LOGGING_ENABLED",
-		"GE_METRIC_SAMPLING_RATIO",
+		"GE_METRIC_EXPORT_INTERVAL_SEC",
+		"GE_GCP_PROJECT_ID",
+		"GE_GCP_REGION",
+		"GE_ENVIRONMENT",
 		"PORT",
 	}
 

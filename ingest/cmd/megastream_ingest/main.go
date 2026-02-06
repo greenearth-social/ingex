@@ -37,7 +37,17 @@ func main() {
 	config := common.LoadConfig()
 	logger := common.NewLogger(config.LoggingEnabled)
 	logger.SetDebugEnabled(*debug)
-	logger.SetMetricCollector(common.NewInMemoryMetricCollector(), config.MetricSamplingRatio)
+	otelCollector, otelErr := common.NewOTelMetricCollector("megastream-ingest", config.Environment, config.GCPProjectID, config.GCPRegion, config.MetricExportIntervalSec)
+	if otelErr != nil {
+		logger.Error("Failed to create OTel metric collector: %v (continuing without metrics)", otelErr)
+	} else {
+		logger.SetMetricCollector(otelCollector)
+		defer func() {
+			if err := otelCollector.Shutdown(context.Background()); err != nil {
+				logger.Error("Failed to shutdown OTel metric collector: %v", err)
+			}
+		}()
+	}
 
 	logger.Info("Green Earth Ingex - BlueSky Ingest Service")
 	if *dryRun {
