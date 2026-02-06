@@ -37,7 +37,17 @@ func main() {
 	config := common.LoadConfig()
 	logger := common.NewLogger(config.LoggingEnabled)
 	logger.SetDebugEnabled(*debug)
-	logger.SetMetricCollector(common.NewInMemoryMetricCollector(), config.MetricSamplingRatio)
+	otelCollector, err := common.NewOTelMetricCollector("jetstream-ingest", config.Environment, config.GCPProjectID, config.GCPRegion, config.MetricExportIntervalSec)
+	if err != nil {
+		logger.Error("Failed to create OTel metric collector: %v (continuing without metrics)", err)
+	} else {
+		logger.SetMetricCollector(otelCollector)
+		defer func() {
+			if err := otelCollector.Shutdown(context.Background()); err != nil {
+				logger.Error("Failed to shutdown OTel metric collector: %v", err)
+			}
+		}()
+	}
 
 	logger.Info("Green Earth Ingex - BlueSky Jetstream Ingest Service")
 	if *dryRun {
@@ -487,7 +497,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 		batchCounter++
 		// Calculate freshness once at start
 		freshnessSeconds := common.CalculateFreshness(job.timeUs)
-		logger.Metric("jetstream.freshness_sec", float64(freshnessSeconds))
+		logger.Metric("freshness_sec", float64(freshnessSeconds))
 		success := true
 
 		// Handle tombstone and deletion batch
@@ -582,4 +592,3 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 		}
 	}
 }
-

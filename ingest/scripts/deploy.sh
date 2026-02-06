@@ -186,7 +186,10 @@ deploy_jetstream_service() {
         --set-env-vars="GE_JETSTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/jetstream_state.json" \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
-        --set-env-vars="GE_METRIC_SAMPLING_RATIO=0.005" \
+        --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
+        --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
+        --set-env-vars="GE_GCP_PROJECT_ID=$GE_GCP_PROJECT_ID" \
+        --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --scaling="$GE_JETSTREAM_INSTANCES" \
         --cpu=1 \
@@ -238,7 +241,10 @@ deploy_megastream_service() {
         --set-env-vars="GE_MEGASTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/megastream_state.json" \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
-        --set-env-vars="GE_METRIC_SAMPLING_RATIO=0.01" \
+        --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
+        --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
+        --set-env-vars="GE_GCP_PROJECT_ID=$GE_GCP_PROJECT_ID" \
+        --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
         --set-env-vars="GE_AWS_S3_BUCKET=$GE_AWS_S3_BUCKET" \
         --set-env-vars="GE_AWS_S3_PREFIX=$GE_AWS_S3_PREFIX" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest,GE_AWS_S3_ACCESS_KEY=$aws_access_key_secret:latest,GE_AWS_S3_SECRET_KEY=$aws_secret_key_secret:latest" \

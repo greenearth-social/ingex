@@ -202,7 +202,7 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 		bytes.NewReader(buf.Bytes()),
 		client.Bulk.WithContext(ctx),
 	)
-	logger.Metric("es.bulk_index.duration_ms", float64(time.Since(start).Milliseconds()))
+	logger.Metric("es.bulk_index_posts.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return fmt.Errorf("bulk request failed: %w", err)
 	}
@@ -231,7 +231,7 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 		return fmt.Errorf("failed to parse bulk response: %w", err)
 	}
 
-	logger.Metric("es.bulk_index.took_ms", float64(bulkResponse.Took))
+	logger.Metric("es.bulk_index_posts.took_ms", float64(bulkResponse.Took))
 
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
@@ -1864,7 +1864,7 @@ func BulkUpdateHashtagCounts(ctx context.Context, client *elasticsearch.Client, 
 // Uses the 'hour' field for filtering since hashtags are bucketed by hour
 func FetchHashtags(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger,
 	indexName, startTime, endTime, afterHour string, fetchSize int) (HashtagSearchResponse, error) {
-	
+
 	var response HashtagSearchResponse
 
 	if fetchSize <= 0 {

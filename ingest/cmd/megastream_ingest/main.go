@@ -37,7 +37,17 @@ func main() {
 	config := common.LoadConfig()
 	logger := common.NewLogger(config.LoggingEnabled)
 	logger.SetDebugEnabled(*debug)
-	logger.SetMetricCollector(common.NewInMemoryMetricCollector(), config.MetricSamplingRatio)
+	otelCollector, otelErr := common.NewOTelMetricCollector("megastream-ingest", config.Environment, config.GCPProjectID, config.GCPRegion, config.MetricExportIntervalSec)
+	if otelErr != nil {
+		logger.Error("Failed to create OTel metric collector: %v (continuing without metrics)", otelErr)
+	} else {
+		logger.SetMetricCollector(otelCollector)
+		defer func() {
+			if err := otelCollector.Shutdown(context.Background()); err != nil {
+				logger.Error("Failed to shutdown OTel metric collector: %v", err)
+			}
+		}()
+	}
 
 	logger.Info("Green Earth Ingex - BlueSky Ingest Service")
 	if *dryRun {
@@ -371,7 +381,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					} else {
 						processedCount += count
 						if lastMsg := msgs[len(msgs)-1]; lastMsg.GetTimeUs() > 0 {
-							logger.Metric("megastream.freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
+							logger.Metric("freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
 						}
 						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
 						if processedCount%1000 == 0 {
