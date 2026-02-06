@@ -6,6 +6,7 @@ resources:
   - elasticsearch-internal-lb.yaml
   - kibana.yaml
   - deployment-state-configmap.yaml
+  - elasticsearch-exporter.yaml
   - templates/posts-index-template.yaml
   - templates/post-tombstones-index-template.yaml
   - templates/likes-index-template.yaml
