@@ -381,7 +381,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					} else {
 						processedCount += count
 						if lastMsg := msgs[len(msgs)-1]; lastMsg.GetTimeUs() > 0 {
-							logger.Metric("megastream.freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
+							logger.Metric("freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
 						}
 						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
 						if processedCount%1000 == 0 {

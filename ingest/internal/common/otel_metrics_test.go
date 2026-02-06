@@ -34,10 +34,10 @@ func TestOTelMetricCollector_HistogramForDurationMetrics(t *testing.T) {
 	reader := metric.NewManualReader()
 	collector := newOTelMetricCollectorWithReader(reader, "test-service", "local")
 
-	collector.Record("es.bulk_index.duration_ms", 150.0)
+	collector.Record("es.bulk_index_posts.duration_ms", 150.0)
 
 	rm := collectMetrics(t, reader)
-	m := requireMetric(t, rm, "es.bulk_index.duration_ms")
+	m := requireMetric(t, rm, "es.bulk_index_posts.duration_ms")
 	if _, ok := m.Data.(metricdata.Histogram[float64]); !ok {
 		t.Errorf("Expected histogram for _ms metric, got %T", m.Data)
 	}
@@ -47,10 +47,10 @@ func TestOTelMetricCollector_HistogramForSecMetrics(t *testing.T) {
 	reader := metric.NewManualReader()
 	collector := newOTelMetricCollectorWithReader(reader, "test-service", "local")
 
-	collector.Record("jetstream.freshness_sec", 5.0)
+	collector.Record("freshness_sec", 5.0)
 
 	rm := collectMetrics(t, reader)
-	m := requireMetric(t, rm, "jetstream.freshness_sec")
+	m := requireMetric(t, rm, "freshness_sec")
 	if _, ok := m.Data.(metricdata.Histogram[float64]); !ok {
 		t.Errorf("Expected histogram for _sec metric, got %T", m.Data)
 	}

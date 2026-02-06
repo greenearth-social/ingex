@@ -497,7 +497,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 		batchCounter++
 		// Calculate freshness once at start
 		freshnessSeconds := common.CalculateFreshness(job.timeUs)
-		logger.Metric("jetstream.freshness_sec", float64(freshnessSeconds))
+		logger.Metric("freshness_sec", float64(freshnessSeconds))
 		success := true
 
 		// Handle tombstone and deletion batch
@@ -592,4 +592,3 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 		}
 	}
 }
-
