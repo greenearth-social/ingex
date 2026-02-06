@@ -99,9 +99,9 @@ func newOTelMetricCollectorWithReader(reader sdkmetric.Reader, serviceName, env 
 }
 
 // Record records a metric value. Instruments are lazily created based on the metric name suffix:
-// - Names ending in "_ms" or "_sec" → histogram
-// - Names ending in "hit_rate" → gauge
+// - Names ending in "_rate" → gauge
 // - All others → histogram
+//   - E.g., names ending in "_ms" or "_sec" → histogram
 func (c *OTelMetricCollector) Record(name string, value float64) {
 	if isGaugeMetric(name) {
 		gauge := c.getOrCreateGauge(name)
@@ -118,7 +118,7 @@ func (c *OTelMetricCollector) Shutdown(ctx context.Context) error {
 }
 
 func isGaugeMetric(name string) bool {
-	return strings.HasSuffix(name, "hit_rate")
+	return strings.HasSuffix(name, "_rate")
 }
 
 func (c *OTelMetricCollector) getOrCreateHistogram(name string) metric.Float64Histogram {
