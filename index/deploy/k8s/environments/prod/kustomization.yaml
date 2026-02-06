@@ -5,6 +5,7 @@ namespace: greenearth-prod
 
 resources:
   - ../../base
+  - elasticsearch-pod-monitoring.yaml
   - max-map-count-daemonset.yaml
 
 patches:
