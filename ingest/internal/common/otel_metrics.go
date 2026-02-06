@@ -54,7 +54,7 @@ func NewOTelMetricCollector(serviceName, env, projectID, region string, exportIn
 		context.Background(),
 		resource.WithAttributes(
 			semconv.ServiceName(serviceName),
-			semconv.DeploymentEnvironment(env),
+			semconv.ServiceNamespace(env),
 			semconv.CloudRegion(region),
 		),
 	)
@@ -86,7 +86,7 @@ func newOTelMetricCollectorWithReader(reader sdkmetric.Reader, serviceName, env 
 		context.Background(),
 		resource.WithAttributes(
 			semconv.ServiceName(serviceName),
-			semconv.DeploymentEnvironment(env),
+			semconv.ServiceNamespace(env),
 		),
 	)
 
