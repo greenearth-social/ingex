@@ -6,9 +6,11 @@ import (
 	"sync"
 	"time"
 
+	"fmt"
 	gcpmetric "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
@@ -32,7 +34,12 @@ func NewOTelMetricCollector(serviceName, env, projectID, region string, exportIn
 	var err error
 
 	if projectID != "" {
-		exporter, err = gcpmetric.New(gcpmetric.WithProjectID(projectID))
+		exporter, err = gcpmetric.New(
+			gcpmetric.WithProjectID(projectID),
+			gcpmetric.WithMetricDescriptorTypeFormatter(func(m metricdata.Metrics) string {
+				return fmt.Sprintf("custom.googleapis.com/ingex/%s", m.Name)
+			}),
+		)
 		if err != nil {
 			return nil, err
 		}

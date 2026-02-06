@@ -17,15 +17,17 @@ func collectMetrics(t *testing.T, reader *metric.ManualReader) metricdata.Resour
 	return rm
 }
 
-func findMetric(rm metricdata.ResourceMetrics, name string) *metricdata.Metrics {
+func requireMetric(t *testing.T, rm metricdata.ResourceMetrics, name string) metricdata.Metrics {
+	t.Helper()
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			if m.Name == name {
-				return &m
+				return m
 			}
 		}
 	}
-	return nil
+	t.Fatalf("Expected to find metric %s", name)
+	return metricdata.Metrics{} // unreachable
 }
 
 func TestOTelMetricCollector_HistogramForDurationMetrics(t *testing.T) {
@@ -35,10 +37,7 @@ func TestOTelMetricCollector_HistogramForDurationMetrics(t *testing.T) {
 	collector.Record("es.bulk_index.duration_ms", 150.0)
 
 	rm := collectMetrics(t, reader)
-	m := findMetric(rm, "es.bulk_index.duration_ms")
-	if m == nil {
-		t.Fatal("Expected to find metric es.bulk_index.duration_ms")
-	}
+	m := requireMetric(t, rm, "es.bulk_index.duration_ms")
 	if _, ok := m.Data.(metricdata.Histogram[float64]); !ok {
 		t.Errorf("Expected histogram for _ms metric, got %T", m.Data)
 	}
@@ -51,10 +50,7 @@ func TestOTelMetricCollector_HistogramForSecMetrics(t *testing.T) {
 	collector.Record("jetstream.freshness_sec", 5.0)
 
 	rm := collectMetrics(t, reader)
-	m := findMetric(rm, "jetstream.freshness_sec")
-	if m == nil {
-		t.Fatal("Expected to find metric jetstream.freshness_sec")
-	}
+	m := requireMetric(t, rm, "jetstream.freshness_sec")
 	if _, ok := m.Data.(metricdata.Histogram[float64]); !ok {
 		t.Errorf("Expected histogram for _sec metric, got %T", m.Data)
 	}
@@ -67,10 +63,7 @@ func TestOTelMetricCollector_GaugeForHitRateMetrics(t *testing.T) {
 	collector.Record("cache.hit_rate", 0.95)
 
 	rm := collectMetrics(t, reader)
-	m := findMetric(rm, "cache.hit_rate")
-	if m == nil {
-		t.Fatal("Expected to find metric cache.hit_rate")
-	}
+	m := requireMetric(t, rm, "cache.hit_rate")
 	if _, ok := m.Data.(metricdata.Gauge[float64]); !ok {
 		t.Errorf("Expected gauge for hit_rate metric, got %T", m.Data)
 	}
@@ -83,10 +76,7 @@ func TestOTelMetricCollector_DefaultHistogram(t *testing.T) {
 	collector.Record("some.other.metric", 42.0)
 
 	rm := collectMetrics(t, reader)
-	m := findMetric(rm, "some.other.metric")
-	if m == nil {
-		t.Fatal("Expected to find metric some.other.metric")
-	}
+	m := requireMetric(t, rm, "some.other.metric")
 	if _, ok := m.Data.(metricdata.Histogram[float64]); !ok {
 		t.Errorf("Expected histogram for default metric, got %T", m.Data)
 	}
@@ -101,10 +91,7 @@ func TestOTelMetricCollector_RecordMultipleValues(t *testing.T) {
 	collector.Record("test.duration_ms", 300.0)
 
 	rm := collectMetrics(t, reader)
-	m := findMetric(rm, "test.duration_ms")
-	if m == nil {
-		t.Fatal("Expected to find metric test.duration_ms")
-	}
+	m := requireMetric(t, rm, "test.duration_ms")
 	hist, ok := m.Data.(metricdata.Histogram[float64])
 	if !ok {
 		t.Fatalf("Expected histogram, got %T", m.Data)
@@ -143,13 +130,7 @@ func TestOTelMetricCollector_MultipleMetrics(t *testing.T) {
 
 	rm := collectMetrics(t, reader)
 
-	if m := findMetric(rm, "a.duration_ms"); m == nil {
-		t.Error("Expected to find metric a.duration_ms")
-	}
-	if m := findMetric(rm, "b.hit_rate"); m == nil {
-		t.Error("Expected to find metric b.hit_rate")
-	}
-	if m := findMetric(rm, "c.other"); m == nil {
-		t.Error("Expected to find metric c.other")
-	}
+	requireMetric(t, rm, "a.duration_ms")
+	requireMetric(t, rm, "b.hit_rate")
+	requireMetric(t, rm, "c.other")
 }

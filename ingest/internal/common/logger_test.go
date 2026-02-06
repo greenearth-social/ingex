@@ -33,10 +33,6 @@ func (m *mockMetricCollector) getRecords(name string) []float64 {
 
 func TestNewLogger(t *testing.T) {
 	logger := NewLogger(true)
-	if logger == nil {
-		t.Fatal("Expected logger to be created, got nil")
-	}
-
 	if !logger.enabled {
 		t.Error("Expected logger to be enabled")
 	}
