@@ -21,16 +21,16 @@ patches:
         value: true
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
-        value: 8Gi
+        value: 12Gi
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/memory
-        value: 8Gi
+        value: 12Gi
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/cpu
-        value: "1500m"
+        value: "2500m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/cpu
-        value: "1500m"
+        value: "2500m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/env/0/value
         value: "-Xms4g -Xmx4g"
@@ -51,14 +51,14 @@ patches:
               - name: elasticsearch
                 resources:
                   requests:
-                    memory: 8Gi
-                    cpu: "1500m"
+                    memory: 12Gi
+                    cpu: "2500m"
                   limits:
-                    memory: 8Gi
-                    cpu: "1500m"
+                    memory: 12Gi
+                    cpu: "2500m"
                 env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms4g -Xmx4g"
+                  value: "-Xms12g -Xmx12g"
           volumeClaimTemplates:
           - metadata:
               name: elasticsearch-data
