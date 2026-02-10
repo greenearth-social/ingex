@@ -56,6 +56,52 @@ func TestOTelMetricCollector_HistogramForSecMetrics(t *testing.T) {
 	}
 }
 
+func TestOTelMetricCollector_FreshnessSecHasExtendedBuckets(t *testing.T) {
+	reader := metric.NewManualReader()
+	collector := newOTelMetricCollectorWithReader(reader, "test-service", "local")
+
+	collector.Record("freshness_sec", 500000.0)
+
+	rm := collectMetrics(t, reader)
+	m := requireMetric(t, rm, "freshness_sec")
+	hist, ok := m.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("Expected histogram, got %T", m.Data)
+	}
+	if len(hist.DataPoints) != 1 {
+		t.Fatalf("Expected 1 data point, got %d", len(hist.DataPoints))
+	}
+	dp := hist.DataPoints[0]
+	boundaries := dp.Bounds
+	maxBound := boundaries[len(boundaries)-1]
+	if maxBound < 1_296_000 {
+		t.Errorf("Expected max bucket boundary >= 1,296,000 (~15 days), got %f", maxBound)
+	}
+}
+
+func TestOTelMetricCollector_NonFreshnessHistogramUsesDefaultBuckets(t *testing.T) {
+	reader := metric.NewManualReader()
+	collector := newOTelMetricCollectorWithReader(reader, "test-service", "local")
+
+	collector.Record("es.bulk_index_posts.duration_ms", 150.0)
+
+	rm := collectMetrics(t, reader)
+	m := requireMetric(t, rm, "es.bulk_index_posts.duration_ms")
+	hist, ok := m.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("Expected histogram, got %T", m.Data)
+	}
+	if len(hist.DataPoints) != 1 {
+		t.Fatalf("Expected 1 data point, got %d", len(hist.DataPoints))
+	}
+	dp := hist.DataPoints[0]
+	boundaries := dp.Bounds
+	maxBound := boundaries[len(boundaries)-1]
+	if maxBound > 20_000 {
+		t.Errorf("Expected default buckets with max boundary <= 20,000, got %f", maxBound)
+	}
+}
+
 func TestOTelMetricCollector_GaugeForHitRateMetrics(t *testing.T) {
 	reader := metric.NewManualReader()
 	collector := newOTelMetricCollectorWithReader(reader, "test-service", "local")
