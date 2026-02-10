@@ -418,9 +418,14 @@ curl -k -u "es-service-user:PASSWORD" https://localhost:9200/_alias/posts
 
 ## Generating API Keys for Ingest Services
 
-The ingest services (see `../ingest/README.md`) require API keys for authentication. Follow these steps to create and configure them:
+The ingest and API services require separate API keys for authentication with different permission levels:
 
-### 1. Create API Key via Elasticsearch
+- **Ingest services** (jetstream, megastream, expiry): Need read/write access
+- **API service**: Only needs read access
+
+The `k8s_recreate_api_key.sh` script creates both keys automatically. For manual creation, follow these steps:
+
+### 1. Create API Keys via Elasticsearch
 
 With Elasticsearch running and accessible via port-forward:
 
@@ -428,19 +433,38 @@ With Elasticsearch running and accessible via port-forward:
 # Get the elastic password first
 ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $GE_K8S_NAMESPACE)
 
-# Create the API key (no expiration for operational simplicity)
+# Create the INGEST API key (read/write access)
 curl -k -X POST "https://localhost:9200/_security/api_key" \
   -u "elastic:$ELASTIC_PASSWORD" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "ingest-service-key",
+    "name": "ingest-services",
     "role_descriptors": {
       "ingest_role": {
         "cluster": ["manage_index_templates", "monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1", "likes", "likes_v1"],
-            "privileges": ["create_doc", "create", "delete", "index", "write", "maintenance", "all"]
+            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*"],
+            "privileges": ["all", "maintenance", "create_index", "auto_configure"]
+          }
+        ]
+      }
+    }
+  }'
+
+# Create the READONLY API key (read-only access for API service)
+curl -k -X POST "https://localhost:9200/_security/api_key" \
+  -u "elastic:$ELASTIC_PASSWORD" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "api-services-readonly",
+    "role_descriptors": {
+      "readonly_role": {
+        "cluster": ["monitor"],
+        "indices": [
+          {
+            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*"],
+            "privileges": ["read", "view_index_metadata"]
           }
         ]
       }
@@ -453,26 +477,33 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
 ```json
 {
   "id": "abc123...",
-  "name": "ingest-service-key",
+  "name": "ingest-services",
   "api_key": "VGhpcyBpcyBub3QgYSByZWFsIGtleQ==",
   "encoded": "YWJjMTIzOlRoaXMgaXMgbm90IGEgcmVhbCBrZXk="
 }
 ```
 
-### 2. Store API Key in Google Secret Manager
+### 2. Store API Keys in Google Secret Manager
 
-Use the `encoded` value from the API key response:
+Use the `encoded` values from the API key responses:
 
 ```bash
 # Disable shell history
 fc -p
 
-# Store the encoded API key (replace with actual value from response)
-echo -n "YWJjMTIzOlRoaXMgaXMgbm90IGEgcmVhbCBrZXk=" | gcloud secrets create elasticsearch-api-key --data-file=-
+# Store the INGEST API key (read/write - for ingest services)
+echo -n "<INGEST_ENCODED_KEY>" | gcloud secrets create elasticsearch-api-key --data-file=-
 
-# Also store the Elasticsearch URL for the ingest services
+# Store the READONLY API key (read-only - for API service)
+echo -n "<READONLY_ENCODED_KEY>" | gcloud secrets create elasticsearch-api-key-readonly --data-file=-
+
+# Also store the Elasticsearch URL for the services
 echo -n "https://your-elasticsearch-cluster:9200" | gcloud secrets create elasticsearch-url --data-file=-
 ```
+
+For production, use `-prod` suffix:
+- `elasticsearch-api-key-prod` (ingest)
+- `elasticsearch-api-key-readonly-prod` (API)
 
 ### 3. Deploy Ingest Services
 
@@ -480,11 +511,14 @@ See the docs at [/ingest/deploy/README.md](../ingest/deploy/README.md)
 
 ### API Key Management
 
-- **Expiration**: Keys are set to never expire for operational simplicity
-- **Security**: Keys have minimal required permissions for ingest operations only
-- **Rotation**: Manual rotation can be done by creating new keys and updating Secret Manager
+- **Separation of concerns**: Ingest services have read/write keys, API has read-only key
+- **Expiration**: Keys are set to expire after 365 days
+- **Security**: Each key has minimal required permissions for its specific use case
+- **Rotation**: Run `scripts/k8s_recreate_api_key.sh` to rotate both keys at once
 - **Monitoring**: Check API key status via Kibana → Stack Management → Security → API Keys
-- **Future**: Add automated key rotation and expiration when building more advanced key management
+- **Secrets**: 
+  - `elasticsearch-api-key[-prod]` - Ingest services (read/write)
+  - `elasticsearch-api-key-readonly[-prod]` - API service (read-only)
 
 **Expected responses:**
 
