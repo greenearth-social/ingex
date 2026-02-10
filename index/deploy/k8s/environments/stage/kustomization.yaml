@@ -33,7 +33,7 @@ patches:
         value: "2500m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/env/0/value
-        value: "-Xms4g -Xmx4g"
+        value: "-Xms6g -Xmx6g"
       - op: replace
         path: /spec/nodeSets/0/volumeClaimTemplates/0/spec/resources/requests/storage
         value: 32Gi
@@ -58,7 +58,7 @@ patches:
                     cpu: "2500m"
                 env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms12g -Xmx12g"
+                  value: "-Xms6g -Xmx6g"
           volumeClaimTemplates:
           - metadata:
               name: elasticsearch-data
