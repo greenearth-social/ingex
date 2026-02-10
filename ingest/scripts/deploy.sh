@@ -100,8 +100,31 @@ validate_config() {
     log_info "Configuration validation complete."
 }
 
+configure_kubectl() {
+    log_info "Configuring kubectl context for $GE_ENVIRONMENT environment..."
+
+    local cluster_name="greenearth-${GE_ENVIRONMENT}-cluster"
+
+    if ! gcloud container clusters get-credentials "$cluster_name" \
+        --location="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" 2>/dev/null; then
+        log_warn "Could not configure kubectl for cluster $cluster_name"
+        log_warn "If you need to auto-detect Elasticsearch URL, set GE_ELASTICSEARCH_URL manually"
+        return 1
+    fi
+
+    log_info "kubectl configured for cluster: $cluster_name"
+    return 0
+}
+
 get_elasticsearch_internal_lb_ip() {
     log_info "Getting Elasticsearch internal load balancer IP..."
+
+    # Skip if already set via environment variable
+    if [ -n "$GE_ELASTICSEARCH_URL" ] && [ "$GE_ELASTICSEARCH_URL" != "INTERNAL_LB_PLACEHOLDER" ]; then
+        log_info "Using provided GE_ELASTICSEARCH_URL: $GE_ELASTICSEARCH_URL"
+        return 0
+    fi
 
     # Try to get the internal load balancer IP from the Kubernetes service
     # This assumes the load balancer has been deployed and has an assigned IP
@@ -457,6 +480,12 @@ main() {
 
     validate_config
     verify_vpc_connector
+
+    # Configure kubectl if needed for ES URL auto-detection
+    if [ -z "$GE_ELASTICSEARCH_URL" ] || [ "$GE_ELASTICSEARCH_URL" = "INTERNAL_LB_PLACEHOLDER" ]; then
+        configure_kubectl
+    fi
+
     get_elasticsearch_internal_lb_ip
 
     case "$service" in
