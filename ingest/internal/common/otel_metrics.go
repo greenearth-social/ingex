@@ -68,6 +68,7 @@ func NewOTelMetricCollector(serviceName, env, projectID, region string, exportIn
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(reader),
 		sdkmetric.WithResource(res),
+		sdkmetric.WithView(freshnessSecView()),
 	)
 
 	meter := provider.Meter("greenearth/ingex")
@@ -93,6 +94,7 @@ func newOTelMetricCollectorWithReader(reader sdkmetric.Reader, serviceName, env 
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(reader),
 		sdkmetric.WithResource(res),
+		sdkmetric.WithView(freshnessSecView()),
 	)
 
 	meter := provider.Meter("greenearth/ingex")
@@ -126,6 +128,22 @@ func (c *OTelMetricCollector) Shutdown(ctx context.Context) error {
 
 func isGaugeMetric(name string) bool {
 	return strings.HasSuffix(name, "_rate")
+}
+
+func freshnessSecView() sdkmetric.View {
+	return sdkmetric.NewView(
+		sdkmetric.Instrument{Name: "freshness_sec"},
+		sdkmetric.Stream{
+			Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+				Boundaries: []float64{
+					10, 30, 60, 300, 600,
+					1800, 3600, 7200, 14400, 28800,
+					43200, 86400, 172800, 345600, 691200,
+					1296000,
+				},
+			},
+		},
+	)
 }
 
 func (c *OTelMetricCollector) getOrCreateHistogram(name string) metric.Float64Histogram {
