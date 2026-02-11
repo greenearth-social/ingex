@@ -179,7 +179,7 @@ deploy_jetstream_service() {
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest,GOOGLE_RUNTIME_VERSION=1.25" \
+        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest,GOOGLE_RUNTIME_VERSION=1.25.7" \
         --set-env-vars="GE_JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
@@ -233,7 +233,7 @@ deploy_megastream_service() {
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest,GOOGLE_RUNTIME_VERSION=1.25" \
+        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest,GOOGLE_RUNTIME_VERSION=1.25.7" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --set-env-vars="GE_SPOOL_INTERVAL_SEC=60" \
@@ -331,7 +331,7 @@ EOF
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-build-env-vars="GOOGLE_RUNTIME_VERSION=1.25" \
+        --set-build-env-vars="GOOGLE_RUNTIME_VERSION=1.25.7" \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
@@ -398,7 +398,7 @@ EOF
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-build-env-vars="GOOGLE_RUNTIME_VERSION=1.25" \
+        --set-build-env-vars="GOOGLE_RUNTIME_VERSION=1.25.7" \
         --env-vars-file="$temp_var_dir/extract-env-vars.yaml" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --cpu=2 \
