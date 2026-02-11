@@ -7,6 +7,9 @@
 # Ignore deployment configs in subdirectories
 cmd/*/app.yaml
 
+# Ignore test data (large files not needed for remote builds)
+test_data/
+
 # Keep go.mod and go.sum at root
 !go.mod
 !go.sum
