@@ -15,35 +15,43 @@ patches:
     patch: |-
       - op: replace
         path: /spec/nodeSets/0/name
-        value: master-data
+        value: master
+      - op: replace
+        path: /spec/nodeSets/0/count
+        value: 2
+      - op: replace
+        path: /spec/nodeSets/0/config
+        value:
+          node.roles: ["master"]
+          node.store.allow_mmap: true
       - op: add
         path: /spec/nodeSets/0/config/node.store.allow_mmap
         value: true
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
-        value: 12Gi
+        value: 2Gi
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/memory
-        value: 12Gi
+        value: 2Gi
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/cpu
-        value: "2500m"
+        value: "250m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/cpu
-        value: "2500m"
+        value: "250m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/env/0/value
-        value: "-Xms6g -Xmx6g"
+        value: "-Xms1g -Xmx1g"
       - op: replace
         path: /spec/nodeSets/0/volumeClaimTemplates/0/spec/resources/requests/storage
-        value: 32Gi
+        value: 8Gi
       - op: add
         path: /spec/nodeSets/-
         value:
-          name: data-only
-          count: 1
+          name: data
+          count: 2
           config:
-            node.roles: ["data"]
+            node.roles: ["data", "ingest"]
             node.store.allow_mmap: true
           podTemplate:
             spec:
@@ -51,14 +59,14 @@ patches:
               - name: elasticsearch
                 resources:
                   requests:
-                    memory: 12Gi
-                    cpu: "2500m"
+                    memory: 10Gi
+                    cpu: "2250m"
                   limits:
-                    memory: 12Gi
-                    cpu: "2500m"
+                    memory: 10Gi
+                    cpu: "2250m"
                 env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms6g -Xmx6g"
+                  value: "-Xms5g -Xmx5g"
           volumeClaimTemplates:
           - metadata:
               name: elasticsearch-data

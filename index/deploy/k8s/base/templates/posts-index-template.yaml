@@ -10,6 +10,9 @@ data:
         "settings": {
           "number_of_shards": $(INDEX_SHARDS),
           "number_of_replicas": $(INDEX_REPLICAS),
+          "refresh_interval": "30s",
+          "translog.durability": "async",
+          "translog.sync_interval": "30s",
           "analysis": {
             "analyzer": {
               "content_analyzer": {
