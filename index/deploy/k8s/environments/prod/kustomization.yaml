@@ -60,13 +60,13 @@ patches:
                 resources:
                   requests:
                     memory: 12Gi
-                    cpu: "3000m"
+                    cpu: "6000m"
                   limits:
                     memory: 12Gi
-                    cpu: "3000m"
+                    cpu: "6000m"
                 env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms5g -Xmx5g"
+                  value: "-Xms6g -Xmx6g"
           volumeClaimTemplates:
           - metadata:
               name: elasticsearch-data
@@ -75,7 +75,7 @@ patches:
               - ReadWriteOnce
               resources:
                 requests:
-                  storage: 512Gi
+                  storage: 1024Gi
   - target:
       kind: Kibana
       name: greenearth
