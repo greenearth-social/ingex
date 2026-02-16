@@ -16,6 +16,9 @@ type MegaStreamMessage interface {
 	GetQuotePost() string
 	GetEmbeddings() map[string][]float32
 	GetMedia() []MediaItem
+	GetExternalEmbed() *ExternalEmbed
+	GetVideoTranscript() string
+	GetVideoTranscriptLanguage() string
 	GetTimeUs() int64
 	IsDelete() bool
 	IsAccountDeletion() bool
@@ -24,19 +27,22 @@ type MegaStreamMessage interface {
 
 // megaStreamMessage is the implementation of MegaStreamMessage
 type megaStreamMessage struct {
-	atURI            string
-	did              string
-	content          string
-	createdAt        string
-	threadRootPost   string
-	threadParentPost string
-	quotePost        string
-	embeddings       map[string][]float32
-	media            []MediaItem
-	timeUs           int64
-	isDelete         bool
-	accountStatus    string
-	parseError       error
+	atURI                   string
+	did                     string
+	content                 string
+	createdAt               string
+	threadRootPost          string
+	threadParentPost        string
+	quotePost               string
+	embeddings              map[string][]float32
+	media                   []MediaItem
+	externalEmbed           *ExternalEmbed
+	videoTranscript         string
+	videoTranscriptLanguage string
+	timeUs                  int64
+	isDelete                bool
+	accountStatus           string
+	parseError              error
 }
 
 // NewMegaStreamMessage creates a new MegaStreamMessage from raw SQLite data
@@ -143,6 +149,8 @@ func (m *megaStreamMessage) parseEmbed(embed map[string]interface{}) {
 		m.parseVideoEmbed(embed)
 	case "app.bsky.embed.images":
 		m.parseImagesEmbed(embed)
+	case "app.bsky.embed.external":
+		m.parseExternalEmbed(embed)
 	case "app.bsky.embed.recordWithMedia":
 		if media, ok := embed["media"].(map[string]interface{}); ok {
 			m.parseEmbed(media)
@@ -205,6 +213,8 @@ func (m *megaStreamMessage) parseImagesEmbed(embed map[string]interface{}) {
 			MediaType: "image",
 		}
 
+		item.AltText, _ = imgMap["alt"].(string)
+
 		if image, ok := imgMap["image"].(map[string]interface{}); ok {
 			if ref, ok := image["ref"].(map[string]interface{}); ok {
 				item.ID, _ = ref["$link"].(string)
@@ -233,6 +243,25 @@ func (m *megaStreamMessage) parseImagesEmbed(embed map[string]interface{}) {
 	}
 }
 
+// parseExternalEmbed extracts external link card data from an external embed
+func (m *megaStreamMessage) parseExternalEmbed(embed map[string]interface{}) {
+	external, ok := embed["external"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	uri, _ := external["uri"].(string)
+	if uri == "" {
+		return
+	}
+
+	m.externalEmbed = &ExternalEmbed{
+		URI: uri,
+	}
+	m.externalEmbed.Title, _ = external["title"].(string)
+	m.externalEmbed.Description, _ = external["description"].(string)
+}
+
 // parseInferences parses the inferences JSON and extracts embeddings
 func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *IngestLogger) {
 	var inferences map[string]interface{}
@@ -241,24 +270,44 @@ func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *Inges
 		return
 	}
 
-	textEmbeddings, ok := inferences["text_embeddings"].(map[string]interface{})
+	if textEmbeddings, ok := inferences["text_embeddings"].(map[string]interface{}); ok {
+		if embL12, ok := textEmbeddings["all-MiniLM-L12-v2"].(string); ok {
+			if decoded, err := decodeEmbedding(embL12); err == nil {
+				m.embeddings["all_MiniLM_L12_v2"] = decoded
+			} else {
+				logger.Debug("Failed to decode L12 embedding for %s: %v", m.atURI, err)
+			}
+		}
+
+		if embL6, ok := textEmbeddings["all-MiniLM-L6-v2"].(string); ok {
+			if decoded, err := decodeEmbedding(embL6); err == nil {
+				m.embeddings["all_MiniLM_L6_v2"] = decoded
+			} else {
+				logger.Debug("Failed to decode L6 embedding for %s: %v", m.atURI, err)
+			}
+		}
+	}
+
+	video, ok := inferences["video"].(map[string]interface{})
 	if !ok {
 		return
 	}
 
-	if embL12, ok := textEmbeddings["all-MiniLM-L12-v2"].(string); ok {
-		if decoded, err := decodeEmbedding(embL12); err == nil {
-			m.embeddings["all_MiniLM_L12_v2"] = decoded
-		} else {
-			logger.Debug("Failed to decode L12 embedding for %s: %v", m.atURI, err)
-		}
+	audioTranscription, ok := video["audio_transcription"].(map[string]interface{})
+	if !ok {
+		return
 	}
 
-	if embL6, ok := textEmbeddings["all-MiniLM-L6-v2"].(string); ok {
-		if decoded, err := decodeEmbedding(embL6); err == nil {
-			m.embeddings["all_MiniLM_L6_v2"] = decoded
-		} else {
-			logger.Debug("Failed to decode L6 embedding for %s: %v", m.atURI, err)
+	m.videoTranscript, _ = audioTranscription["text"].(string)
+	m.videoTranscriptLanguage, _ = audioTranscription["language"].(string)
+
+	if embeddingsMap, ok := audioTranscription["embeddings"].(map[string]interface{}); ok {
+		if embGemma, ok := embeddingsMap["google/embeddinggemma-300m"].(string); ok {
+			if decoded, err := decodeEmbedding(embGemma); err == nil {
+				m.embeddings["google_embeddinggemma_300m"] = decoded
+			} else {
+				logger.Debug("Failed to decode embeddinggemma-300m for %s: %v", m.atURI, err)
+			}
 		}
 	}
 }
@@ -316,6 +365,18 @@ func (m *megaStreamMessage) IsAccountDeletion() bool {
 
 func (m *megaStreamMessage) GetAccountStatus() string {
 	return m.accountStatus
+}
+
+func (m *megaStreamMessage) GetExternalEmbed() *ExternalEmbed {
+	return m.externalEmbed
+}
+
+func (m *megaStreamMessage) GetVideoTranscript() string {
+	return m.videoTranscript
+}
+
+func (m *megaStreamMessage) GetVideoTranscriptLanguage() string {
+	return m.videoTranscriptLanguage
 }
 
 func (m *megaStreamMessage) GetMedia() []MediaItem {

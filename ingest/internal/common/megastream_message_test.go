@@ -501,6 +501,394 @@ func TestMegaStreamMessage_RecordWithMediaVideoEmbed(t *testing.T) {
 	}
 }
 
+func TestMegaStreamMessage_ImageAltTextParsing(t *testing.T) {
+	logger := NewLogger(false)
+
+	t.Run("single image with alt text", func(t *testing.T) {
+		rawPostJSON := `{
+			"message": {
+				"commit": {
+					"operation": "create",
+					"record": {
+						"text": "A photo",
+						"createdAt": "2025-01-27T12:00:00Z",
+						"embed": {
+							"$type": "app.bsky.embed.images",
+							"images": [
+								{
+									"alt": "Cape Forchu, NS",
+									"image": {
+										"$type": "blob",
+										"ref": {"$link": "bafkreiimage1"},
+										"mimeType": "image/jpeg",
+										"size": 980954
+									},
+									"aspectRatio": {"width": 2000, "height": 1332}
+								}
+							]
+						}
+					}
+				}
+			}
+		}`
+
+		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
+		media := msg.GetMedia()
+
+		if len(media) != 1 {
+			t.Fatalf("Expected 1 media item, got %d", len(media))
+		}
+		if media[0].AltText != "Cape Forchu, NS" {
+			t.Errorf("Expected AltText 'Cape Forchu, NS', got %q", media[0].AltText)
+		}
+	})
+
+	t.Run("multiple images with mixed alt text", func(t *testing.T) {
+		rawPostJSON := `{
+			"message": {
+				"commit": {
+					"operation": "create",
+					"record": {
+						"text": "Multiple images",
+						"createdAt": "2025-01-27T12:00:00Z",
+						"embed": {
+							"$type": "app.bsky.embed.images",
+							"images": [
+								{
+									"alt": "",
+									"image": {
+										"ref": {"$link": "bafkreiimage1"},
+										"mimeType": "image/jpeg",
+										"size": 500623
+									},
+									"aspectRatio": {"width": 1499, "height": 2000}
+								},
+								{
+									"alt": "A beautiful painting",
+									"image": {
+										"ref": {"$link": "bafkreiimage2"},
+										"mimeType": "image/jpeg",
+										"size": 951096
+									},
+									"aspectRatio": {"width": 1499, "height": 2000}
+								}
+							]
+						}
+					}
+				}
+			}
+		}`
+
+		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
+		media := msg.GetMedia()
+
+		if len(media) != 2 {
+			t.Fatalf("Expected 2 media items, got %d", len(media))
+		}
+		if media[0].AltText != "" {
+			t.Errorf("Expected empty AltText for first image, got %q", media[0].AltText)
+		}
+		if media[1].AltText != "A beautiful painting" {
+			t.Errorf("Expected AltText 'A beautiful painting', got %q", media[1].AltText)
+		}
+	})
+
+	t.Run("alt text in CreateElasticsearchDoc", func(t *testing.T) {
+		rawPostJSON := `{
+			"message": {
+				"commit": {
+					"operation": "create",
+					"record": {
+						"text": "A photo",
+						"createdAt": "2025-01-27T12:00:00Z",
+						"embed": {
+							"$type": "app.bsky.embed.images",
+							"images": [
+								{
+									"alt": "Cape Forchu, NS",
+									"image": {
+										"ref": {"$link": "bafkreiimage1"},
+										"mimeType": "image/jpeg",
+										"size": 980954
+									},
+									"aspectRatio": {"width": 2000, "height": 1332}
+								}
+							]
+						}
+					}
+				}
+			}
+		}`
+
+		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
+		doc := CreateElasticsearchDoc(msg, 0)
+
+		if len(doc.Media) != 1 {
+			t.Fatalf("Expected 1 media item in doc, got %d", len(doc.Media))
+		}
+		if doc.Media[0].AltText != "Cape Forchu, NS" {
+			t.Errorf("Expected AltText 'Cape Forchu, NS' in doc, got %q", doc.Media[0].AltText)
+		}
+	})
+}
+
+func TestMegaStreamMessage_ExternalEmbedParsing(t *testing.T) {
+	logger := NewLogger(false)
+
+	t.Run("external embed with all fields", func(t *testing.T) {
+		rawPostJSON := `{
+			"message": {
+				"commit": {
+					"operation": "create",
+					"record": {
+						"text": "Check this out",
+						"createdAt": "2025-12-12T02:14:29.851Z",
+						"embed": {
+							"$type": "app.bsky.embed.external",
+							"external": {
+								"description": "A cartoon dog sitting at a table",
+								"title": "Funny GIF",
+								"uri": "https://media.tenor.com/example.gif"
+							}
+						}
+					}
+				}
+			}
+		}`
+
+		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
+		embed := msg.GetExternalEmbed()
+
+		if embed == nil {
+			t.Fatal("Expected non-nil ExternalEmbed")
+		}
+		if embed.URI != "https://media.tenor.com/example.gif" {
+			t.Errorf("Expected URI 'https://media.tenor.com/example.gif', got %q", embed.URI)
+		}
+		if embed.Title != "Funny GIF" {
+			t.Errorf("Expected Title 'Funny GIF', got %q", embed.Title)
+		}
+		if embed.Description != "A cartoon dog sitting at a table" {
+			t.Errorf("Expected Description 'A cartoon dog sitting at a table', got %q", embed.Description)
+		}
+	})
+
+	t.Run("no external embed", func(t *testing.T) {
+		rawPostJSON := `{
+			"message": {
+				"commit": {
+					"operation": "create",
+					"record": {
+						"text": "Just text",
+						"createdAt": "2025-01-27T12:00:00Z"
+					}
+				}
+			}
+		}`
+
+		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
+		embed := msg.GetExternalEmbed()
+
+		if embed != nil {
+			t.Errorf("Expected nil ExternalEmbed, got %+v", embed)
+		}
+	})
+
+	t.Run("external embed in CreateElasticsearchDoc", func(t *testing.T) {
+		rawPostJSON := `{
+			"message": {
+				"commit": {
+					"operation": "create",
+					"record": {
+						"text": "Link post",
+						"createdAt": "2025-12-12T02:14:29.851Z",
+						"embed": {
+							"$type": "app.bsky.embed.external",
+							"external": {
+								"description": "Page description",
+								"title": "Page Title",
+								"uri": "https://example.com"
+							}
+						}
+					}
+				}
+			}
+		}`
+
+		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
+		doc := CreateElasticsearchDoc(msg, 0)
+
+		if doc.ExternalEmbed == nil {
+			t.Fatal("Expected non-nil ExternalEmbed in doc")
+		}
+		if doc.ExternalEmbed.URI != "https://example.com" {
+			t.Errorf("Expected URI 'https://example.com', got %q", doc.ExternalEmbed.URI)
+		}
+		if doc.ExternalEmbed.Title != "Page Title" {
+			t.Errorf("Expected Title 'Page Title', got %q", doc.ExternalEmbed.Title)
+		}
+		if doc.ExternalEmbed.Description != "Page description" {
+			t.Errorf("Expected Description 'Page description', got %q", doc.ExternalEmbed.Description)
+		}
+	})
+
+	t.Run("external embed in recordWithMedia", func(t *testing.T) {
+		rawPostJSON := `{
+			"message": {
+				"commit": {
+					"operation": "create",
+					"record": {
+						"text": "Quote with external link",
+						"createdAt": "2025-01-27T12:00:00Z",
+						"embed": {
+							"$type": "app.bsky.embed.recordWithMedia",
+							"record": {
+								"$type": "app.bsky.embed.record",
+								"record": {
+									"cid": "bafyreiquotedpost",
+									"uri": "at://did:plc:quoted/app.bsky.feed.post/xyz"
+								}
+							},
+							"media": {
+								"$type": "app.bsky.embed.external",
+								"external": {
+									"description": "Linked page desc",
+									"title": "Linked Page",
+									"uri": "https://example.com/page"
+								}
+							}
+						}
+					}
+				}
+			}
+		}`
+
+		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
+		embed := msg.GetExternalEmbed()
+
+		if embed == nil {
+			t.Fatal("Expected non-nil ExternalEmbed from recordWithMedia")
+		}
+		if embed.URI != "https://example.com/page" {
+			t.Errorf("Expected URI 'https://example.com/page', got %q", embed.URI)
+		}
+	})
+}
+
+func TestMegaStreamMessage_VideoTranscriptParsing(t *testing.T) {
+	logger := NewLogger(false)
+
+	t.Run("video with transcript", func(t *testing.T) {
+		rawPostJSON := `{
+			"message": {
+				"commit": {
+					"operation": "create",
+					"record": {
+						"text": "Check out this video!",
+						"createdAt": "2025-12-12T02:14:25.876Z",
+						"embed": {
+							"$type": "app.bsky.embed.video",
+							"video": {
+								"ref": {"$link": "bafkreivideo1"},
+								"mimeType": "video/mp4",
+								"size": 8396837
+							},
+							"aspectRatio": {"width": 1920, "height": 1080}
+						}
+					}
+				}
+			}
+		}`
+
+		inferencesJSON := `{
+			"text_embeddings": {
+				"all-MiniLM-L12-v2": "abc",
+				"all-MiniLM-L6-v2": "def"
+			},
+			"video": {
+				"audio_transcription": {
+					"text": "Hello world this is a transcript",
+					"language": "en"
+				}
+			}
+		}`
+
+		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, inferencesJSON, logger)
+
+		if msg.GetVideoTranscript() != "Hello world this is a transcript" {
+			t.Errorf("Expected transcript 'Hello world this is a transcript', got %q", msg.GetVideoTranscript())
+		}
+		if msg.GetVideoTranscriptLanguage() != "en" {
+			t.Errorf("Expected language 'en', got %q", msg.GetVideoTranscriptLanguage())
+		}
+	})
+
+	t.Run("no video transcript", func(t *testing.T) {
+		rawPostJSON := `{
+			"message": {
+				"commit": {
+					"operation": "create",
+					"record": {
+						"text": "Just text",
+						"createdAt": "2025-01-27T12:00:00Z"
+					}
+				}
+			}
+		}`
+
+		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
+
+		if msg.GetVideoTranscript() != "" {
+			t.Errorf("Expected empty transcript, got %q", msg.GetVideoTranscript())
+		}
+		if msg.GetVideoTranscriptLanguage() != "" {
+			t.Errorf("Expected empty language, got %q", msg.GetVideoTranscriptLanguage())
+		}
+	})
+
+	t.Run("video transcript in CreateElasticsearchDoc", func(t *testing.T) {
+		rawPostJSON := `{
+			"message": {
+				"commit": {
+					"operation": "create",
+					"record": {
+						"text": "Video post",
+						"createdAt": "2025-12-12T02:14:25.876Z",
+						"embed": {
+							"$type": "app.bsky.embed.video",
+							"video": {
+								"ref": {"$link": "bafkreivideo1"},
+								"mimeType": "video/mp4",
+								"size": 8396837
+							},
+							"aspectRatio": {"width": 1920, "height": 1080}
+						}
+					}
+				}
+			}
+		}`
+
+		inferencesJSON := `{
+			"video": {
+				"audio_transcription": {
+					"text": "Transcript text here",
+					"language": "es"
+				}
+			}
+		}`
+
+		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, inferencesJSON, logger)
+		doc := CreateElasticsearchDoc(msg, 0)
+
+		if doc.VideoTranscript != "Transcript text here" {
+			t.Errorf("Expected VideoTranscript 'Transcript text here', got %q", doc.VideoTranscript)
+		}
+		if doc.VideoTranscriptLanguage != "es" {
+			t.Errorf("Expected VideoTranscriptLanguage 'es', got %q", doc.VideoTranscriptLanguage)
+		}
+	})
+}
+
 func TestMegaStreamMessage_CreatedAtNormalization(t *testing.T) {
 	logger := NewLogger(false)
 
