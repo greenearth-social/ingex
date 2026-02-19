@@ -35,10 +35,10 @@ patches:
         value: 2Gi
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/cpu
-        value: "250m"
+        value: "500m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/cpu
-        value: "250m"
+        value: "500m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/env/0/value
         value: "-Xms1g -Xmx1g"
@@ -75,7 +75,7 @@ patches:
               - ReadWriteOnce
               resources:
                 requests:
-                  storage: 32Gi
+                  storage: 64Gi
   - target:
       kind: Kibana
       name: greenearth
