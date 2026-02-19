@@ -76,6 +76,12 @@ data:
                   "dims": 384,
                   "index": true,
                   "similarity": "cosine"
+                },
+                "google_embeddinggemma_300m": {
+                  "type": "dense_vector",
+                  "dims": 768,
+                  "index": true,
+                  "similarity": "cosine"
                 }
               }
             },
@@ -96,14 +102,32 @@ data:
                 "size": {"type": "long", "index": true},
                 "aspect_ratio": {"type": "float", "index": true},
                 "width": {"type": "integer", "index": true},
-                "height": {"type": "integer", "index": true}
+                "height": {"type": "integer", "index": true},
+                "alt_text": {"type": "text", "index": true}
               }
             },
             "contains_images": {"type": "boolean", "index": true},
             "contains_video": {"type": "boolean", "index": true},
             "image_count": {"type": "integer", "index": true},
             "video_count": {"type": "integer", "index": true},
-            "media_count": {"type": "integer", "index": true}
+            "media_count": {"type": "integer", "index": true},
+            "external_embed": {
+              "type": "object",
+              "properties": {
+                "uri": {"type": "keyword", "index": true},
+                "title": {"type": "text", "index": true},
+                "description": {"type": "text", "index": true, "analyzer": "content_analyzer"}
+              }
+            },
+            "video_transcript": {
+              "type": "text",
+              "index": true,
+              "analyzer": "content_analyzer"
+            },
+            "video_transcript_language": {
+              "type": "keyword",
+              "index": true
+            }
           }
         }
       }

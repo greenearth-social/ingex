@@ -38,6 +38,14 @@ type MediaItem struct {
 	AspectRatio float64 `json:"aspect_ratio"`
 	Width       int     `json:"width"`
 	Height      int     `json:"height"`
+	AltText     string  `json:"alt_text,omitempty"`
+}
+
+// ExternalEmbed represents an external link card embed
+type ExternalEmbed struct {
+	URI         string `json:"uri"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // ElasticsearchDoc represents the document structure for indexing
@@ -52,12 +60,15 @@ type ElasticsearchDoc struct {
 	Embeddings       map[string]Float32Array `json:"embeddings,omitempty"`
 	IndexedAt        string                  `json:"indexed_at"`
 	LikeCount        int                     `json:"like_count"`
-	Media            []MediaItem             `json:"media,omitempty"`
-	ContainsImages   bool                    `json:"contains_images"`
-	ContainsVideo    bool                    `json:"contains_video"`
-	ImageCount       int                     `json:"image_count"`
-	VideoCount       int                     `json:"video_count"`
-	MediaCount       int                     `json:"media_count"`
+	Media                   []MediaItem             `json:"media,omitempty"`
+	ContainsImages          bool                    `json:"contains_images"`
+	ContainsVideo           bool                    `json:"contains_video"`
+	ImageCount              int                     `json:"image_count"`
+	VideoCount              int                     `json:"video_count"`
+	MediaCount              int                     `json:"media_count"`
+	ExternalEmbed           *ExternalEmbed          `json:"external_embed,omitempty"`
+	VideoTranscript         string                  `json:"video_transcript,omitempty"`
+	VideoTranscriptLanguage string                  `json:"video_transcript_language,omitempty"`
 }
 
 // PostTombstoneDoc represents the document structure for post deletion tombstones
@@ -108,7 +119,7 @@ type DeleteDoc struct {
 // ElasticsearchConfig holds configuration for Elasticsearch connection
 type ElasticsearchConfig struct {
 	URL           string
-	APIKey        string
+	APIKey        string //nolint:gosec // G117: struct field name, not a secret value
 	SkipTLSVerify bool
 }
 
@@ -469,22 +480,25 @@ func CreateElasticsearchDoc(msg MegaStreamMessage, likeCount int) ElasticsearchD
 	containsVideo := videoCount > 0
 
 	return ElasticsearchDoc{
-		AtURI:            msg.GetAtURI(),
-		AuthorDID:        msg.GetAuthorDID(),
-		Content:          msg.GetContent(),
-		CreatedAt:        msg.GetCreatedAt(),
-		ThreadRootPost:   msg.GetThreadRootPost(),
-		ThreadParentPost: msg.GetThreadParentPost(),
-		QuotePost:        msg.GetQuotePost(),
-		Embeddings:       embeddings,
-		IndexedAt:        time.Now().UTC().Format(time.RFC3339),
-		LikeCount:        likeCount,
-		Media:            media,
-		ContainsImages:   containsImages,
-		ContainsVideo:    containsVideo,
-		ImageCount:       imageCount,
-		VideoCount:       videoCount,
-		MediaCount:       mediaCount,
+		AtURI:                   msg.GetAtURI(),
+		AuthorDID:               msg.GetAuthorDID(),
+		Content:                 msg.GetContent(),
+		CreatedAt:               msg.GetCreatedAt(),
+		ThreadRootPost:          msg.GetThreadRootPost(),
+		ThreadParentPost:        msg.GetThreadParentPost(),
+		QuotePost:               msg.GetQuotePost(),
+		Embeddings:              embeddings,
+		IndexedAt:               time.Now().UTC().Format(time.RFC3339),
+		LikeCount:               likeCount,
+		Media:                   media,
+		ContainsImages:          containsImages,
+		ContainsVideo:           containsVideo,
+		ImageCount:              imageCount,
+		VideoCount:              videoCount,
+		MediaCount:              mediaCount,
+		ExternalEmbed:           msg.GetExternalEmbed(),
+		VideoTranscript:         msg.GetVideoTranscript(),
+		VideoTranscriptLanguage: msg.GetVideoTranscriptLanguage(),
 	}
 }
 

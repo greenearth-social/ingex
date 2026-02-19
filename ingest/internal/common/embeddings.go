@@ -30,7 +30,7 @@ const base85Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 func decodeBase85RFC1924(encoded string) ([]byte, error) {
 	var decodeMap [256]int
 	for i := range decodeMap {
-		decodeMap[i] = -1
+		decodeMap[i] = -1 //nolint:gosec // G602: index bounded by [256]int array range
 	}
 	for i, c := range base85Alphabet {
 		decodeMap[c] = i
