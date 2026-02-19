@@ -266,6 +266,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				goto cleanup
 			}
 
+			logger.Metric("jetstream.inbound_count", 1)
 			msg := common.NewJetstreamMessage(rawMsg, logger)
 
 			// Handle like deletions

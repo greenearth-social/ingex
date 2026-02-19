@@ -166,6 +166,27 @@ func TestOTelMetricCollector_Shutdown(t *testing.T) {
 	}
 }
 
+func TestOTelMetricCollector_CounterForCountMetrics(t *testing.T) {
+	reader := metric.NewManualReader()
+	collector := newOTelMetricCollectorWithReader(reader, "test-service", "local")
+
+	collector.Record("jetstream.inbound_count", 1.0)
+	collector.Record("jetstream.inbound_count", 1.0)
+
+	rm := collectMetrics(t, reader)
+	m := requireMetric(t, rm, "jetstream.inbound_count")
+	sum, ok := m.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Errorf("Expected Sum (counter) for _count metric, got %T", m.Data)
+	}
+	if !sum.IsMonotonic {
+		t.Errorf("Expected monotonic Sum for counter")
+	}
+	if len(sum.DataPoints) != 1 || sum.DataPoints[0].Value != 2 {
+		t.Errorf("Expected cumulative value 2, got %v", sum.DataPoints)
+	}
+}
+
 func TestOTelMetricCollector_MultipleMetrics(t *testing.T) {
 	reader := metric.NewManualReader()
 	collector := newOTelMetricCollectorWithReader(reader, "test-service", "local")
