@@ -119,7 +119,7 @@ type DeleteDoc struct {
 // ElasticsearchConfig holds configuration for Elasticsearch connection
 type ElasticsearchConfig struct {
 	URL           string
-	APIKey        string
+	APIKey        string //nolint:gosec // G117: struct field name, not a secret value
 	SkipTLSVerify bool
 }
 
