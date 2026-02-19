@@ -256,6 +256,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				goto cleanup
 			}
 
+			logger.Metric("megastream.inbound_count", 1)
 			msg := common.NewMegaStreamMessage(row.AtURI, row.DID, row.RawPost, row.Inferences, logger)
 
 			// Skip rows with empty at_uri unless it's an account deletion event

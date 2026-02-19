@@ -24,6 +24,7 @@ type OTelMetricCollector struct {
 	mu         sync.RWMutex
 	histograms map[string]metric.Float64Histogram
 	gauges     map[string]metric.Float64Gauge
+	counters   map[string]metric.Int64Counter
 }
 
 // NewOTelMetricCollector creates a new OTel-based metric collector.
@@ -78,6 +79,7 @@ func NewOTelMetricCollector(serviceName, env, projectID, region string, exportIn
 		provider:   provider,
 		histograms: make(map[string]metric.Float64Histogram),
 		gauges:     make(map[string]metric.Float64Gauge),
+		counters:   make(map[string]metric.Int64Counter),
 	}, nil
 }
 
@@ -104,15 +106,20 @@ func newOTelMetricCollectorWithReader(reader sdkmetric.Reader, serviceName, env 
 		provider:   provider,
 		histograms: make(map[string]metric.Float64Histogram),
 		gauges:     make(map[string]metric.Float64Gauge),
+		counters:   make(map[string]metric.Int64Counter),
 	}
 }
 
 // Record records a metric value. Instruments are lazily created based on the metric name suffix:
+// - Names ending in "_count" → counter (cumulative sum)
 // - Names ending in "_rate" → gauge
 // - All others → histogram
 //   - E.g., names ending in "_ms" or "_sec" → histogram
 func (c *OTelMetricCollector) Record(name string, value float64) {
-	if isGaugeMetric(name) {
+	if isCounterMetric(name) {
+		counter := c.getOrCreateCounter(name)
+		counter.Add(context.Background(), int64(value))
+	} else if isGaugeMetric(name) {
 		gauge := c.getOrCreateGauge(name)
 		gauge.Record(context.Background(), value)
 	} else {
@@ -124,6 +131,10 @@ func (c *OTelMetricCollector) Record(name string, value float64) {
 // Shutdown flushes pending metrics and shuts down the provider.
 func (c *OTelMetricCollector) Shutdown(ctx context.Context) error {
 	return c.provider.Shutdown(ctx)
+}
+
+func isCounterMetric(name string) bool {
+	return strings.HasSuffix(name, "_count")
 }
 
 func isGaugeMetric(name string) bool {
@@ -144,6 +155,24 @@ func freshnessSecView() sdkmetric.View {
 			},
 		},
 	)
+}
+
+func (c *OTelMetricCollector) getOrCreateCounter(name string) metric.Int64Counter {
+	c.mu.RLock()
+	ctr, ok := c.counters[name]
+	c.mu.RUnlock()
+	if ok {
+		return ctr
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ctr, ok := c.counters[name]; ok {
+		return ctr
+	}
+	ctr, _ = c.meter.Int64Counter(name)
+	c.counters[name] = ctr
+	return ctr
 }
 
 func (c *OTelMetricCollector) getOrCreateHistogram(name string) metric.Float64Histogram {
