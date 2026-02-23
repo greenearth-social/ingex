@@ -213,6 +213,7 @@ deploy_jetstream_service() {
         --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
         --set-env-vars="GE_GCP_PROJECT_ID=$GE_GCP_PROJECT_ID" \
         --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
+        --set-env-vars="GE_BLOCKLIST_DESTINATION=gs://$GE_GCP_PROJECT_ID-ingex-blocklist-$GE_ENVIRONMENT/$GE_ENVIRONMENT" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --scaling="$GE_JETSTREAM_INSTANCES" \
         --cpu=1 \

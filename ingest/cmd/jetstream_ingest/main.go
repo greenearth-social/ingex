@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"cloud.google.com/go/storage"
 	"github.com/elastic/go-elasticsearch/v9"
 	"github.com/greenearth/ingest/internal/common"
 	"github.com/greenearth/ingest/internal/jetstream_ingest"
@@ -132,6 +136,90 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	if err != nil {
 		logger.Error("%v", err)
 		os.Exit(1)
+	}
+
+	// Initialize and start rate limiter
+	threshold := config.LikeRateLimitPerHour / (60 / config.LikeRateLimitWindowMinutes)
+	windowDur := time.Duration(config.LikeRateLimitWindowMinutes) * time.Minute
+	blockDur := time.Duration(config.LikeBlockDurationMinutes) * time.Minute
+	rateLimiter := jetstream_ingest.NewRateLimiter(windowDur, blockDur, threshold)
+	rateLimiter.Start(ctx)
+
+	// Start blocklist persistence goroutine (writes to GCS periodically)
+	if !dryRun && config.BlocklistDestination != "" {
+		gcsClient, err := storage.NewClient(ctx)
+		if err != nil {
+			logger.Error("Failed to create GCS client for blocklist export: %v (continuing without blocklist export)", err)
+		} else {
+			// Parse gs://bucket/prefix from BlocklistDestination
+			dest := strings.TrimPrefix(config.BlocklistDestination, "gs://")
+			parts := strings.SplitN(dest, "/", 2)
+			blocklistBucket := parts[0]
+			blocklistPrefix := ""
+			if len(parts) == 2 {
+				blocklistPrefix = parts[1]
+			}
+
+			type BlockWindow struct {
+				Start time.Time `json:"start"`
+				End   time.Time `json:"end"`
+			}
+			var historyMu sync.Mutex
+			blocklistHistory := make(map[string][]BlockWindow)
+
+			go func() {
+				defer func() {
+					if cerr := gcsClient.Close(); cerr != nil {
+						logger.Error("Failed to close GCS client: %v", cerr)
+					}
+				}()
+				ticker := time.NewTicker(blockDur / 2)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						snapshot := rateLimiter.GetBlockedAccounts()
+						historyMu.Lock()
+						for did, entry := range snapshot {
+							blocklistHistory[did] = append(blocklistHistory[did], BlockWindow{
+								Start: entry.BlockedAt,
+								End:   entry.BlockedAt.Add(entry.Duration),
+							})
+						}
+						data, err := json.Marshal(blocklistHistory)
+						if err != nil {
+							logger.Error("Failed to marshal blocklist: %v", err)
+							historyMu.Unlock()
+							continue
+						}
+						ts := time.Now().UTC().Format(time.RFC3339)
+						objectPath := fmt.Sprintf("%s/%s.json", blocklistPrefix, ts)
+						if blocklistPrefix == "" {
+							objectPath = fmt.Sprintf("%s.json", ts)
+						}
+						wc := gcsClient.Bucket(blocklistBucket).Object(objectPath).NewWriter(ctx)
+						if _, werr := wc.Write(data); werr != nil {
+							logger.Error("Failed to write blocklist to GCS: %v", werr)
+							if cerr := wc.Close(); cerr != nil {
+								logger.Error("Failed to close GCS writer after write error: %v", cerr)
+							}
+							historyMu.Unlock()
+							continue
+						}
+						if werr := wc.Close(); werr != nil {
+							logger.Error("Failed to close GCS writer for blocklist: %v", werr)
+							historyMu.Unlock()
+							continue
+						}
+						blocklistHistory = make(map[string][]BlockWindow)
+						historyMu.Unlock()
+						logger.Debug("Exported blocklist snapshot to gs://%s/%s", blocklistBucket, objectPath)
+					}
+				}
+			}()
+		}
 	}
 
 	// Initialize Jetstream client
@@ -341,6 +429,15 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					deleteMessages = make([]common.JetstreamMessage, 0, batchSize)
 				}
 			} else if msg.IsLike() {
+
+				if blocked, newlyBlocked := rateLimiter.RecordLike(msg.GetAuthorDID()); blocked {
+					if newlyBlocked {
+						logger.Metric("jetstream.blocked_accounts_count", 1)
+					}
+					logger.Metric("jetstream.dropped_likes_count", 1)
+					skippedCount++
+					continue
+				}
 
 				if msg.GetAtURI() == "" {
 					logger.Error("Skipping like with empty at_uri (author_did: %s)", msg.GetAuthorDID())

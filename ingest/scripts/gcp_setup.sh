@@ -291,6 +291,19 @@ create_extract_storage() {
     log_info "Granted objectAdmin to service account for bucket: $BUCKET_NAME"
 }
 
+create_blocklist_storage() {
+    log_info "Setting up storage bucket for blocklist exports..."
+    BUCKET_NAME="$GE_GCP_PROJECT_ID-ingex-blocklist-$GE_ENVIRONMENT"
+    if ! gsutil ls -b gs://"$BUCKET_NAME" > /dev/null 2>&1; then
+        gsutil mb -l "$GE_GCP_REGION" gs://"$BUCKET_NAME"
+        log_info "Blocklist storage bucket created: $BUCKET_NAME"
+    else
+        log_info "Blocklist storage bucket already exists: $BUCKET_NAME"
+    fi
+    gsutil iam ch serviceAccount:"ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com":objectAdmin gs://"$BUCKET_NAME"
+    log_info "Granted objectAdmin to service account for bucket: $BUCKET_NAME"
+}
+
 create_vpc_connector() {
     log_info "Creating VPC connector for Cloud Run services..."
 
@@ -518,6 +531,7 @@ main() {
     create_secrets
     create_ingest_state_storage
     create_extract_storage
+    create_blocklist_storage
     create_vpc_connector
     setup_firewall_rules
     setup_expiry_cloud_scheduler
