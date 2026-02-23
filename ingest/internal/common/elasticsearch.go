@@ -1114,89 +1114,6 @@ func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *Inges
 	return response, nil
 }
 
-// BulkGetPosts fetches multiple post documents from Elasticsearch by at_uri
-// Returns a map of at_uri -> author_did for routing purposes
-// Note: Uses search API instead of mget because mget requires routing
-func BulkGetPosts(ctx context.Context, client *elasticsearch.Client, index string, atURIs []string, logger *IngestLogger) (map[string]string, error) {
-	if len(atURIs) == 0 {
-		return make(map[string]string), nil
-	}
-
-	// Filter empty URIs
-	validURIs := make([]string, 0, len(atURIs))
-	for _, uri := range atURIs {
-		if uri != "" {
-			validURIs = append(validURIs, uri)
-		}
-	}
-
-	if len(validURIs) == 0 {
-		return make(map[string]string), nil
-	}
-
-	// Build search request with terms query on _id field
-	searchBody := map[string]interface{}{
-		"query": map[string]interface{}{
-			"terms": map[string]interface{}{
-				"_id": validURIs, // Query by document IDs (at_uri values)
-			},
-		},
-		"_source": []string{"author_did"}, // Only fetch author_did field
-		"size":    len(validURIs),         // Return up to batch size (100)
-	}
-
-	bodyJSON, err := json.Marshal(searchBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal search request: %w", err)
-	}
-
-	// Execute search request
-	start := time.Now()
-	res, err := client.Search(
-		client.Search.WithContext(ctx),
-		client.Search.WithIndex(index),
-		client.Search.WithBody(bytes.NewReader(bodyJSON)),
-	)
-	logger.Metric("es.bulk_get_posts.duration_ms", float64(time.Since(start).Milliseconds()))
-	if err != nil {
-		return nil, fmt.Errorf("search request failed: %w", err)
-	}
-	defer func() {
-		if err := res.Body.Close(); err != nil {
-			logger.Error("Failed to close search response body: %v", err)
-		}
-	}()
-
-	if res.IsError() {
-		return nil, fmt.Errorf("search request returned error: %s", res.String())
-	}
-
-	// Parse search response
-	var searchResponse struct {
-		Hits struct {
-			Hits []struct {
-				ID     string `json:"_id"`
-				Source struct {
-					AuthorDID string `json:"author_did"`
-				} `json:"_source"`
-			} `json:"hits"`
-		} `json:"hits"`
-	}
-
-	if err := json.NewDecoder(res.Body).Decode(&searchResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse search response: %w", err)
-	}
-
-	// Build result map: at_uri -> author_did
-	result := make(map[string]string)
-	for _, hit := range searchResponse.Hits.Hits {
-		if hit.Source.AuthorDID != "" {
-			result[hit.ID] = hit.Source.AuthorDID
-		}
-	}
-
-	return result, nil
-}
 
 // QueryPostsByAuthorDID retrieves all post at_uris for a given author_did using scroll API
 func QueryPostsByAuthorDID(ctx context.Context, client *elasticsearch.Client, index string, authorDID string, logger *IngestLogger) ([]string, error) {
@@ -1469,6 +1386,19 @@ func QueryLikesByAuthorDID(ctx context.Context, client *elasticsearch.Client, in
 	return likes, nil
 }
 
+// ExtractDIDFromATURI extracts the DID from an AT-URI (at://DID/collection/rkey).
+// Returns empty string if the URI is malformed.
+func ExtractDIDFromATURI(atURI string) string {
+	if !strings.HasPrefix(atURI, "at://") {
+		return ""
+	}
+	parts := strings.SplitN(atURI[5:], "/", 2)
+	if len(parts) < 1 || parts[0] == "" {
+		return ""
+	}
+	return parts[0]
+}
+
 // LikeCountUpdate represents a like count change for a post
 type LikeCountUpdate struct {
 	SubjectURI string
@@ -1488,9 +1418,8 @@ func aggregateLikeCountUpdates(updates []LikeCountUpdate) map[string]int {
 }
 
 // BulkUpdatePostLikeCounts updates like_count fields on posts using the ES update API
-// Uses cache to reduce ES lookups for routing info (author_did)
-// cache parameter is optional (nil-safe) - if nil, all lookups go to ES
-func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, cache *PostRoutingCache, dryRun bool, logger *IngestLogger) error {
+// Routes each update to the correct shard by extracting the author DID from the AT-URI.
+func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) error {
 	if len(updates) == 0 {
 		return nil
 	}
@@ -1503,45 +1432,8 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	// Aggregate updates by subject_uri (in case same post appears multiple times)
 	aggregated := aggregateLikeCountUpdates(updates)
 
-	// Extract unique subject URIs for routing lookup
-	subjectURIs := make([]string, 0, len(aggregated))
-	for uri := range aggregated {
-		subjectURIs = append(subjectURIs, uri)
-	}
-
-	if len(subjectURIs) == 0 {
+	if len(aggregated) == 0 {
 		return fmt.Errorf("no valid updates in batch")
-	}
-
-	// Check cache first for routing info, then fetch remaining from ES
-	var routingMap map[string]string
-	var missingURIs []string
-	if cache != nil {
-		routingMap, missingURIs = cache.BulkGet(subjectURIs)
-	} else {
-		routingMap = make(map[string]string)
-		missingURIs = subjectURIs
-	}
-
-	// Log cache hit rate
-	if len(subjectURIs) > 0 {
-		hitRate := float64(len(routingMap)) / float64(len(subjectURIs))
-		logger.Metric("cache.post_routing.hit_rate", hitRate)
-	}
-
-	// Only query ES for cache misses
-	if len(missingURIs) > 0 {
-		esResults, err := BulkGetPosts(ctx, client, index, missingURIs, logger)
-		if err != nil {
-			return fmt.Errorf("failed to fetch posts for routing: %w", err)
-		}
-		// Merge ES results into routing map and populate cache
-		for uri, did := range esResults {
-			routingMap[uri] = did
-		}
-		if cache != nil {
-			cache.BulkAdd(esResults)
-		}
 	}
 
 	var buf bytes.Buffer
@@ -1549,11 +1441,8 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	skippedNoRouting := 0
 
 	for subjectURI, increment := range aggregated {
-		// Get routing value (author_did) for this post
-		authorDID, found := routingMap[subjectURI]
-		if !found || authorDID == "" {
-			// Post doesn't exist or wasn't found - skip update
-			// This is expected for likes that arrive before posts are indexed
+		authorDID := ExtractDIDFromATURI(subjectURI)
+		if authorDID == "" {
 			skippedNoRouting++
 			continue
 		}
