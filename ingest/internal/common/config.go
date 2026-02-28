@@ -49,6 +49,11 @@ type Config struct {
 	ExtractFetchSize   int
 	ExtractIndices     string
 
+	// Rate limiting / blocklist configuration
+	BlocklistDestination       string // GE_BLOCKLIST_DESTINATION, e.g. gs://bucket/environment
+	LikeRateLimitPerHour       int    // GE_LIKE_RATE_LIMIT_PER_HOUR, default 2000
+	LikeRateLimitWindowMinutes int    // GE_LIKE_RATE_LIMIT_WINDOW_MIN, default 5
+	LikeBlockDurationMinutes   int    // GE_LIKE_BLOCK_DURATION_MIN, default 60
 }
 
 // LoadConfig loads configuration from environment variables with defaults
@@ -79,6 +84,10 @@ func LoadConfig() *Config {
 		ParquetMaxRecords:          int64(getEnvInt("GE_PARQUET_MAX_RECORDS", 100000)),
 		ExtractFetchSize:           getEnvInt("GE_EXTRACT_FETCH_SIZE", 1000),
 		ExtractIndices:             getEnv("GE_EXTRACT_INDICES", "posts"),
+		BlocklistDestination:       getEnv("GE_BLOCKLIST_DESTINATION", ""),
+		LikeRateLimitPerHour:       getEnvInt("GE_LIKE_RATE_LIMIT_PER_HOUR", 2000),
+		LikeRateLimitWindowMinutes: getEnvInt("GE_LIKE_RATE_LIMIT_WINDOW_MIN", 5),
+		LikeBlockDurationMinutes:   getEnvInt("GE_LIKE_BLOCK_DURATION_MIN", 60),
 	}
 }
 
