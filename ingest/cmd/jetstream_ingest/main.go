@@ -194,10 +194,11 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 							historyMu.Unlock()
 							continue
 						}
-						ts := time.Now().UTC().Format(time.RFC3339)
-						objectPath := fmt.Sprintf("%s/%s.json", blocklistPrefix, ts)
+						ts := time.Now().UTC().Format("20060102_150405")
+						objectName := fmt.Sprintf("blocked_accts_%s.json", ts)
+						objectPath := fmt.Sprintf("%s/%s", blocklistPrefix, objectName)
 						if blocklistPrefix == "" {
-							objectPath = fmt.Sprintf("%s.json", ts)
+							objectPath = objectName
 						}
 						wc := gcsClient.Bucket(blocklistBucket).Object(objectPath).NewWriter(ctx)
 						if _, werr := wc.Write(data); werr != nil {
