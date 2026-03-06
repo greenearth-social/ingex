@@ -8,8 +8,8 @@ data:
       "index_patterns": ["inferences_v1*"],
       "template": {
         "settings": {
-          "number_of_shards": $(INDEX_SHARDS),
-          "number_of_replicas": $(INDEX_REPLICAS),
+          "number_of_shards": $(INFERENCE_INDEX_SHARDS),
+          "number_of_replicas": $(INFERENCE_INDEX_REPLICAS),
           "refresh_interval": "30s",
           "translog.durability": "async",
           "translog.sync_interval": "30s",

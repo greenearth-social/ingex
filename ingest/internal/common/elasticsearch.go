@@ -1895,58 +1895,28 @@ type InferenceSearchResponse struct {
 	Hits     InferenceHits `json:"hits"`
 }
 
-// FetchInferences fetches inference documents from Elasticsearch within a time window
-// Sorts by indexed_at asc, at_uri asc with search_after pagination
-func FetchInferences(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger,
-	indexName, startTime, endTime, afterIndexedAt, afterAtURI string, fetchSize int) (InferenceSearchResponse, error) {
+// FetchInferencesByAtURIs fetches inference documents from Elasticsearch by at_uri values.
+// Uses a terms query; caller should batch atURIs to ExtractFetchSize chunks.
+func FetchInferencesByAtURIs(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger,
+	indexName string, atURIs []string) (InferenceSearchResponse, error) {
 
 	var response InferenceSearchResponse
 
-	if fetchSize <= 0 {
-		fetchSize = 1000
-	}
-
-	var query map[string]interface{}
-
-	if startTime != "" || endTime != "" {
-		rangeQuery := make(map[string]interface{})
-		if startTime != "" {
-			rangeQuery["gte"] = startTime
-		}
-		if endTime != "" {
-			rangeQuery["lte"] = endTime
-		}
-		query = map[string]interface{}{
-			"query": map[string]interface{}{
-				"range": map[string]interface{}{
-					"indexed_at": rangeQuery,
-				},
+	query := map[string]interface{}{
+		"query": map[string]interface{}{
+			"terms": map[string]interface{}{
+				"at_uri": atURIs,
 			},
-		}
-	} else {
-		query = map[string]interface{}{
-			"query": map[string]interface{}{
-				"match_all": map[string]interface{}{},
-			},
-		}
+		},
+		"size": len(atURIs),
 	}
-
-	if afterIndexedAt != "" && afterAtURI != "" {
-		query["search_after"] = []interface{}{afterIndexedAt, afterAtURI}
-	}
-
-	query["sort"] = []map[string]interface{}{
-		{"indexed_at": map[string]string{"order": "asc"}},
-		{"at_uri": map[string]string{"order": "asc"}},
-	}
-	query["size"] = fetchSize
 
 	queryJSON, err := json.Marshal(query)
 	if err != nil {
 		return response, fmt.Errorf("failed to marshal query: %w", err)
 	}
 
-	logger.Debug("Executing inference search query on index '%s': %s", indexName, string(queryJSON))
+	logger.Debug("Executing inference by-at-uri query on index '%s': %d URIs", indexName, len(atURIs))
 
 	start := time.Now()
 	res, err := client.Search(
@@ -1954,7 +1924,7 @@ func FetchInferences(ctx context.Context, client *elasticsearch.Client, logger *
 		client.Search.WithIndex(indexName),
 		client.Search.WithBody(bytes.NewReader(queryJSON)),
 	)
-	logger.Metric("es.fetch_inferences.duration_ms", float64(time.Since(start).Milliseconds()))
+	logger.Metric("es.fetch_inferences_by_at_uris.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		return response, fmt.Errorf("inference search request failed: %w", err)
 	}
@@ -1972,8 +1942,8 @@ func FetchInferences(ctx context.Context, client *elasticsearch.Client, logger *
 		return response, fmt.Errorf("failed to parse inference search response: %w", err)
 	}
 
-	logger.Metric("es.fetch_inferences.took_ms", float64(response.Took))
-	logger.Debug("Inference search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
+	logger.Metric("es.fetch_inferences_by_at_uris.took_ms", float64(response.Took))
+	logger.Debug("Inference search returned %d hits", len(response.Hits.Hits))
 
 	return response, nil
 }

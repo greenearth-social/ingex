@@ -16,6 +16,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `--window-size-min MINUTES`: Time window in minutes from now (e.g., 240 for 4-hour lookback). Overrides start-time and end-time if set.
 - `--start-time TIME`: Start time for export window in RFC3339 format (e.g., 2025-01-01T00:00:00Z)
 - `--end-time TIME`: End time for export window in RFC3339 format (e.g., 2025-12-31T23:59:59Z)
+- `--skip-inferences`: Skip exporting inferences for exported posts (default: false)
 
 ## Environment Variables
 
@@ -25,7 +26,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `GE_PARQUET_DESTINATION`: Output destination - supports local paths (./output) or GCS paths (gs://bucket/path)
 - `GE_PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
 - `GE_EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
-- `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts"). Supported values: `posts`, `likes`, `hashtags`, `inferences`
+- `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts"). Supported values: `posts`, `likes`, `hashtags`
 - `GE_LOGGING_ENABLED`: Enable logging (default: true)
 
 ## Examples
@@ -57,12 +58,6 @@ export GE_PARQUET_DESTINATION="gs://my-bucket/exports/"
 
 ```bash
 GE_EXTRACT_INDICES="posts,likes" ./extract --window-size-min 240
-```
-
-### Export inferences index (last 24 hours)
-
-```bash
-GE_EXTRACT_INDICES="posts,likes,inferences" ./extract --window-size-min 1440
 ```
 
 ### Export with fixed time window
@@ -107,10 +102,10 @@ The command exports data to Parquet files with timestamp-based naming:
 - `bsky_posts_20251012_090556.parquet`
 - `bsky_posts_20251012_120823.parquet`
 - `bsky_likes_20251012_150430.parquet` (for likes index)
-- `bsky_inferences_20251012_150430.parquet` (for inferences index)
+- `bsky_inferences_20251012_150430.parquet` (automatically alongside posts, unless `--skip-inferences` is set)
 - etc.
 
-The timestamp in the filename reflects the `record_created_at` of the most recent post in the file (posts are sorted chronologically).
+The timestamp in the filename reflects the `record_created_at` of the most recent post in the file (posts are sorted chronologically). Inferences are exported as a byproduct of post exports, keyed by the at_uris of the exported posts.
 
 Each file contains up to `max-records` posts (or all remaining posts if `max-records` is 0).
 

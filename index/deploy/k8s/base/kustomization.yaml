@@ -29,6 +29,8 @@ configMapGenerator:
       - index_replicas=0
       - hashtag_index_shards=1
       - hashtag_index_replicas=0
+      - inference_index_shards=1
+      - inference_index_replicas=0
 
 configurations:
   - varreference.yaml
@@ -62,3 +64,17 @@ vars:
       apiVersion: v1
     fieldref:
       fieldpath: data.hashtag_index_replicas
+  - name: INFERENCE_INDEX_SHARDS
+    objref:
+      kind: ConfigMap
+      name: index-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.inference_index_shards
+  - name: INFERENCE_INDEX_REPLICAS
+    objref:
+      kind: ConfigMap
+      name: index-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.inference_index_replicas

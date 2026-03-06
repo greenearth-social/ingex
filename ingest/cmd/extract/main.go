@@ -24,6 +24,7 @@ func main() {
 	windowSizeMin := flag.Int("window-size-min", 0, "Time window in minutes from now (e.g., 240 for 4-hour lookback). Overrides start-time and end-time if set.")
 	startTime := flag.String("start-time", "", "Start time for export window (RFC3339 format, e.g., 2025-01-01T00:00:00Z)")
 	endTime := flag.String("end-time", "", "End time for export window (RFC3339 format, e.g., 2025-12-31T23:59:59Z)")
+	skipInferences := flag.Bool("skip-inferences", false, "Skip exporting inferences for exported posts")
 	flag.Parse()
 
 	config := common.LoadConfig()
@@ -96,7 +97,7 @@ func main() {
 	}
 
 	logger.Info("Starting export from %d index(es): %s", len(indices), strings.Join(indices, ", "))
-	if err := runExport(ctx, config, logger, *dryRun, *skipTLSVerify, *outputPath, indices, *startTime, *endTime); err != nil {
+	if err := runExport(ctx, config, logger, *dryRun, *skipTLSVerify, *outputPath, indices, *startTime, *endTime, *skipInferences); err != nil {
 		logger.Error("Export failed: %v", err)
 		os.Exit(1)
 	}
@@ -105,7 +106,7 @@ func main() {
 }
 
 func runExport(ctx context.Context, config *common.Config, logger *common.IngestLogger,
-	dryRun, skipTLSVerify bool, outputPath string, indices []string, startTime, endTime string) error {
+	dryRun, skipTLSVerify bool, outputPath string, indices []string, startTime, endTime string, skipInferences bool) error {
 
 	if config.ElasticsearchURL == "" {
 		return fmt.Errorf("GE_ELASTICSEARCH_URL environment variable is required")
@@ -182,13 +183,17 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 		var exportErr error
 		switch indexType {
 		case IndexTypePosts:
-			exportErr = runExportForPosts(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
+			var atURIs []string
+			atURIs, exportErr = runExportForPosts(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
+			if exportErr == nil && !skipInferences && len(atURIs) > 0 {
+				if infErr := runExportForPostInferences(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, atURIs, config); infErr != nil {
+					logger.Error("Failed to export inferences for posts: %v", infErr)
+				}
+			}
 		case IndexTypeLikes:
 			exportErr = runExportForLikes(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
 		case IndexTypeHashtags:
 			exportErr = runExportForHashtags(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
-		case IndexTypeInferences:
-			exportErr = runExportForInferences(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
 		case IndexTypeUnknown:
 			logger.Error("Skipping index %s: unknown index type", indexName)
 			continue
@@ -209,7 +214,7 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 }
 
 func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logger *common.IngestLogger,
-	dryRun bool, outputPath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName, startTime, endTime string, config *common.Config) error {
+	dryRun bool, outputPath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName, startTime, endTime string, config *common.Config) ([]string, error) {
 
 	maxRecordsPerFile := config.ParquetMaxRecords
 	fetchSize := config.ExtractFetchSize
@@ -218,6 +223,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 	var totalRecords int64 = 0
 	var afterCreatedAt, afterIndexedAt string
 	var currentFileBatch []common.ExtractPost
+	var allAtURIs []string
 
 	for {
 		select {
@@ -227,13 +233,13 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 					logger.Error("Failed to write final parquet file: %v", err)
 				}
 			}
-			return ctx.Err()
+			return allAtURIs, ctx.Err()
 		default:
 		}
 
 		response, err := common.FetchPosts(ctx, esClient, logger, indexName, startTime, endTime, afterCreatedAt, afterIndexedAt, fetchSize)
 		if err != nil {
-			return fmt.Errorf("failed to fetch posts: %w", err)
+			return allAtURIs, fmt.Errorf("failed to fetch posts: %w", err)
 		}
 
 		if len(response.Hits.Hits) == 0 {
@@ -245,12 +251,16 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 		currentFileBatch = append(currentFileBatch, batchPosts...)
 		totalRecords += int64(len(batchPosts))
 
+		for _, post := range batchPosts {
+			allAtURIs = append(allAtURIs, post.AtURI)
+		}
+
 		logger.Debug("Fetched %d records (total: %d)", len(batchPosts), totalRecords)
 
 		if maxRecordsPerFile > 0 && int64(len(currentFileBatch)) >= maxRecordsPerFile {
 			if !dryRun {
 				if err := writePostsParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
-					return fmt.Errorf("failed to write parquet file: %w", err)
+					return allAtURIs, fmt.Errorf("failed to write parquet file: %w", err)
 				}
 				fileNum++
 			} else {
@@ -270,7 +280,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 	if len(currentFileBatch) > 0 {
 		if !dryRun {
 			if err := writePostsParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
-				return fmt.Errorf("failed to write final parquet file: %w", err)
+				return allAtURIs, fmt.Errorf("failed to write final parquet file: %w", err)
 			}
 		} else {
 			lastPost := currentFileBatch[len(currentFileBatch)-1]
@@ -280,7 +290,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 	}
 
 	logger.Info("Export complete: %d total records in %d files", totalRecords, fileNum)
-	return nil
+	return allAtURIs, nil
 }
 
 func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logger *common.IngestLogger,
@@ -452,8 +462,6 @@ func generateFilename(indexName, lastPostTimestamp string, logger *common.Ingest
 		typeStr = "likes"
 	case IndexTypeHashtags:
 		typeStr = "hashtags"
-	case IndexTypeInferences:
-		typeStr = "inferences"
 	case IndexTypeUnknown:
 		typeStr = "unknown"
 	default:
@@ -467,11 +475,10 @@ func generateFilename(indexName, lastPostTimestamp string, logger *common.Ingest
 type IndexType string
 
 const (
-	IndexTypePosts      IndexType = "posts"
-	IndexTypeLikes      IndexType = "likes"
-	IndexTypeHashtags   IndexType = "hashtags"
-	IndexTypeInferences IndexType = "inferences"
-	IndexTypeUnknown    IndexType = ""
+	IndexTypePosts    IndexType = "posts"
+	IndexTypeLikes    IndexType = "likes"
+	IndexTypeHashtags IndexType = "hashtags"
+	IndexTypeUnknown  IndexType = ""
 )
 
 func parseIndices(indicesStr string) []string {
@@ -508,11 +515,7 @@ func ParseIndexType(indexName string) (IndexType, error) {
 		return IndexTypeHashtags, nil
 	}
 
-	if strings.Contains(lowerName, "inference") {
-		return IndexTypeInferences, nil
-	}
-
-	return IndexTypeUnknown, fmt.Errorf("index name '%s' does not contain 'posts', 'likes', 'hashtags', or 'inferences'", indexName)
+	return IndexTypeUnknown, fmt.Errorf("index name '%s' does not contain 'posts', 'likes', or 'hashtags'", indexName)
 }
 
 func getIndexType(indexName string, logger *common.IngestLogger) IndexType {
@@ -642,88 +645,58 @@ func writeLikesParquetFile(ctx context.Context, basePath string, isGCS bool, gcs
 	return nil
 }
 
-func runExportForInferences(ctx context.Context, esClient *elasticsearch.Client, logger *common.IngestLogger,
-	dryRun bool, outputPath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName, startTime, endTime string, config *common.Config) error {
+func runExportForPostInferences(ctx context.Context, esClient *elasticsearch.Client, logger *common.IngestLogger,
+	dryRun bool, outputPath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix string,
+	atURIs []string, config *common.Config) error {
 
-	maxRecordsPerFile := config.ParquetMaxRecords
 	fetchSize := config.ExtractFetchSize
+	if fetchSize <= 0 {
+		fetchSize = 1000
+	}
 
-	var fileNum = 1
-	var totalRecords int64 = 0
-	var afterIndexedAt, afterAtURI string
-	var currentFileBatch []common.ExtractInference
+	indexName := "inferences_v1"
+	var allInferences []common.ExtractInference
 
-	for {
-		select {
-		case <-ctx.Done():
-			if len(currentFileBatch) > 0 && !dryRun {
-				if err := writeInferencesParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
-					logger.Error("Failed to write final parquet file: %v", err)
-				}
-			}
-			return ctx.Err()
-		default:
+	for i := 0; i < len(atURIs); i += fetchSize {
+		end := i + fetchSize
+		if end > len(atURIs) {
+			end = len(atURIs)
 		}
+		chunk := atURIs[i:end]
 
-		response, err := common.FetchInferences(ctx, esClient, logger, indexName, startTime, endTime, afterIndexedAt, afterAtURI, fetchSize)
+		response, err := common.FetchInferencesByAtURIs(ctx, esClient, logger, indexName, chunk)
 		if err != nil {
 			return fmt.Errorf("failed to fetch inferences: %w", err)
 		}
 
-		if len(response.Hits.Hits) == 0 {
-			logger.Debug("No more records to fetch")
-			break
-		}
-
-		batchInferences := common.InferenceHitsToExtractInferences(response.Hits.Hits)
-		currentFileBatch = append(currentFileBatch, batchInferences...)
-		totalRecords += int64(len(batchInferences))
-
-		logger.Debug("Fetched %d records (total: %d)", len(batchInferences), totalRecords)
-
-		if maxRecordsPerFile > 0 && int64(len(currentFileBatch)) >= maxRecordsPerFile {
-			if !dryRun {
-				if err := writeInferencesParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
-					return fmt.Errorf("failed to write parquet file: %w", err)
-				}
-				fileNum++
-			} else {
-				lastInf := currentFileBatch[len(currentFileBatch)-1]
-				filename := generateFilename(indexName, lastInf.IndexedAt, logger)
-				logger.Debug("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
-				fileNum++
-			}
-			currentFileBatch = currentFileBatch[:0]
-		}
-
-		lastHit := response.Hits.Hits[len(response.Hits.Hits)-1]
-		afterIndexedAt = lastHit.Source.IndexedAt
-		afterAtURI = lastHit.Source.AtURI
+		allInferences = append(allInferences, common.InferenceHitsToExtractInferences(response.Hits.Hits)...)
+		logger.Debug("Fetched %d inferences for %d post URIs (chunk %d-%d)", len(response.Hits.Hits), len(chunk), i, end)
 	}
 
-	if len(currentFileBatch) > 0 {
-		if !dryRun {
-			if err := writeInferencesParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
-				return fmt.Errorf("failed to write final parquet file: %w", err)
-			}
-		} else {
-			lastInf := currentFileBatch[len(currentFileBatch)-1]
-			filename := generateFilename(indexName, lastInf.IndexedAt, logger)
-			logger.Debug("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
-		}
+	if len(allInferences) == 0 {
+		logger.Info("No inferences found for exported posts")
+		return nil
 	}
 
-	logger.Info("Export complete: %d total records in %d files", totalRecords, fileNum)
+	if !dryRun {
+		if err := writeInferencesParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, allInferences, logger); err != nil {
+			return fmt.Errorf("failed to write inferences parquet file: %w", err)
+		}
+	} else {
+		filename := fmt.Sprintf("bsky_inferences_%s.parquet", time.Now().UTC().Format("20060102_150405"))
+		logger.Debug("Dry-run: Would write %s with %d records", filename, len(allInferences))
+	}
+
+	logger.Info("Inference export complete: %d records", len(allInferences))
 	return nil
 }
 
-func writeInferencesParquetFile(ctx context.Context, basePath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName string, inferences []common.ExtractInference, logger *common.IngestLogger) error {
+func writeInferencesParquetFile(ctx context.Context, basePath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix string, inferences []common.ExtractInference, logger *common.IngestLogger) error {
 	if len(inferences) == 0 {
 		return fmt.Errorf("no inferences to write")
 	}
 
-	lastInf := inferences[len(inferences)-1]
-	filename := generateFilename(indexName, lastInf.IndexedAt, logger)
+	filename := fmt.Sprintf("bsky_inferences_%s.parquet", time.Now().UTC().Format("20060102_150405"))
 
 	if isGCS {
 		fullPath := gcsPrefix + filename

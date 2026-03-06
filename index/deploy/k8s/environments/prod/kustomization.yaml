@@ -101,3 +101,5 @@ configMapGenerator:
       - index_replicas=1
       - hashtag_index_shards=10
       - hashtag_index_replicas=1
+      - inference_index_shards=4
+      - inference_index_replicas=1
