@@ -425,9 +425,9 @@ The `inferences` index stores per-post inference data extracted from Megastream 
 - `inferences` (object, `enabled: false`): Raw inference JSON stored without field mapping explosion
 - `indexed_at` (date): When the document was indexed (used for ILM and time-range filtering)
 
-**Lifecycle:** Documents are automatically deleted after 1 day via the `inferences_ilm_policy` ILM policy. The bootstrap job creates this policy before applying the index template.
+**Lifecycle:** The `inferences_ilm_policy` ILM policy uses a hot+delete rollover pattern. The hot phase rolls over when the index reaches `INFERENCE_MAX_AGE` (stage: `1h`, prod: `1d`). After rollover the old index moves to the delete phase and is removed. ILM creates successive concrete indices (`inferences-000001`, `inferences-000002`, …) and keeps the `inferences` write alias pointing to the current write index throughout.
 
-**Bootstrap:** The bootstrap job now creates the `inferences_ilm_policy` ILM policy as a first step before applying index templates, ensuring the policy exists when the `inferences_v1` index is created.
+**Bootstrap:** The bootstrap job creates the `inferences_ilm_policy` ILM policy first, then applies the index template, and finally creates the concrete index `inferences-000001` with the `inferences` alias set as `is_write_index: true`. This ensures ILM can manage rollovers without losing the alias.
 
 ## Generating API Keys for Ingest Services
 
@@ -457,7 +457,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "cluster": ["manage_index_templates", "monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*", "inferences", "inferences_*"],
+            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*", "inferences", "inferences-*"],
             "privileges": ["all", "maintenance", "create_index", "auto_configure"]
           }
         ]
@@ -476,7 +476,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "cluster": ["monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*", "inferences", "inferences_*"],
+            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*", "inferences", "inferences-*"],
             "privileges": ["read", "view_index_metadata"]
           }
         ]

@@ -18,7 +18,6 @@ resources:
   - templates/like-tombstones-alias.yaml
   - templates/hashtags-alias.yaml
   - templates/inferences-index-template.yaml
-  - templates/inferences-alias.yaml
 
 configMapGenerator:
   - name: index-settings
@@ -31,6 +30,7 @@ configMapGenerator:
       - hashtag_index_replicas=0
       - inference_index_shards=1
       - inference_index_replicas=0
+      - inference_max_age=1d
 
 configurations:
   - varreference.yaml
@@ -78,3 +78,10 @@ vars:
       apiVersion: v1
     fieldref:
       fieldpath: data.inference_index_replicas
+  - name: INFERENCE_MAX_AGE
+    objref:
+      kind: ConfigMap
+      name: index-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.inference_max_age

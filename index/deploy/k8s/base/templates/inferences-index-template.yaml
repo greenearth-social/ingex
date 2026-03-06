@@ -5,7 +5,7 @@ metadata:
 data:
   inferences-index-template.json: |
     {
-      "index_patterns": ["inferences_v1*"],
+      "index_patterns": ["inferences-*"],
       "template": {
         "settings": {
           "number_of_shards": $(INFERENCE_INDEX_SHARDS),
@@ -14,7 +14,8 @@ data:
           "translog.durability": "async",
           "translog.sync_interval": "30s",
           "lifecycle": {
-            "name": "inferences_ilm_policy"
+            "name": "inferences_ilm_policy",
+            "rollover_alias": "inferences"
           }
         },
         "mappings": {

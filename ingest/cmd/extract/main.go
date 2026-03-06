@@ -654,7 +654,7 @@ func runExportForPostInferences(ctx context.Context, esClient *elasticsearch.Cli
 		fetchSize = 1000
 	}
 
-	indexName := "inferences_v1"
+	indexName := "inferences"
 	var allInferences []common.ExtractInference
 
 	for i := 0; i < len(atURIs); i += fetchSize {
