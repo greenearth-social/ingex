@@ -17,6 +17,8 @@ resources:
   - templates/likes-alias.yaml
   - templates/like-tombstones-alias.yaml
   - templates/hashtags-alias.yaml
+  - templates/inferences-index-template.yaml
+  - templates/inferences-alias.yaml
 
 configMapGenerator:
   - name: index-settings

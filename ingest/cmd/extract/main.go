@@ -187,6 +187,8 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 			exportErr = runExportForLikes(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
 		case IndexTypeHashtags:
 			exportErr = runExportForHashtags(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
+		case IndexTypeInferences:
+			exportErr = runExportForInferences(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
 		case IndexTypeUnknown:
 			logger.Error("Skipping index %s: unknown index type", indexName)
 			continue
@@ -450,6 +452,8 @@ func generateFilename(indexName, lastPostTimestamp string, logger *common.Ingest
 		typeStr = "likes"
 	case IndexTypeHashtags:
 		typeStr = "hashtags"
+	case IndexTypeInferences:
+		typeStr = "inferences"
 	case IndexTypeUnknown:
 		typeStr = "unknown"
 	default:
@@ -463,10 +467,11 @@ func generateFilename(indexName, lastPostTimestamp string, logger *common.Ingest
 type IndexType string
 
 const (
-	IndexTypePosts    IndexType = "posts"
-	IndexTypeLikes    IndexType = "likes"
-	IndexTypeHashtags IndexType = "hashtags"
-	IndexTypeUnknown  IndexType = ""
+	IndexTypePosts      IndexType = "posts"
+	IndexTypeLikes      IndexType = "likes"
+	IndexTypeHashtags   IndexType = "hashtags"
+	IndexTypeInferences IndexType = "inferences"
+	IndexTypeUnknown    IndexType = ""
 )
 
 func parseIndices(indicesStr string) []string {
@@ -503,7 +508,11 @@ func ParseIndexType(indexName string) (IndexType, error) {
 		return IndexTypeHashtags, nil
 	}
 
-	return IndexTypeUnknown, fmt.Errorf("index name '%s' does not contain 'posts', 'likes', or 'hashtags'", indexName)
+	if strings.Contains(lowerName, "inference") {
+		return IndexTypeInferences, nil
+	}
+
+	return IndexTypeUnknown, fmt.Errorf("index name '%s' does not contain 'posts', 'likes', 'hashtags', or 'inferences'", indexName)
 }
 
 func getIndexType(indexName string, logger *common.IngestLogger) IndexType {
@@ -628,6 +637,134 @@ func writeLikesParquetFile(ctx context.Context, basePath string, isGCS bool, gcs
 		}
 
 		logger.Debug("Successfully wrote %d like records to %s", len(likes), fullPath)
+	}
+
+	return nil
+}
+
+func runExportForInferences(ctx context.Context, esClient *elasticsearch.Client, logger *common.IngestLogger,
+	dryRun bool, outputPath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName, startTime, endTime string, config *common.Config) error {
+
+	maxRecordsPerFile := config.ParquetMaxRecords
+	fetchSize := config.ExtractFetchSize
+
+	var fileNum = 1
+	var totalRecords int64 = 0
+	var afterIndexedAt, afterAtURI string
+	var currentFileBatch []common.ExtractInference
+
+	for {
+		select {
+		case <-ctx.Done():
+			if len(currentFileBatch) > 0 && !dryRun {
+				if err := writeInferencesParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
+					logger.Error("Failed to write final parquet file: %v", err)
+				}
+			}
+			return ctx.Err()
+		default:
+		}
+
+		response, err := common.FetchInferences(ctx, esClient, logger, indexName, startTime, endTime, afterIndexedAt, afterAtURI, fetchSize)
+		if err != nil {
+			return fmt.Errorf("failed to fetch inferences: %w", err)
+		}
+
+		if len(response.Hits.Hits) == 0 {
+			logger.Debug("No more records to fetch")
+			break
+		}
+
+		batchInferences := common.InferenceHitsToExtractInferences(response.Hits.Hits)
+		currentFileBatch = append(currentFileBatch, batchInferences...)
+		totalRecords += int64(len(batchInferences))
+
+		logger.Debug("Fetched %d records (total: %d)", len(batchInferences), totalRecords)
+
+		if maxRecordsPerFile > 0 && int64(len(currentFileBatch)) >= maxRecordsPerFile {
+			if !dryRun {
+				if err := writeInferencesParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
+					return fmt.Errorf("failed to write parquet file: %w", err)
+				}
+				fileNum++
+			} else {
+				lastInf := currentFileBatch[len(currentFileBatch)-1]
+				filename := generateFilename(indexName, lastInf.IndexedAt, logger)
+				logger.Debug("Dry-run: Would write %s with %d records", filename, len(currentFileBatch))
+				fileNum++
+			}
+			currentFileBatch = currentFileBatch[:0]
+		}
+
+		lastHit := response.Hits.Hits[len(response.Hits.Hits)-1]
+		afterIndexedAt = lastHit.Source.IndexedAt
+		afterAtURI = lastHit.Source.AtURI
+	}
+
+	if len(currentFileBatch) > 0 {
+		if !dryRun {
+			if err := writeInferencesParquetFile(ctx, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, currentFileBatch, logger); err != nil {
+				return fmt.Errorf("failed to write final parquet file: %w", err)
+			}
+		} else {
+			lastInf := currentFileBatch[len(currentFileBatch)-1]
+			filename := generateFilename(indexName, lastInf.IndexedAt, logger)
+			logger.Debug("Dry-run: Would write final %s with %d records", filename, len(currentFileBatch))
+		}
+	}
+
+	logger.Info("Export complete: %d total records in %d files", totalRecords, fileNum)
+	return nil
+}
+
+func writeInferencesParquetFile(ctx context.Context, basePath string, isGCS bool, gcsClient *storage.Client, gcsBucket, gcsPrefix, indexName string, inferences []common.ExtractInference, logger *common.IngestLogger) error {
+	if len(inferences) == 0 {
+		return fmt.Errorf("no inferences to write")
+	}
+
+	lastInf := inferences[len(inferences)-1]
+	filename := generateFilename(indexName, lastInf.IndexedAt, logger)
+
+	if isGCS {
+		fullPath := gcsPrefix + filename
+		logger.Debug("Writing %d inference records to: gs://%s/%s", len(inferences), gcsBucket, fullPath)
+
+		obj := gcsClient.Bucket(gcsBucket).Object(fullPath)
+		gcsWriter := obj.NewWriter(ctx)
+
+		parquetWriter := parquet.NewGenericWriter[common.ExtractInference](gcsWriter)
+
+		if _, err := parquetWriter.Write(inferences); err != nil {
+			if err := parquetWriter.Close(); err != nil {
+				logger.Error("Failed to close parquet writer: %v", err)
+			}
+			if err := gcsClient.Close(); err != nil {
+				logger.Error("Failed to close GSC writer: %v", err)
+			}
+			return fmt.Errorf("failed to write parquet data: %w", err)
+		}
+
+		if err := parquetWriter.Close(); err != nil {
+			if err := gcsClient.Close(); err != nil {
+				logger.Error("Failed to close GSC writer: %v", err)
+			}
+			return fmt.Errorf("failed to close parquet writer: %w", err)
+		}
+
+		if err := gcsWriter.Close(); err != nil {
+			return fmt.Errorf("failed to close GCS writer: %w", err)
+		}
+
+		logger.Debug("Successfully wrote %d inference records to gs://%s/%s", len(inferences), gcsBucket, fullPath)
+	} else {
+		fullPath := filepath.Join(basePath, filename)
+		logger.Debug("Writing %d inference records to: %s", len(inferences), fullPath)
+
+		if err := parquet.WriteFile(fullPath, inferences); err != nil {
+			return fmt.Errorf("failed to write parquet file: %w", err)
+		}
+
+		logger.Debug("Successfully wrote %d inference records to %s", len(inferences), fullPath)
 	}
 
 	return nil

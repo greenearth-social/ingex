@@ -25,7 +25,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `GE_PARQUET_DESTINATION`: Output destination - supports local paths (./output) or GCS paths (gs://bucket/path)
 - `GE_PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
 - `GE_EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
-- `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts")
+- `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts"). Supported values: `posts`, `likes`, `hashtags`, `inferences`
 - `GE_LOGGING_ENABLED`: Enable logging (default: true)
 
 ## Examples
@@ -57,6 +57,12 @@ export GE_PARQUET_DESTINATION="gs://my-bucket/exports/"
 
 ```bash
 GE_EXTRACT_INDICES="posts,likes" ./extract --window-size-min 240
+```
+
+### Export inferences index (last 24 hours)
+
+```bash
+GE_EXTRACT_INDICES="posts,likes,inferences" ./extract --window-size-min 1440
 ```
 
 ### Export with fixed time window
@@ -101,6 +107,7 @@ The command exports data to Parquet files with timestamp-based naming:
 - `bsky_posts_20251012_090556.parquet`
 - `bsky_posts_20251012_120823.parquet`
 - `bsky_likes_20251012_150430.parquet` (for likes index)
+- `bsky_inferences_20251012_150430.parquet` (for inferences index)
 - etc.
 
 The timestamp in the filename reflects the `record_created_at` of the most recent post in the file (posts are sorted chronologically).
@@ -109,7 +116,7 @@ Each file contains up to `max-records` posts (or all remaining posts if `max-rec
 
 ### Parquet Schema
 
-Each record in the Parquet file contains:
+**Posts** (`bsky_posts_*.parquet`):
 - `did`: Author DID (BlueSky user identifier)
 - `embed_quote_uri`: Quoted post URI (if quote post)
 - `inserted_at`: Timestamp when indexed in Elasticsearch
@@ -117,6 +124,11 @@ Each record in the Parquet file contains:
 - `record_text`: Post content/text
 - `reply_parent_uri`: Parent post URI (if in thread)
 - `reply_root_uri`: Root post URI (if in thread)
+
+**Inferences** (`bsky_inferences_*.parquet`):
+- `at_uri`: AT-URI of the post
+- `indexed_at`: Timestamp when the inference was indexed
+- `inferences`: Raw JSON string containing all inference data (sentiment, toxicity, topic, etc.)
 
 ## Features
 

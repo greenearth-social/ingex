@@ -202,6 +202,100 @@ func TestHitsToExtractPosts(t *testing.T) {
 	}
 }
 
+// TestInferenceHitToExtractInference tests the conversion from InferenceHit to ExtractInference
+func TestInferenceHitToExtractInference(t *testing.T) {
+	tests := []struct {
+		name     string
+		hit      InferenceHit
+		expected ExtractInference
+	}{
+		{
+			name: "basic inference hit",
+			hit: InferenceHit{
+				Source: InferenceSource{
+					AtURI:      "at://did:plc:abc123/app.bsky.feed.post/xyz789",
+					IndexedAt:  "2025-01-15T10:01:00Z",
+					Inferences: []byte(`{"sentiment":{"label":"positive","score":0.9}}`),
+				},
+			},
+			expected: ExtractInference{
+				AtURI:      "at://did:plc:abc123/app.bsky.feed.post/xyz789",
+				IndexedAt:  "2025-01-15T10:01:00Z",
+				Inferences: `{"sentiment":{"label":"positive","score":0.9}}`,
+			},
+		},
+		{
+			name: "inference hit with empty inferences",
+			hit: InferenceHit{
+				Source: InferenceSource{
+					AtURI:      "at://did:plc:user1/app.bsky.feed.post/post1",
+					IndexedAt:  "2025-01-15T11:00:00Z",
+					Inferences: []byte(`{}`),
+				},
+			},
+			expected: ExtractInference{
+				AtURI:      "at://did:plc:user1/app.bsky.feed.post/post1",
+				IndexedAt:  "2025-01-15T11:00:00Z",
+				Inferences: `{}`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := InferenceHitToExtractInference(tt.hit)
+
+			if result.AtURI != tt.expected.AtURI {
+				t.Errorf("AtURI = %q, expected %q", result.AtURI, tt.expected.AtURI)
+			}
+			if result.IndexedAt != tt.expected.IndexedAt {
+				t.Errorf("IndexedAt = %q, expected %q", result.IndexedAt, tt.expected.IndexedAt)
+			}
+			if result.Inferences != tt.expected.Inferences {
+				t.Errorf("Inferences = %q, expected %q", result.Inferences, tt.expected.Inferences)
+			}
+		})
+	}
+}
+
+// TestInferenceHitsToExtractInferences tests batch conversion of inference hits
+func TestInferenceHitsToExtractInferences(t *testing.T) {
+	hits := []InferenceHit{
+		{
+			Source: InferenceSource{
+				AtURI:      "at://did:plc:user1/app.bsky.feed.post/post1",
+				IndexedAt:  "2025-01-15T10:00:00Z",
+				Inferences: []byte(`{"sentiment":{"label":"positive","score":0.9}}`),
+			},
+		},
+		{
+			Source: InferenceSource{
+				AtURI:      "at://did:plc:user2/app.bsky.feed.post/post2",
+				IndexedAt:  "2025-01-15T11:00:00Z",
+				Inferences: []byte(`{"toxicity":{"score":0.1}}`),
+			},
+		},
+	}
+
+	result := InferenceHitsToExtractInferences(hits)
+
+	if len(result) != len(hits) {
+		t.Fatalf("Expected %d inferences, got %d", len(hits), len(result))
+	}
+
+	for i, inf := range result {
+		if inf.AtURI != hits[i].Source.AtURI {
+			t.Errorf("Inference %d: AtURI = %q, expected %q", i, inf.AtURI, hits[i].Source.AtURI)
+		}
+		if inf.IndexedAt != hits[i].Source.IndexedAt {
+			t.Errorf("Inference %d: IndexedAt = %q, expected %q", i, inf.IndexedAt, hits[i].Source.IndexedAt)
+		}
+		if inf.Inferences != string(hits[i].Source.Inferences) {
+			t.Errorf("Inference %d: Inferences = %q, expected %q", i, inf.Inferences, string(hits[i].Source.Inferences))
+		}
+	}
+}
+
 // TestExtractPostAtURIRequired verifies that AtURI is always populated
 func TestExtractPostAtURIRequired(t *testing.T) {
 	hit := Hit{

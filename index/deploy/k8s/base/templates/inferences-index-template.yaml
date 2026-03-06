@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inferences-index-template
+data:
+  inferences-index-template.json: |
+    {
+      "index_patterns": ["inferences_v1*"],
+      "template": {
+        "settings": {
+          "number_of_shards": $(INDEX_SHARDS),
+          "number_of_replicas": $(INDEX_REPLICAS),
+          "refresh_interval": "30s",
+          "translog.durability": "async",
+          "translog.sync_interval": "30s",
+          "lifecycle": {
+            "name": "inferences_ilm_policy"
+          }
+        },
+        "mappings": {
+          "properties": {
+            "at_uri": {
+              "type": "keyword",
+              "index": true
+            },
+            "inferences": {
+              "type": "object",
+              "enabled": false
+            },
+            "indexed_at": {
+              "type": "date"
+            }
+          }
+        }
+      }
+    }

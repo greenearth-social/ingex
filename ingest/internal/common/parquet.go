@@ -84,6 +84,31 @@ type ExtractHashtag struct {
 	Count   int    `json:"count" parquet:"count"`
 }
 
+// ExtractInference represents the Inference document structure for Parquet serialization
+type ExtractInference struct {
+	AtURI      string `json:"at_uri" parquet:"at_uri"`
+	IndexedAt  string `json:"indexed_at" parquet:"indexed_at"`
+	Inferences string `json:"inferences" parquet:"inferences"`
+}
+
+// InferenceHitToExtractInference converts an Elasticsearch InferenceHit to an ExtractInference
+func InferenceHitToExtractInference(hit InferenceHit) ExtractInference {
+	return ExtractInference{
+		AtURI:      hit.Source.AtURI,
+		IndexedAt:  hit.Source.IndexedAt,
+		Inferences: string(hit.Source.Inferences),
+	}
+}
+
+// InferenceHitsToExtractInferences converts multiple Elasticsearch InferenceHits to ExtractInferences
+func InferenceHitsToExtractInferences(hits []InferenceHit) []ExtractInference {
+	inferences := make([]ExtractInference, len(hits))
+	for i, hit := range hits {
+		inferences[i] = InferenceHitToExtractInference(hit)
+	}
+	return inferences
+}
+
 // HashtagHitToExtractHashtag converts an Elasticsearch HashtagHit to an ExtractHashtag
 func HashtagHitToExtractHashtag(hit HashtagHit) ExtractHashtag {
 	return ExtractHashtag{

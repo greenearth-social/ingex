@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -236,6 +237,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	// Process rows from spooler
 	rowChan := spooler.GetRowChannel()
 	var msgs []common.MegaStreamMessage
+	var inferencesBatch []common.InferenceDoc
 	var tombstoneBatch []common.PostTombstoneDoc
 	var deleteBatch []common.DeleteDoc
 	var hashtagUpdates []common.HashtagUpdate
@@ -295,6 +297,17 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						}
 					}
 					msgs = msgs[:0]
+
+					if len(inferencesBatch) > 0 {
+						if err := common.BulkIndexInferences(batchCtx, esClient, "inferences", inferencesBatch, dryRun, logger); err != nil {
+							logger.Error("Failed to bulk index inferences before account deletion: %v", err)
+						} else if dryRun {
+							logger.Debug("Dry-run: Would index inferences before account deletion: %d", len(inferencesBatch))
+						} else {
+							logger.Debug("Indexed inferences before account deletion: %d", len(inferencesBatch))
+						}
+						inferencesBatch = inferencesBatch[:0]
+					}
 
 					cancelBatchCtx()
 				}
@@ -370,6 +383,15 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Post creation - accumulate messages first
 				msgs = append(msgs, msg)
 
+				// Accumulate inference doc if inferences data is present
+				if row.Inferences != "" && row.Inferences != "{}" {
+					inferencesBatch = append(inferencesBatch, common.InferenceDoc{
+						AtURI:      row.AtURI,
+						Inferences: json.RawMessage(row.Inferences),
+						IndexedAt:  time.Now().UTC().Format(time.RFC3339),
+					})
+				}
+
 				// Extract hashtags from the post content
 				hashtags := common.ExtractHashtags(msg.GetContent(), msg.GetCreatedAt())
 				hashtagUpdates = append(hashtagUpdates, hashtags...)
@@ -403,6 +425,18 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						}
 					}
 					msgs = msgs[:0]
+
+					// Flush inferences batch when posts batch is flushed
+					if len(inferencesBatch) > 0 {
+						if err := common.BulkIndexInferences(batchCtx, esClient, "inferences", inferencesBatch, dryRun, logger); err != nil {
+							logger.Error("Failed to bulk index inferences: %v", err)
+						} else if dryRun {
+							logger.Debug("Dry-run: Would index %d inference docs", len(inferencesBatch))
+						} else {
+							logger.Debug("Indexed %d inference docs", len(inferencesBatch))
+						}
+						inferencesBatch = inferencesBatch[:0]
+					}
 
 					// Flush hashtag updates when posts batch is flushed
 					if len(hashtagUpdates) > 0 {
@@ -442,6 +476,17 @@ cleanup:
 			} else {
 				logger.Debug("Indexed final batch: %d documents", count)
 			}
+		}
+	}
+
+	// Index remaining inference docs
+	if len(inferencesBatch) > 0 {
+		if err := common.BulkIndexInferences(cleanupCtx, esClient, "inferences", inferencesBatch, dryRun, logger); err != nil {
+			logger.Error("Failed to bulk index final inference batch: %v", err)
+		} else if dryRun {
+			logger.Debug("Dry-run: Would index final batch: %d inference docs", len(inferencesBatch))
+		} else {
+			logger.Debug("Indexed final batch: %d inference docs", len(inferencesBatch))
 		}
 	}
 

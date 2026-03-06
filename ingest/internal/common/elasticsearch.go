@@ -1763,6 +1763,221 @@ func BulkUpdateHashtagCounts(ctx context.Context, client *elasticsearch.Client, 
 	return nil
 }
 
+// InferenceDoc is the document stored in the inferences index
+type InferenceDoc struct {
+	AtURI      string          `json:"at_uri"`
+	Inferences json.RawMessage `json:"inferences"`
+	IndexedAt  string          `json:"indexed_at"`
+}
+
+// BulkIndexInferences indexes a batch of inference documents to Elasticsearch (no routing)
+func BulkIndexInferences(ctx context.Context, client *elasticsearch.Client, index string, docs []InferenceDoc, dryRun bool, logger *IngestLogger) error {
+	if len(docs) == 0 {
+		return nil
+	}
+
+	if dryRun {
+		logger.Debug("Dry-run: Skipping bulk index of %d inference docs to index '%s'", len(docs), index)
+		return nil
+	}
+
+	var buf bytes.Buffer
+	validDocCount := 0
+
+	for _, doc := range docs {
+		if doc.AtURI == "" {
+			logger.Error("Skipping inference doc with empty at_uri")
+			continue
+		}
+
+		meta := map[string]interface{}{
+			"index": map[string]interface{}{
+				"_index": index,
+				"_id":    doc.AtURI,
+			},
+		}
+
+		validDocCount++
+
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			return fmt.Errorf("failed to marshal metadata: %w", err)
+		}
+
+		buf.Write(metaJSON)
+		buf.WriteByte('\n')
+
+		docJSON, err := json.Marshal(doc)
+		if err != nil {
+			return fmt.Errorf("failed to marshal inference document: %w", err)
+		}
+
+		buf.Write(docJSON)
+		buf.WriteByte('\n')
+	}
+
+	if validDocCount == 0 {
+		logger.Error("No valid inference docs to index (all had empty at_uri)")
+		return fmt.Errorf("no valid inference docs in batch")
+	}
+
+	start := time.Now()
+	res, err := client.Bulk(
+		bytes.NewReader(buf.Bytes()),
+		client.Bulk.WithContext(ctx),
+	)
+	logger.Metric("es.bulk_index_inferences.duration_ms", float64(time.Since(start).Milliseconds()))
+	if err != nil {
+		return fmt.Errorf("bulk inference request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return fmt.Errorf("bulk inference request returned error: %s", res.String())
+	}
+
+	var bulkResponse struct {
+		Took   int  `json:"took"`
+		Errors bool `json:"errors"`
+		Items  []map[string]struct {
+			Error *struct {
+				Type   string `json:"type"`
+				Reason string `json:"reason"`
+			} `json:"error"`
+		} `json:"items"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
+		return fmt.Errorf("failed to parse bulk inference response: %w", err)
+	}
+
+	logger.Metric("es.bulk_index_inferences.took_ms", float64(bulkResponse.Took))
+
+	if bulkResponse.Errors {
+		itemsJSON, _ := json.Marshal(bulkResponse.Items)
+		logger.Error("Bulk inference indexing failed with errors. Response items: %s", string(itemsJSON))
+		return fmt.Errorf("bulk inference indexing failed: some documents had errors (see logs for details)")
+	}
+
+	return nil
+}
+
+// InferenceSource represents the _source field of an inference document in Elasticsearch
+type InferenceSource struct {
+	AtURI      string          `json:"at_uri"`
+	Inferences json.RawMessage `json:"inferences"`
+	IndexedAt  string          `json:"indexed_at"`
+}
+
+// InferenceHit represents a single inference search hit
+type InferenceHit struct {
+	ID     string          `json:"_id"`
+	Sort   []interface{}   `json:"sort,omitempty"`
+	Source InferenceSource `json:"_source"`
+}
+
+// InferenceHits contains the inference search results
+type InferenceHits struct {
+	Total    TotalHits      `json:"total"`
+	MaxScore float64        `json:"max_score"`
+	Hits     []InferenceHit `json:"hits"`
+}
+
+// InferenceSearchResponse represents the response from an Elasticsearch inference search query
+type InferenceSearchResponse struct {
+	Took     int           `json:"took"`
+	TimedOut bool          `json:"timed_out"`
+	Shards   ShardsInfo    `json:"_shards"`
+	Hits     InferenceHits `json:"hits"`
+}
+
+// FetchInferences fetches inference documents from Elasticsearch within a time window
+// Sorts by indexed_at asc, at_uri asc with search_after pagination
+func FetchInferences(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger,
+	indexName, startTime, endTime, afterIndexedAt, afterAtURI string, fetchSize int) (InferenceSearchResponse, error) {
+
+	var response InferenceSearchResponse
+
+	if fetchSize <= 0 {
+		fetchSize = 1000
+	}
+
+	var query map[string]interface{}
+
+	if startTime != "" || endTime != "" {
+		rangeQuery := make(map[string]interface{})
+		if startTime != "" {
+			rangeQuery["gte"] = startTime
+		}
+		if endTime != "" {
+			rangeQuery["lte"] = endTime
+		}
+		query = map[string]interface{}{
+			"query": map[string]interface{}{
+				"range": map[string]interface{}{
+					"indexed_at": rangeQuery,
+				},
+			},
+		}
+	} else {
+		query = map[string]interface{}{
+			"query": map[string]interface{}{
+				"match_all": map[string]interface{}{},
+			},
+		}
+	}
+
+	if afterIndexedAt != "" && afterAtURI != "" {
+		query["search_after"] = []interface{}{afterIndexedAt, afterAtURI}
+	}
+
+	query["sort"] = []map[string]interface{}{
+		{"indexed_at": map[string]string{"order": "asc"}},
+		{"at_uri": map[string]string{"order": "asc"}},
+	}
+	query["size"] = fetchSize
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return response, fmt.Errorf("failed to marshal query: %w", err)
+	}
+
+	logger.Debug("Executing inference search query on index '%s': %s", indexName, string(queryJSON))
+
+	start := time.Now()
+	res, err := client.Search(
+		client.Search.WithContext(ctx),
+		client.Search.WithIndex(indexName),
+		client.Search.WithBody(bytes.NewReader(queryJSON)),
+	)
+	logger.Metric("es.fetch_inferences.duration_ms", float64(time.Since(start).Milliseconds()))
+	if err != nil {
+		return response, fmt.Errorf("inference search request failed: %w", err)
+	}
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			logger.Error("Failed to close inference search response body: %v", err)
+		}
+	}()
+
+	if res.IsError() {
+		return response, fmt.Errorf("inference search request returned error: %s", res.String())
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
+		return response, fmt.Errorf("failed to parse inference search response: %w", err)
+	}
+
+	logger.Metric("es.fetch_inferences.took_ms", float64(response.Took))
+	logger.Debug("Inference search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
+
+	return response, nil
+}
+
 // FetchHashtags fetches hashtags from Elasticsearch within a time window
 // Uses the 'hour' field for filtering since hashtags are bucketed by hour
 func FetchHashtags(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger,

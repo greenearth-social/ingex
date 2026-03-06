@@ -70,8 +70,9 @@ INGEST_KEY_RESPONSE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" "${ES_POD}" -- curl 
         "cluster": ["monitor", "manage_index_templates"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "likes", "likes_*", "post_tombstones", 
-              "post_tombstones_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*"],
+            "names": ["posts", "posts_*", "likes", "likes_*", "post_tombstones",
+              "post_tombstones_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*",
+              "inferences", "inferences_*"],
             "privileges": ["all", "maintenance", "create_index", "auto_configure"]
           }
         ]
@@ -125,8 +126,9 @@ READONLY_KEY_RESPONSE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" "${ES_POD}" -- cur
         "cluster": ["monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "likes", "likes_*", "post_tombstones", 
-              "post_tombstones_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*"],
+            "names": ["posts", "posts_*", "likes", "likes_*", "post_tombstones",
+              "post_tombstones_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*",
+              "inferences", "inferences_*"],
             "privileges": ["read", "view_index_metadata"]
           }
         ]

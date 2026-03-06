@@ -416,6 +416,19 @@ curl -k -u "es-service-user:PASSWORD" https://localhost:9200/_index_template/pos
 curl -k -u "es-service-user:PASSWORD" https://localhost:9200/_alias/posts
 ```
 
+## Inferences Index
+
+The `inferences` index stores per-post inference data extracted from Megastream SQLite files (sentiment, toxicity, moderation, topic, embeddings, etc.). This data is intended for offline analysis via parquet exports.
+
+**Fields:**
+- `at_uri` (keyword, indexed): AT-URI of the post
+- `inferences` (object, `enabled: false`): Raw inference JSON stored without field mapping explosion
+- `indexed_at` (date): When the document was indexed (used for ILM and time-range filtering)
+
+**Lifecycle:** Documents are automatically deleted after 1 day via the `inferences_ilm_policy` ILM policy. The bootstrap job creates this policy before applying the index template.
+
+**Bootstrap:** The bootstrap job now creates the `inferences_ilm_policy` ILM policy as a first step before applying index templates, ensuring the policy exists when the `inferences_v1` index is created.
+
 ## Generating API Keys for Ingest Services
 
 The ingest and API services require separate API keys for authentication with different permission levels:
@@ -444,7 +457,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "cluster": ["manage_index_templates", "monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*"],
+            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*", "inferences", "inferences_*"],
             "privileges": ["all", "maintenance", "create_index", "auto_configure"]
           }
         ]
@@ -463,7 +476,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "cluster": ["monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*"],
+            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*", "inferences", "inferences_*"],
             "privileges": ["read", "view_index_metadata"]
           }
         ]
