@@ -427,7 +427,7 @@ The `inferences` index stores per-post inference data extracted from Megastream 
 
 **Lifecycle:** The `inferences_ilm_policy` ILM policy uses a hot+delete rollover pattern. The hot phase rolls over when the index reaches `INFERENCE_MAX_AGE` (stage: `1h`, prod: `1d`). After rollover the old index moves to the delete phase and is removed. ILM creates successive concrete indices (`inferences-000001`, `inferences-000002`, …) and keeps the `inferences` write alias pointing to the current write index throughout.
 
-**Bootstrap:** The bootstrap job creates the `inferences_ilm_policy` ILM policy first, then applies the index template, and finally creates the concrete index `inferences-000001` with the `inferences` alias set as `is_write_index: true`. This ensures ILM can manage rollovers without losing the alias.
+**Bootstrap:** The bootstrap job creates the `inferences_ilm_policy` ILM policy first, then applies the index template, and finally creates the concrete index `inferences-000001` with the `inferences` alias set as `is_write_index: true`. This ensures ILM can manage rollovers without losing the alias. The bootstrap job runs as `es-service-user`, which requires the `manage_ilm` cluster privilege to create and manage ILM policies — this is granted via `es_service_role` in `es-service-user-setup-job.yaml`.
 
 ## Generating API Keys for Ingest Services
 
