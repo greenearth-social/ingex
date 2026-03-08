@@ -33,13 +33,7 @@ if [ -z "$ELASTICSEARCH_PASSWORD" ]; then
   exit 1
 fi
 
-# Determine pod name based on environment
-# Prod has dedicated data nodes, stage has data-only nodes
-if [ "$GE_ENVIRONMENT" = "prod" ]; then
-    ES_POD="greenearth-es-data-0"
-else
-    ES_POD="greenearth-es-data-only-0"
-fi
+ES_POD="greenearth-es-data-0"
 
 echo "Using pod: ${ES_POD}"
 echo ""
