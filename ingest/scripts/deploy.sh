@@ -425,7 +425,7 @@ EOF
         --env-vars-file="$temp_var_dir/extract-env-vars.yaml" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --cpu=2 \
-        --memory=2Gi \
+        --memory=4Gi \
         --task-timeout=7200 \
         --args="--window-size-min,$window_minutes"
 
