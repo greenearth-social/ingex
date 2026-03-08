@@ -45,7 +45,7 @@ spec:
             -u "elastic:$ELASTIC_PASSWORD" \
             -H "Content-Type: application/json" \
             -d '{
-              "cluster": ["manage_index_templates", "monitor"],
+              "cluster": ["manage_index_templates", "monitor", "manage_ilm"],
               "indices": [
                 {
                   "names": ["posts*", "post_tombstones*", "likes*", "like_tombstones*", "hashtags*", "inferences*"],

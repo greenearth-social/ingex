@@ -35,7 +35,7 @@ spec:
 
           echo "Elasticsearch is ready! Creating ILM policies..."
 
-          curl -k -X PUT "https://greenearth-es-http:9200/_ilm/policy/inferences_ilm_policy" \
+          curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/inferences_ilm_policy" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
             -d "{\"policy\":{\"phases\":{\"hot\":{\"min_age\":\"0ms\",\"actions\":{\"rollover\":{\"max_age\":\"$INFERENCE_MAX_AGE\"}}},\"delete\":{\"min_age\":\"0ms\",\"actions\":{\"delete\":{}}}}}}"
