@@ -9,7 +9,8 @@ The `megastream_ingest` command:
 - Reads JSON-formatted, hydrated BlueSky posts with sentence embeddings from Megastream SQLite databases
 - Supports both local filesystem and S3 as data sources
 - Handles both one-time ingestion and continuous monitoring (spool mode)
-- Batches posts and indexes them to Elasticsearch
+- Batches posts and indexes them to Elasticsearch (`posts` index)
+- Also indexes per-post inference data (sentiment, toxicity, topic, embeddings, etc.) to the `inferences` index
 - Tracks processed files to avoid duplicates
 - Provides graceful shutdown handling
 

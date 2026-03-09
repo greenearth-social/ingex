@@ -14,3 +14,15 @@ patches:
       - op: replace
         path: /spec/nodeSets/0/config/node.store.allow_mmap
         value: false
+
+configMapGenerator:
+  - name: index-settings
+    behavior: replace
+    literals:
+      - index_shards=1
+      - index_replicas=0
+      - hashtag_index_shards=1
+      - hashtag_index_replicas=0
+      - inference_index_shards=1
+      - inference_index_replicas=0
+      - inference_max_age=10m

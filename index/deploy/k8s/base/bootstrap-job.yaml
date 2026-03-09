@@ -15,6 +15,11 @@ spec:
             secretKeyRef:
               name: es-service-user-secret
               key: password
+        - name: INFERENCE_MAX_AGE
+          valueFrom:
+            configMapKeyRef:
+              name: index-settings
+              key: inference_max_age
         command:
         - /bin/sh
         - -c
@@ -28,7 +33,14 @@ spec:
             sleep 10
           done
 
-          echo "Elasticsearch is ready! Applying index templates..."
+          echo "Elasticsearch is ready! Creating ILM policies..."
+
+          curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/inferences_ilm_policy" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d "{\"policy\":{\"phases\":{\"hot\":{\"min_age\":\"0ms\",\"actions\":{\"rollover\":{\"max_age\":\"$INFERENCE_MAX_AGE\"}}},\"delete\":{\"min_age\":\"0ms\",\"actions\":{\"delete\":{}}}}}}"
+
+          echo "ILM policies created! Applying index templates..."
 
           # Helper function to check if index exists
           index_exists() {
@@ -75,6 +87,22 @@ spec:
           apply_template_and_index "likes_template" "likes-index-template.json" "likes_v1" "likes-alias.json"
           apply_template_and_index "like_tombstones_template" "like-tombstones-index-template.json" "like_tombstones_v1" "like-tombstones-alias.json"
           apply_template_and_index "hashtags_template" "hashtags-index-template.json" "hashtags_v1" "hashtags-alias.json"
+          echo "Applying inferences_template template..."
+          curl -k -X PUT "https://greenearth-es-http:9200/_index_template/inferences_template" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d @/templates/inferences-index-template.json
+
+          if index_exists "inferences-000001"; then
+            echo "inferences-000001 already exists - template updated, skipping index creation"
+          else
+            echo "inferences-000001 does not exist - creating index with write alias"
+            curl -k -X PUT "https://greenearth-es-http:9200/inferences-000001" \
+              -u "es-service-user:$ES_SERVICE_PASSWORD" \
+              -H "Content-Type: application/json" \
+              -d '{"aliases":{"inferences":{"is_write_index":true}}}'
+          fi
+          echo "inferences_template completed!"
 
           echo "Bootstrap completed successfully!"
         volumeMounts:
@@ -96,6 +124,8 @@ spec:
               name: like-tombstones-index-template
           - configMap:
               name: hashtags-index-template
+          - configMap:
+              name: inferences-index-template
       - name: aliases
         projected:
           sources:

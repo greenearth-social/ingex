@@ -16,6 +16,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `--window-size-min MINUTES`: Time window in minutes from now (e.g., 240 for 4-hour lookback). Overrides start-time and end-time if set.
 - `--start-time TIME`: Start time for export window in RFC3339 format (e.g., 2025-01-01T00:00:00Z)
 - `--end-time TIME`: End time for export window in RFC3339 format (e.g., 2025-12-31T23:59:59Z)
+- `--skip-inferences`: Skip exporting inferences for exported posts (default: false)
 
 ## Environment Variables
 
@@ -25,7 +26,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `GE_PARQUET_DESTINATION`: Output destination - supports local paths (./output) or GCS paths (gs://bucket/path)
 - `GE_PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
 - `GE_EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
-- `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts")
+- `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts"). Supported values: `posts`, `likes`, `hashtags`
 - `GE_LOGGING_ENABLED`: Enable logging (default: true)
 
 ## Examples
@@ -101,15 +102,16 @@ The command exports data to Parquet files with timestamp-based naming:
 - `bsky_posts_20251012_090556.parquet`
 - `bsky_posts_20251012_120823.parquet`
 - `bsky_likes_20251012_150430.parquet` (for likes index)
+- `bsky_inferences_20251012_150430.parquet` (automatically alongside posts, unless `--skip-inferences` is set)
 - etc.
 
-The timestamp in the filename reflects the `record_created_at` of the most recent post in the file (posts are sorted chronologically).
+The timestamp in the filename reflects the `record_created_at` of the most recent post in the file (posts are sorted chronologically). Inferences are exported as a byproduct of post exports, keyed by the at_uris of the exported posts.
 
 Each file contains up to `max-records` posts (or all remaining posts if `max-records` is 0).
 
 ### Parquet Schema
 
-Each record in the Parquet file contains:
+**Posts** (`bsky_posts_*.parquet`):
 - `did`: Author DID (BlueSky user identifier)
 - `embed_quote_uri`: Quoted post URI (if quote post)
 - `inserted_at`: Timestamp when indexed in Elasticsearch
@@ -117,6 +119,11 @@ Each record in the Parquet file contains:
 - `record_text`: Post content/text
 - `reply_parent_uri`: Parent post URI (if in thread)
 - `reply_root_uri`: Root post URI (if in thread)
+
+**Inferences** (`bsky_inferences_*.parquet`):
+- `at_uri`: AT-URI of the post
+- `indexed_at`: Timestamp when the inference was indexed
+- `inferences`: Raw JSON string containing all inference data (sentiment, toxicity, topic, etc.)
 
 ## Features
 

@@ -33,13 +33,7 @@ if [ -z "$ELASTICSEARCH_PASSWORD" ]; then
   exit 1
 fi
 
-# Determine pod name based on environment
-# Prod has dedicated data nodes, stage has data-only nodes
-if [ "$GE_ENVIRONMENT" = "prod" ]; then
-    ES_POD="greenearth-es-data-0"
-else
-    ES_POD="greenearth-es-data-only-0"
-fi
+ES_POD="greenearth-es-data-0"
 
 echo "Using pod: ${ES_POD}"
 echo ""
@@ -70,8 +64,9 @@ INGEST_KEY_RESPONSE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" "${ES_POD}" -- curl 
         "cluster": ["monitor", "manage_index_templates"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "likes", "likes_*", "post_tombstones", 
-              "post_tombstones_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*"],
+            "names": ["posts", "posts_*", "likes", "likes_*", "post_tombstones",
+              "post_tombstones_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*",
+              "inferences", "inferences-*"],
             "privileges": ["all", "maintenance", "create_index", "auto_configure"]
           }
         ]
@@ -125,8 +120,9 @@ READONLY_KEY_RESPONSE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" "${ES_POD}" -- cur
         "cluster": ["monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "likes", "likes_*", "post_tombstones", 
-              "post_tombstones_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*"],
+            "names": ["posts", "posts_*", "likes", "likes_*", "post_tombstones",
+              "post_tombstones_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*",
+              "inferences", "inferences-*"],
             "privileges": ["read", "view_index_metadata"]
           }
         ]
