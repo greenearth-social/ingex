@@ -167,6 +167,28 @@ create_service_account() {
     log_info "Service account permissions configured."
 }
 
+create_clearml_model_writer_service_account() {
+    log_info "Creating service account for ClearML model management..."
+
+    SA_NAME="clearml-model-writer-$GE_ENVIRONMENT"
+    SA_EMAIL="$SA_NAME@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
+
+    # Create service account
+    if ! gcloud iam service-accounts describe "$SA_EMAIL" > /dev/null 2>&1; then
+        gcloud iam service-accounts create "$SA_NAME" \
+            --display-name="ClearML Model Writer Service Account ($GE_ENVIRONMENT)" \
+            --description="Service account for ClearML model management in $GE_ENVIRONMENT"
+        log_info "Service account created: $SA_EMAIL"
+    else
+        log_info "Service account already exists: $SA_EMAIL"
+    fi
+
+    # Grant necessary permissions
+    log_info "Granting permissions to ClearML service account..."
+
+    log_info "ClearML service account permissions configured."
+}
+
 create_secrets() {
     log_info "Creating secrets in Secret Manager..."
 
@@ -302,6 +324,24 @@ create_blocklist_storage() {
     fi
     gsutil iam ch serviceAccount:"ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com":objectAdmin gs://"$BUCKET_NAME"
     log_info "Granted objectAdmin to service account for bucket: $BUCKET_NAME"
+}
+
+create_eng_pred_model_storage() {
+    log_info "Setting up storage bucket for engagement prediction models..."
+
+    BUCKET_NAME="$GE_GCP_PROJECT_ID-eng-pred-model-$GE_ENVIRONMENT"
+
+    if ! gsutil ls -b gs://"$BUCKET_NAME" > /dev/null 2>&1; then
+        gsutil mb -l "$GE_GCP_REGION" gs://"$BUCKET_NAME"
+        log_info "Engagement prediction model storage bucket created: $BUCKET_NAME"
+    else
+        log_info "Engagement prediction model storage bucket already exists: $BUCKET_NAME"
+    fi
+
+    # Grant ClearML writer service account objectAdmin permission on this bucket
+    CLEARML_SA_EMAIL="clearml-model-writer-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
+    gsutil iam ch serviceAccount:"$CLEARML_SA_EMAIL":objectAdmin gs://"$BUCKET_NAME"
+    log_info "Granted objectAdmin to ClearML service account for bucket: $BUCKET_NAME"
 }
 
 create_vpc_connector() {
@@ -528,10 +568,12 @@ main() {
     setup_gcp_project
     create_artifact_registry
     create_service_account
+    create_clearml_model_writer_service_account
     create_secrets
     create_ingest_state_storage
     create_extract_storage
     create_blocklist_storage
+    create_eng_pred_model_storage
     create_vpc_connector
     setup_firewall_rules
     setup_expiry_cloud_scheduler
