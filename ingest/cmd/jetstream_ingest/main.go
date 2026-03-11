@@ -290,6 +290,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						if err := stateManager.UpdateCursor(pendingCursor); err != nil {
 							logger.Error("Failed to flush final cursor update: %v", err)
 						}
+						client.UpdateCursor(pendingCursor)
 					}
 					cursorMu.Unlock()
 					return
@@ -300,6 +301,10 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 							logger.Error("Failed to update cursor: %v", err)
 						} else {
 							hasPendingUpdate = false
+							// Keep the client's reconnection cursor in sync so that
+							// WebSocket reconnects resume from the latest processed
+							// position rather than replaying from the startup cursor.
+							client.UpdateCursor(pendingCursor)
 							// Log summary of batches processed since last log
 							if pendingBatchCount > 0 {
 								freshnessSeconds := common.CalculateFreshness(pendingCursor)

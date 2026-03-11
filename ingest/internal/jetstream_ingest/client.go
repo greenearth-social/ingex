@@ -33,6 +33,8 @@ func NewClient(url string, logger *common.IngestLogger) *Client {
 
 // SetCursor sets the cursor for rewinding to a specific timestamp
 func (c *Client) SetCursor(timeUs int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.cursor = &timeUs
 }
 
@@ -40,10 +42,15 @@ func (c *Client) SetCursor(timeUs int64) {
 func (c *Client) Connect(ctx context.Context) error {
 	url := c.url
 
+	// Read cursor under lock since it may be updated by UpdateCursor
+	c.mu.RLock()
+	cursor := c.cursor
+	c.mu.RUnlock()
+
 	// Add cursor parameter if set
-	if c.cursor != nil {
-		url = fmt.Sprintf("%s?cursor=%d", c.url, *c.cursor)
-		c.logger.Info("Connecting to Jetstream at %s with cursor (rewinding to timestamp %d)", c.url, *c.cursor)
+	if cursor != nil {
+		url = fmt.Sprintf("%s?cursor=%d", c.url, *cursor)
+		c.logger.Info("Connecting to Jetstream at %s with cursor (rewinding to timestamp %d)", c.url, *cursor)
 	} else {
 		c.logger.Info("Connecting to Jetstream at %s", c.url)
 	}
@@ -188,6 +195,15 @@ func (c *Client) readLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// UpdateCursor updates the cursor used for reconnections to the latest processed timestamp.
+// This should be called periodically as messages are processed to avoid replaying
+// stale data on WebSocket reconnection.
+func (c *Client) UpdateCursor(timeUs int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cursor = &timeUs
 }
 
 // GetMessageChannel returns the channel that receives raw JSON messages
