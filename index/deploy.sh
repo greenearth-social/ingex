@@ -226,7 +226,8 @@ setup_kubectl_context() {
                     --project="$GE_GCP_PROJECT_ID" \
                     --release-channel=regular \
                     --enable-private-nodes \
-                    --master-ipv4-cidr="$cluster_cidr"
+                    --master-ipv4-cidr="$cluster_cidr" \
+                    --enable-cost-allocation
                 log_success "Cluster created successfully"
             else
                 log_error "GKE cluster $GE_K8S_CLUSTER does not exist in project $GE_GCP_PROJECT_ID"
