@@ -35,10 +35,10 @@ patches:
         value: 6Gi
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/cpu
-        value: "1000m"
+        value: "900m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/cpu
-        value: "1000m"
+        value: "900m"
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/env/0/value
         value: "-Xms3g -Xmx3g"
@@ -60,10 +60,10 @@ patches:
                 resources:
                   requests:
                     memory: 16Gi
-                    cpu: "8000m"
+                    cpu: "7200m"
                   limits:
                     memory: 16Gi
-                    cpu: "8000m"
+                    cpu: "7200m"
                 env:
                 - name: ES_JAVA_OPTS
                   value: "-Xms8g -Xmx8g"
