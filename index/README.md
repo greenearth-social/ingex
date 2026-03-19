@@ -545,7 +545,12 @@ See the docs at [/ingest/deploy/README.md](../ingest/deploy/README.md)
 
 ## Backups & Restore
 
-Daily snapshots are taken at 9am UTC (4am ET) via Elasticsearch SLM and stored in GCS. Snapshots are retained for 14 days (max 14 snapshots).
+Snapshots are taken via Elasticsearch SLM and stored in GCS. Schedule and retention are configurable per environment via the `snapshot-settings` ConfigMap:
+
+| Environment | Schedule | Retention |
+|-------------|----------|-----------|
+| stage | Hourly | 3 hours / max 3 snapshots |
+| prod | Daily at 9am UTC (4am ET) | 14 days / max 14 snapshots |
 
 ### One-time GCP setup (per environment)
 
