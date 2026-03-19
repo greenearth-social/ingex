@@ -513,6 +513,17 @@ deploy_init() {
         exit 1
     }
 
+    if [ "$GE_ENVIRONMENT" != "local" ]; then
+        log_info "Deploying snapshot setup job..."
+        kubectl delete job elasticsearch-snapshot-setup -n "$namespace" --ignore-not-found=true
+        kubectl apply -f "$K8S_DIR/base/elasticsearch-snapshot-setup-job.yaml" -n "$namespace"
+        wait_for_job "elasticsearch-snapshot-setup" "$namespace" 180 || {
+            log_error "Snapshot setup job failed"
+            kubectl logs -l job-name=elasticsearch-snapshot-setup -n "$namespace" --tail=100 2>/dev/null || true
+            exit 1
+        }
+    fi
+
     # Initialize deployment state
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     local git_sha=$(get_git_sha)

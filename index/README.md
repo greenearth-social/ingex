@@ -540,6 +540,71 @@ See the docs at [/ingest/deploy/README.md](../ingest/deploy/README.md)
 - **Index template**: Shows posts_template configuration with schema
 - **Alias**: Shows `posts` alias pointing to `posts_v1` index
 
+## Backups & Restore
+
+Daily snapshots are taken at 9am UTC (4am ET) via Elasticsearch SLM and stored in GCS. Snapshots are retained for 14 days (max 14 snapshots).
+
+### One-time GCP setup (per environment)
+
+Run once to create the GCS bucket and Workload Identity bindings:
+
+```bash
+GE_ENVIRONMENT=stage ./index/gcp_setup.sh
+GE_ENVIRONMENT=prod  ./index/gcp_setup.sh
+```
+
+This creates:
+- GCS bucket: `greenearth-471522-es-snapshots-<env>`
+- GCP SA: `es-snapshot-<env>@greenearth-471522.iam.gserviceaccount.com`
+- Workload Identity binding for `greenearth-<env>/es-snapshot-sa`
+
+### Verifying snapshots
+
+```bash
+# Port-forward first
+kubectl port-forward service/greenearth-es-http 9200 -n greenearth-stage
+
+# Confirm snapshot repo is green
+curl -k -u "elastic:PASSWORD" https://localhost:9200/_snapshot/gcs_backup
+
+# Confirm SLM policy and next execution time
+curl -k -u "elastic:PASSWORD" https://localhost:9200/_slm/policy/daily-snapshots
+
+# Manually trigger a snapshot
+curl -k -u "elastic:PASSWORD" -X PUT https://localhost:9200/_slm/policy/daily-snapshots/_execute
+
+# List available snapshots
+curl -k -u "elastic:PASSWORD" https://localhost:9200/_snapshot/gcs_backup/_all?verbose=false
+```
+
+### Restoring from a snapshot
+
+**Pre-condition:** The ES cluster must be healthy and accepting requests. For disk-full or other storage failure scenarios, first increase storage:
+
+```bash
+./deploy.sh <env> --ctypes resource   # or --ctypes init for full rebuild
+```
+
+Then run the restore script:
+
+```bash
+# Restore latest successful snapshot
+./index/restore.sh --environment stage
+
+# Restore a specific snapshot
+./index/restore.sh --environment prod --snapshot daily-snap-2026.03.15
+
+# Preview without executing
+./index/restore.sh --environment stage --dry-run
+```
+
+### Disabling backups on stage
+
+```bash
+kubectl port-forward service/greenearth-es-http 9200 -n greenearth-stage
+curl -k -u "elastic:PASSWORD" -X DELETE https://localhost:9200/_slm/policy/daily-snapshots
+```
+
 ## Cleanup
 
 Using the deployment script (recommended):

@@ -11,6 +11,7 @@ spec:
       node.roles: ["master", "data", "ingest"]
     podTemplate:
       spec:
+        serviceAccountName: es-snapshot-sa
         containers:
         - name: elasticsearch
           resources:

@@ -92,8 +92,19 @@ patches:
       - op: replace
         path: /spec/podTemplate/spec/containers/0/resources/limits/cpu
         value: "500m"
+  - target:
+      kind: ServiceAccount
+      name: es-snapshot-sa
+    patch: |-
+      - op: replace
+        path: /metadata/annotations/iam.gke.io~1gcp-service-account
+        value: es-snapshot-prod@greenearth-471522.iam.gserviceaccount.com
 
 configMapGenerator:
+  - name: snapshot-settings
+    behavior: replace
+    literals:
+      - snapshot_bucket=greenearth-471522-es-snapshots-prod
   - name: index-settings
     behavior: replace
     literals:
