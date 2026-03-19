@@ -105,6 +105,9 @@ configMapGenerator:
     behavior: replace
     literals:
       - snapshot_bucket=greenearth-471522-es-snapshots-prod
+      - snapshot_schedule=0 0 9 * * ?
+      - snapshot_expire_after=14d
+      - snapshot_max_count=14
   - name: index-settings
     behavior: replace
     literals:

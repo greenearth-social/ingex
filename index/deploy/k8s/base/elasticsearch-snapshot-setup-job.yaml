@@ -20,6 +20,21 @@ spec:
             configMapKeyRef:
               name: snapshot-settings
               key: snapshot_bucket
+        - name: SNAPSHOT_SCHEDULE
+          valueFrom:
+            configMapKeyRef:
+              name: snapshot-settings
+              key: snapshot_schedule
+        - name: SNAPSHOT_EXPIRE_AFTER
+          valueFrom:
+            configMapKeyRef:
+              name: snapshot-settings
+              key: snapshot_expire_after
+        - name: SNAPSHOT_MAX_COUNT
+          valueFrom:
+            configMapKeyRef:
+              name: snapshot-settings
+              key: snapshot_max_count
         command:
         - /bin/sh
         - -c
@@ -51,19 +66,19 @@ spec:
           curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_slm/policy/daily-snapshots" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
-            -d '{
-              "schedule": "0 0 9 * * ?",
-              "name": "<daily-snap-{now/d}>",
-              "repository": "gcs_backup",
-              "config": {
-                "indices": ["*"],
-                "include_global_state": true
+            -d "{
+              \"schedule\": \"$SNAPSHOT_SCHEDULE\",
+              \"name\": \"<snap-{now/d{yyyy-MM-dd'T'HH-mm}}>\",
+              \"repository\": \"gcs_backup\",
+              \"config\": {
+                \"indices\": [\"*\"],
+                \"include_global_state\": true
               },
-              "retention": {
-                "expire_after": "14d",
-                "max_count": 14
+              \"retention\": {
+                \"expire_after\": \"$SNAPSHOT_EXPIRE_AFTER\",
+                \"max_count\": $SNAPSHOT_MAX_COUNT
               }
-            }'
+            }"
 
           echo ""
           echo "Snapshot setup completed successfully!"

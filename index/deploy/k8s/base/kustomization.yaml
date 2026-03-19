@@ -27,6 +27,9 @@ configMapGenerator:
       disableNameSuffixHash: true
     literals:
       - snapshot_bucket=
+      - snapshot_schedule=
+      - snapshot_expire_after=
+      - snapshot_max_count=
   - name: index-settings
     options:
       disableNameSuffixHash: true
