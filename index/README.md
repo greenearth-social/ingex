@@ -95,6 +95,7 @@ export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 ./deploy.sh local --ctypes init              # Fresh deployment
 ./deploy.sh local --ctypes schema            # Update templates
 ./deploy.sh local --ctypes resource          # Update resources
+./deploy.sh local --ctypes snapshot          # Update SLM snapshot policy
 ./deploy.sh local --ctypes schema,resource   # Update both
 
 # Common options
@@ -107,6 +108,7 @@ export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 - **`init`** - Fresh deployment (cannot be combined with other types)
 - **`schema`** - Update index templates only
 - **`resource`** - Update Elasticsearch compute/storage resources
+- **`snapshot`** - Update SLM snapshot policy (schedule/retention) on a live cluster
 - **`schema,resource`** - Update both (resources first, then schema)
 
 The script:
@@ -133,6 +135,7 @@ The deployment system supports graceful updates with zero or minimal downtime. Y
 - **`init`** - Fresh deployment (first time setup)
 - **`schema`** - Update index templates for non-breaking schema changes
 - **`resource`** - Update Elasticsearch compute/storage resources via ECK rolling update
+- **`snapshot`** - Update the SLM snapshot policy (schedule/retention) on a live cluster
 - **`schema,resource`** - Update both (resources first, then schema)
 
 ### Supported Schema Changes (Non-Breaking)
@@ -597,6 +600,17 @@ Then run the restore script:
 # Preview without executing
 ./index/restore.sh --environment stage --dry-run
 ```
+
+### Updating snapshot schedule or retention
+
+After changing `snapshot_schedule`, `snapshot_expire_after`, or `snapshot_max_count` in a kustomization overlay, apply the changes to a live cluster with:
+
+```bash
+./deploy.sh stage --ctypes snapshot
+./deploy.sh prod  --ctypes snapshot
+```
+
+This updates the `snapshot-settings` ConfigMap and re-runs the snapshot setup job to apply the new SLM policy to Elasticsearch.
 
 ### Disabling backups on stage
 
