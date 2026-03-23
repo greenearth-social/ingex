@@ -468,12 +468,21 @@ deploy_snapshot_update() {
         exit 1
     }
 
+    log_info "Cleaning up previous jobs..."
+    kubectl delete job elasticsearch-snapshot-setup es-service-user-setup -n "$namespace" --ignore-not-found=true
+    kubectl wait --for=delete job/elasticsearch-snapshot-setup job/es-service-user-setup -n "$namespace" --timeout=30s 2>/dev/null || true
+
     log_info "Applying updated ConfigMaps..."
     kubectl apply -k "$kustomize_dir"
 
-    log_info "Cleaning up previous snapshot setup job..."
-    kubectl delete job elasticsearch-snapshot-setup -n "$namespace" --ignore-not-found=true
-    kubectl wait --for=delete job/elasticsearch-snapshot-setup -n "$namespace" --timeout=30s 2>/dev/null || true
+    log_info "Running service user setup job to update role permissions..."
+    kubectl apply -f "$K8S_DIR/base/es-service-user-setup-job.yaml" -n "$namespace"
+
+    wait_for_job "es-service-user-setup" "$namespace" 180 || {
+        log_error "Service user setup job failed"
+        kubectl logs -l job-name=es-service-user-setup -n "$namespace" --tail=100 2>/dev/null || true
+        exit 1
+    }
 
     log_info "Running snapshot setup job to update SLM policy..."
     kubectl apply -f "$K8S_DIR/base/elasticsearch-snapshot-setup-job.yaml" -n "$namespace"

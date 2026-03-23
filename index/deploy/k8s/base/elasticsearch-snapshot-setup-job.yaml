@@ -68,7 +68,7 @@ spec:
             -H "Content-Type: application/json" \
             -d "{
               \"schedule\": \"$SNAPSHOT_SCHEDULE\",
-              \"name\": \"<snap-{now/d{yyyy-MM-dd'T'HH-mm}}>\",
+              \"name\": \"<snap-{now{yyyy-MM-dd-HH-mm}}>\",
               \"repository\": \"gcs_backup\",
               \"config\": {
                 \"indices\": [\"*\"],
