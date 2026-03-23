@@ -55,6 +55,7 @@ patches:
             node.store.allow_mmap: true
           podTemplate:
             spec:
+              serviceAccountName: es-snapshot-sa
               containers:
               - name: elasticsearch
                 resources:
