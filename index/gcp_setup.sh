@@ -86,7 +86,7 @@ create_snapshot_service_account() {
 setup_workload_identity() {
     local sa_email="es-snapshot-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
     local k8s_namespace="greenearth-$GE_ENVIRONMENT"
-    local k8s_sa="es-snapshot-sa"
+    local k8s_sa="es-node-sa"
     local member="serviceAccount:$GE_GCP_PROJECT_ID.svc.id.goog[$k8s_namespace/$k8s_sa]"
 
     log_info "Binding K8s SA $k8s_namespace/$k8s_sa to GCP SA $sa_email via Workload Identity..."

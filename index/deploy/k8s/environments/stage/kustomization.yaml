@@ -55,7 +55,7 @@ patches:
             node.store.allow_mmap: true
           podTemplate:
             spec:
-              serviceAccountName: es-snapshot-sa
+              serviceAccountName: es-node-sa
               containers:
               - name: elasticsearch
                 resources:
@@ -89,7 +89,7 @@ patches:
         value: 2Gi
   - target:
       kind: ServiceAccount
-      name: es-snapshot-sa
+      name: es-node-sa
     patch: |-
       - op: replace
         path: /metadata/annotations/iam.gke.io~1gcp-service-account

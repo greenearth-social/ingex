@@ -557,40 +557,63 @@ Snapshots are taken via Elasticsearch SLM and stored in GCS. Schedule and retent
 Run once to create the GCS bucket and Workload Identity bindings:
 
 ```bash
-GE_ENVIRONMENT=stage ./index/gcp_setup.sh
-GE_ENVIRONMENT=prod  ./index/gcp_setup.sh
+source .env.stage && ./index/gcp_setup.sh
+source .env.prod && ./index/gcp_setup.sh
 ```
 
 This creates:
+
 - GCS bucket: `greenearth-471522-es-snapshots-<env>`
 - GCP SA: `es-snapshot-<env>@greenearth-471522.iam.gserviceaccount.com`
-- Workload Identity binding for `greenearth-<env>/es-snapshot-sa`
+- Workload Identity binding for `greenearth-<env>/es-node-sa`
+
+### Create/update snapshot schedule or retention
+
+After changing `snapshot_schedule`, `snapshot_expire_after`, or `snapshot_max_count` in a kustomization overlay, apply the changes to a live cluster with:
+
+```bash
+./deploy.sh stage --ctypes snapshot
+./deploy.sh prod  --ctypes snapshot
+```
+
+This updates the `snapshot-settings` ConfigMap and re-runs the snapshot setup job to apply the new SLM policy to Elasticsearch.
 
 ### Verifying snapshots
 
 ```bash
+# Get elastic password
+ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $GE_K8S_NAMESPACE)
+
 # Port-forward first
-kubectl port-forward service/greenearth-es-http 9200 -n greenearth-stage
+kubectl port-forward service/greenearth-es-http 9200 -n $GE_K8S_NAMESPACE
 
 # Confirm snapshot repo is green
-curl -k -u "elastic:PASSWORD" https://localhost:9200/_snapshot/gcs_backup
+curl -k -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_snapshot/gcs_backup
 
 # Confirm SLM policy and next execution time
-curl -k -u "elastic:PASSWORD" https://localhost:9200/_slm/policy/daily-snapshots
+curl -k -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_slm/policy/daily-snapshots
 
 # Manually trigger a snapshot
-curl -k -u "elastic:PASSWORD" -X PUT https://localhost:9200/_slm/policy/daily-snapshots/_execute
+curl -k -u "elastic:$ELASTIC_PASSWORD" -X PUT https://localhost:9200/_slm/policy/daily-snapshots/_execute
 
 # List available snapshots
-curl -k -u "elastic:PASSWORD" https://localhost:9200/_snapshot/gcs_backup/_all?verbose=false
+curl -k -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_snapshot/gcs_backup/_all?verbose=false
 ```
 
 ### Restoring from a snapshot
 
-**Pre-condition:** The ES cluster must be healthy and accepting requests. For disk-full or other storage failure scenarios, first increase storage:
+**Pre-conditions:**
+
+1. Data ingestion, exports, and deletion should be paused.
+
+2. The ES cluster must be healthy and accepting requests. For disk-full or other storage failure scenarios, either increase storage or rebuild the entire cluster:
 
 ```bash
-./deploy.sh <env> --ctypes resource   # or --ctypes init for full rebuild
+# Increase storage on running cluster (least destructive)
+./deploy.sh <env> --ctypes resource   
+# Destroy the namespace then rebuild from scratch (most destructive)
+./deploy.sh <env> --teardown
+./deploy.sh <env> --ctypes init
 ```
 
 Then run the restore script:
@@ -605,17 +628,6 @@ Then run the restore script:
 # Preview without executing
 ./index/restore.sh --environment stage --dry-run
 ```
-
-### Updating snapshot schedule or retention
-
-After changing `snapshot_schedule`, `snapshot_expire_after`, or `snapshot_max_count` in a kustomization overlay, apply the changes to a live cluster with:
-
-```bash
-./deploy.sh stage --ctypes snapshot
-./deploy.sh prod  --ctypes snapshot
-```
-
-This updates the `snapshot-settings` ConfigMap and re-runs the snapshot setup job to apply the new SLM policy to Elasticsearch.
 
 ### Disabling backups on stage
 
