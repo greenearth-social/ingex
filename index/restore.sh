@@ -137,6 +137,40 @@ else:
     log_info "Selected most recent successful snapshot: $SNAPSHOT_NAME"
 }
 
+SNAPSHOT_INDICES="posts*,post_tombstones*,hashtags*,likes*,like_tombstones*,inferences*"
+
+delete_existing_indices() {
+    log_info "Checking for existing indices on cluster..."
+
+    local existing
+    existing=$(es_curl "https://localhost:$LOCAL_PORT/_cat/indices/$SNAPSHOT_INDICES?h=index" 2>/dev/null | tr '\n' ' ' | xargs)
+
+    if [ -z "$existing" ]; then
+        log_info "No existing indices found. Proceeding with restore."
+        return
+    fi
+
+    log_warn "The following indices already exist on the cluster:"
+    echo "  $existing"
+    echo ""
+
+    if [ "$DRY_RUN" = true ]; then
+        log_info "[DRY RUN] Would delete existing indices before restoring."
+        return
+    fi
+
+    read -r -p "Delete these indices before restoring? [y/N] " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        log_info "Deleting existing indices..."
+        es_curl --fail-with-body -X DELETE "https://localhost:$LOCAL_PORT/$SNAPSHOT_INDICES"
+        echo ""
+        log_info "Indices deleted."
+    else
+        log_error "Restore aborted."
+        exit 1
+    fi
+}
+
 restore_snapshot() {
     log_info "Restoring snapshot: $SNAPSHOT_NAME"
 
@@ -149,7 +183,11 @@ restore_snapshot() {
     es_curl --fail-with-body -X POST \
         "https://localhost:$LOCAL_PORT/_snapshot/gcs_backup/$SNAPSHOT_NAME/_restore?wait_for_completion=false" \
         -H "Content-Type: application/json" \
-        -d '{"include_global_state": true}'
+        -d "{
+          \"indices\": \"$SNAPSHOT_INDICES\",
+          \"include_global_state\": false,
+          \"feature_states\": []
+        }"
     echo ""
     log_info "Restore initiated. Monitoring status..."
 
@@ -196,6 +234,7 @@ main() {
     start_port_forward
     register_snapshot_repo
     select_snapshot
+    delete_existing_indices
     restore_snapshot
 
     log_info "Done."
