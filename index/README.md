@@ -576,7 +576,8 @@ After changing `snapshot_schedule`, `snapshot_expire_after`, or `snapshot_max_co
 ./deploy.sh prod  --ctypes snapshot
 ```
 
-This updates the `snapshot-settings` ConfigMap and re-runs the snapshot setup job to apply the new SLM policy to Elasticsearch.
+This updates the `snapshot-settings` ConfigMap and re-runs the snapshot setup job to apply the new SLM policy to Elasticsearch. It also updates the ES service
+user with necessary permissions for snapshot management.
 
 ### Verifying snapshots
 
@@ -602,21 +603,30 @@ curl -k -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_snapshot/gcs_back
 
 ### Restoring from a snapshot
 
-**Pre-conditions:**
+#### Pre-Conditions
 
-1. Data ingestion, exports, and deletion should be paused.
-
-2. The ES cluster must be healthy and accepting requests. For disk-full or other storage failure scenarios, either increase storage or rebuild the entire cluster:
+Data ingestion, exports, and deletion should be paused:
 
 ```bash
-# Increase storage on running cluster (least destructive)
-./deploy.sh <env> --ctypes resource   
-# Destroy the namespace then rebuild from scratch (most destructive)
-./deploy.sh <env> --teardown
-./deploy.sh <env> --ctypes init
+# Stop all services/jobs writing to ES.
+./ingest/scripts/ingestctl.sh stop
 ```
 
-Then run the restore script:
+The ES cluster must be healthy and accepting requests. If the cluster is
+healthy and accepting requests, you can skip to the restore step.
+
+If the cluster is not accepting requests, 
+it may be faster to destroy and rebuild the entire cluster:
+
+```bash
+# Destroy the namespace then rebuild from scratch (warning: desctructive!)
+./index/deploy.sh <env> --teardown
+./index/deploy.sh <env> --ctypes init
+```
+
+#### Restoring
+
+Run the restore script:
 
 ```bash
 # Restore latest successful snapshot
@@ -629,11 +639,33 @@ Then run the restore script:
 ./index/restore.sh --environment stage --dry-run
 ```
 
-### Disabling backups on stage
+Check progress of the data recovery:
 
 ```bash
-kubectl port-forward service/greenearth-es-http 9200 -n greenearth-stage
-curl -k -u "elastic:PASSWORD" -X DELETE https://localhost:9200/_slm/policy/daily-snapshots
+# List all shards actively recovering
+curl -k -u "elastic:$ELASTIC_PASSWORD" \
+    "https://localhost:9200/_cat/recovery?active_only=true&v&h=index,shard,stage,files_percent,bytes_percent,time"
+```
+
+Restart the ingestion services:
+
+```bash
+cd ingest && ./scripts/ingestctl.sh start
+```
+
+**Note:** If the cluster was destroyed and rebuilt, you'll need to recreate API keys for the
+ES cluster, then redeploy ingestion services and the API server to pick up the new keys.
+
+```bash
+# Recreate API keys on ES cluster:
+cd ingest && ./scripts/k8s_recreate_api_keys.sh
+# Redeploy ingestion services
+./scripts/deploy.sh
+# Restart the scheduled jobs
+./scripts/ingestctl.sh start expiry
+./scripts/ingestctl.sh start extract
+# Redeploy API services
+cd ../../api/ && source .env.example && ./scripts/deploy.sh
 ```
 
 ## Cleanup
