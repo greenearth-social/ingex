@@ -142,13 +142,15 @@ SNAPSHOT_INDICES="posts*,post_tombstones*,hashtags*,likes*,like_tombstones*,infe
 delete_existing_indices() {
     log_info "Checking for existing indices on cluster..."
 
-    local existing
+    local existing existing_csv
     existing=$(es_curl "https://localhost:$LOCAL_PORT/_cat/indices/$SNAPSHOT_INDICES?h=index" 2>/dev/null | tr '\n' ' ' | xargs)
 
     if [ -z "$existing" ]; then
         log_info "No existing indices found. Proceeding with restore."
         return
     fi
+
+    existing_csv=$(echo "$existing" | tr ' ' ',')
 
     log_warn "The following indices already exist on the cluster:"
     echo "  $existing"
@@ -162,7 +164,7 @@ delete_existing_indices() {
     read -r -p "Delete these indices before restoring? [y/N] " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         log_info "Deleting existing indices..."
-        es_curl --fail-with-body -X DELETE "https://localhost:$LOCAL_PORT/$SNAPSHOT_INDICES"
+        es_curl --fail-with-body -X DELETE "https://localhost:$LOCAL_PORT/$existing_csv"
         echo ""
         log_info "Indices deleted."
     else
