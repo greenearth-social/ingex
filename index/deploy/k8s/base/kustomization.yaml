@@ -7,6 +7,8 @@ resources:
   - kibana.yaml
   - deployment-state-configmap.yaml
   - elasticsearch-exporter.yaml
+  - elasticsearch-node-sa.yaml
+  - elasticsearch-snapshot-setup-job.yaml
   - templates/posts-index-template.yaml
   - templates/post-tombstones-index-template.yaml
   - templates/likes-index-template.yaml
@@ -20,6 +22,14 @@ resources:
   - templates/inferences-index-template.yaml
 
 configMapGenerator:
+  - name: snapshot-settings
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - snapshot_bucket=
+      - snapshot_schedule=
+      - snapshot_expire_after=
+      - snapshot_max_count=
   - name: index-settings
     options:
       disableNameSuffixHash: true

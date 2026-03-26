@@ -16,10 +16,11 @@ print_usage() {
     echo "  environment         Target environment: local, stage, or prod"
     echo ""
     echo "Options:"
-    echo "  --ctypes <types>    Comma-separated change types: init, schema, resource, or schema,resource"
+    echo "  --ctypes <types>    Comma-separated change types: init, schema, resource, snapshot, or schema,resource"
     echo "                      - init: Fresh deployment (cannot be combined with other types)"
     echo "                      - schema: Update index templates only"
     echo "                      - resource: Update Elasticsearch compute/storage resources"
+    echo "                      - snapshot: Update SLM snapshot policy (schedule/retention)"
     echo "                      - schema,resource: Update both (resources first, then schema)"
     echo "  --install-eck       Install ECK operator before deployment"
     echo "  --dry-run           Show what would be deployed without applying"
@@ -451,6 +452,50 @@ deploy_resource_update() {
     log_success "Resource update completed successfully!"
 }
 
+deploy_snapshot_update() {
+    local namespace=$1
+    local kustomize_dir=$2
+
+    if [ "$GE_ENVIRONMENT" = "local" ]; then
+        log_error "Snapshot update is not supported for local environment"
+        exit 1
+    fi
+
+    log_info "Deploying snapshot settings update..."
+
+    verify_cluster_health "$namespace" "yellow" || {
+        log_error "Cluster health check failed"
+        exit 1
+    }
+
+    log_info "Cleaning up previous jobs..."
+    kubectl delete job elasticsearch-snapshot-setup es-service-user-setup -n "$namespace" --ignore-not-found=true
+    kubectl wait --for=delete job/elasticsearch-snapshot-setup job/es-service-user-setup -n "$namespace" --timeout=30s 2>/dev/null || true
+
+    log_info "Applying updated ConfigMaps..."
+    kubectl apply -k "$kustomize_dir"
+
+    log_info "Running service user setup job to update role permissions..."
+    kubectl apply -f "$K8S_DIR/base/es-service-user-setup-job.yaml" -n "$namespace"
+
+    wait_for_job "es-service-user-setup" "$namespace" 180 || {
+        log_error "Service user setup job failed"
+        kubectl logs -l job-name=es-service-user-setup -n "$namespace" --tail=100 2>/dev/null || true
+        exit 1
+    }
+
+    log_info "Running snapshot setup job to update SLM policy..."
+    kubectl apply -f "$K8S_DIR/base/elasticsearch-snapshot-setup-job.yaml" -n "$namespace"
+
+    wait_for_job "elasticsearch-snapshot-setup" "$namespace" 300 || {
+        log_error "Snapshot setup job failed"
+        kubectl logs -l job-name=elasticsearch-snapshot-setup -n "$namespace" --tail=100 2>/dev/null || true
+        exit 1
+    }
+
+    log_success "Snapshot settings update completed successfully!"
+}
+
 deploy_init() {
     local namespace=$1
     local kustomize_dir=$2
@@ -512,6 +557,17 @@ deploy_init() {
         log_error "Bootstrap job failed"
         exit 1
     }
+
+    if [ "$GE_ENVIRONMENT" != "local" ]; then
+        log_info "Deploying snapshot setup job..."
+        kubectl delete job elasticsearch-snapshot-setup -n "$namespace" --ignore-not-found=true
+        kubectl apply -f "$K8S_DIR/base/elasticsearch-snapshot-setup-job.yaml" -n "$namespace"
+        wait_for_job "elasticsearch-snapshot-setup" "$namespace" 300 || {
+            log_error "Snapshot setup job failed"
+            kubectl logs -l job-name=elasticsearch-snapshot-setup -n "$namespace" --tail=100 2>/dev/null || true
+            exit 1
+        }
+    fi
 
     # Initialize deployment state
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -579,13 +635,15 @@ deploy_environment() {
         deploy_schema_update "$namespace" "$kustomize_dir"
     elif [ "$CHANGE_TYPES" = "resource" ]; then
         deploy_resource_update "$namespace" "$kustomize_dir"
+    elif [ "$CHANGE_TYPES" = "snapshot" ]; then
+        deploy_snapshot_update "$namespace" "$kustomize_dir"
     elif [ "$CHANGE_TYPES" = "schema,resource" ] || [ "$CHANGE_TYPES" = "resource,schema" ]; then
         log_info "Applying resource updates first (safer), then schema updates"
         deploy_resource_update "$namespace" "$kustomize_dir"
         deploy_schema_update "$namespace" "$kustomize_dir"
     else
         log_error "Invalid --ctypes value: $CHANGE_TYPES"
-        log_error "Valid options: init, schema, resource, schema,resource"
+        log_error "Valid options: init, schema, resource, snapshot, schema,resource"
         exit 1
     fi
 
@@ -616,12 +674,12 @@ while [[ $# -gt 0 ]]; do
             if [[ "$CHANGE_TYPES" =~ ^init$ ]]; then
                 # init is valid on its own
                 :
-            elif [[ "$CHANGE_TYPES" =~ ^(schema|resource|schema,resource|resource,schema)$ ]]; then
+            elif [[ "$CHANGE_TYPES" =~ ^(schema|resource|snapshot|schema,resource|resource,schema)$ ]]; then
                 # Valid combinations
                 :
             else
                 log_error "Invalid --ctypes value: $CHANGE_TYPES"
-                log_error "Valid options: init, schema, resource, schema,resource"
+                log_error "Valid options: init, schema, resource, snapshot, schema,resource"
                 exit 1
             fi
             shift 2

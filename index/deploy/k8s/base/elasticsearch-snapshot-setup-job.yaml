@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: elasticsearch-snapshot-setup
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: snapshot-setup
+        image: curlimages/curl:8.4.0
+        env:
+        - name: ES_SERVICE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: es-service-user-secret
+              key: password
+        - name: SNAPSHOT_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: snapshot-settings
+              key: snapshot_bucket
+        - name: SNAPSHOT_SCHEDULE
+          valueFrom:
+            configMapKeyRef:
+              name: snapshot-settings
+              key: snapshot_schedule
+        - name: SNAPSHOT_EXPIRE_AFTER
+          valueFrom:
+            configMapKeyRef:
+              name: snapshot-settings
+              key: snapshot_expire_after
+        - name: SNAPSHOT_MAX_COUNT
+          valueFrom:
+            configMapKeyRef:
+              name: snapshot-settings
+              key: snapshot_max_count
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Waiting for Elasticsearch to be ready..."
+
+          until curl -k -s -u "es-service-user:$ES_SERVICE_PASSWORD" -o /dev/null -w "%{http_code}" https://greenearth-es-http:9200/ | grep -q "200"; do
+            echo "Waiting for Elasticsearch..."
+            sleep 10
+          done
+
+          echo "Elasticsearch is ready! Registering GCS snapshot repository..."
+
+          curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_snapshot/gcs_backup" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"type\": \"gcs\",
+              \"settings\": {
+                \"bucket\": \"$SNAPSHOT_BUCKET\",
+                \"application_name\": \"elasticsearch\"
+              }
+            }"
+
+          echo ""
+          echo "GCS snapshot repository registered! Creating SLM policy..."
+
+          curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_slm/policy/daily-snapshots" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"schedule\": \"$SNAPSHOT_SCHEDULE\",
+              \"name\": \"<snap-{now{yyyy-MM-dd-HH-mm}}>\",
+              \"repository\": \"gcs_backup\",
+              \"config\": {
+                \"indices\": [\"posts*\", \"post_tombstones*\", \"hashtags*\", \"likes*\", \"like_tombstones*\", \"inferences*\"],
+                \"include_global_state\": false,
+                \"feature_states\": []
+              },
+              \"retention\": {
+                \"expire_after\": \"$SNAPSHOT_EXPIRE_AFTER\",
+                \"max_count\": $SNAPSHOT_MAX_COUNT
+              }
+            }"
+
+          echo ""
+          echo "Snapshot setup completed successfully!"

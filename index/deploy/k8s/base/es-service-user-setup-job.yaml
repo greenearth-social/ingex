@@ -41,11 +41,11 @@ spec:
           echo "Elasticsearch is ready! Creating/updating es-service-user role and user..."
 
           # Create / update the es_service_role with specific privileges
-          curl -k -X POST "https://greenearth-es-http:9200/_security/role/es_service_role" \
+          curl -k --fail-with-body -X POST "https://greenearth-es-http:9200/_security/role/es_service_role" \
             -u "elastic:$ELASTIC_PASSWORD" \
             -H "Content-Type: application/json" \
             -d '{
-              "cluster": ["manage_index_templates", "monitor", "manage_ilm"],
+              "cluster": ["manage_index_templates", "monitor", "manage_ilm", "create_snapshot", "manage_slm", "manage"],
               "indices": [
                 {
                   "names": ["posts*", "post_tombstones*", "likes*", "like_tombstones*", "hashtags*", "inferences*"],

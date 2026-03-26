@@ -55,6 +55,7 @@ patches:
             node.store.allow_mmap: true
           podTemplate:
             spec:
+              serviceAccountName: es-node-sa
               containers:
               - name: elasticsearch
                 resources:
@@ -86,8 +87,22 @@ patches:
       - op: replace
         path: /spec/podTemplate/spec/containers/0/resources/limits/memory
         value: 2Gi
+  - target:
+      kind: ServiceAccount
+      name: es-node-sa
+    patch: |-
+      - op: replace
+        path: /metadata/annotations/iam.gke.io~1gcp-service-account
+        value: es-snapshot-stage@greenearth-471522.iam.gserviceaccount.com
 
 configMapGenerator:
+  - name: snapshot-settings
+    behavior: replace
+    literals:
+      - snapshot_bucket=greenearth-471522-es-snapshots-stage
+      - snapshot_schedule=0 0 * * * ?
+      - snapshot_expire_after=3h
+      - snapshot_max_count=3
   - name: index-settings
     behavior: replace
     literals:

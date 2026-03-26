@@ -95,6 +95,7 @@ export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 ./deploy.sh local --ctypes init              # Fresh deployment
 ./deploy.sh local --ctypes schema            # Update templates
 ./deploy.sh local --ctypes resource          # Update resources
+./deploy.sh local --ctypes snapshot          # Update SLM snapshot policy
 ./deploy.sh local --ctypes schema,resource   # Update both
 
 # Common options
@@ -107,6 +108,7 @@ export GE_ELASTICSEARCH_SERVICE_USER_PWD="your-secure-password"
 - **`init`** - Fresh deployment (cannot be combined with other types)
 - **`schema`** - Update index templates only
 - **`resource`** - Update Elasticsearch compute/storage resources
+- **`snapshot`** - Update SLM snapshot policy (schedule/retention) on a live cluster
 - **`schema,resource`** - Update both (resources first, then schema)
 
 The script:
@@ -133,6 +135,7 @@ The deployment system supports graceful updates with zero or minimal downtime. Y
 - **`init`** - Fresh deployment (first time setup)
 - **`schema`** - Update index templates for non-breaking schema changes
 - **`resource`** - Update Elasticsearch compute/storage resources via ECK rolling update
+- **`snapshot`** - Update the SLM snapshot policy (schedule/retention) on a live cluster
 - **`schema,resource`** - Update both (resources first, then schema)
 
 ### Supported Schema Changes (Non-Breaking)
@@ -539,6 +542,131 @@ See the docs at [/ingest/deploy/README.md](../ingest/deploy/README.md)
 - **Cluster health**: `status: "green"`, `number_of_nodes: 1`
 - **Index template**: Shows posts_template configuration with schema
 - **Alias**: Shows `posts` alias pointing to `posts_v1` index
+
+## Backups & Restore
+
+Snapshots are taken via Elasticsearch SLM and stored in GCS. Schedule and retention are configurable per environment via the `snapshot-settings` ConfigMap:
+
+| Environment | Schedule | Retention |
+|-------------|----------|-----------|
+| stage | Hourly | 3 hours / max 3 snapshots |
+| prod | Daily at 9am UTC (4am ET) | 14 days / max 14 snapshots |
+
+### One-time GCP setup (per environment)
+
+Run once to create the GCS bucket and Workload Identity bindings:
+
+```bash
+source .env.stage && ./index/gcp_setup.sh
+source .env.prod && ./index/gcp_setup.sh
+```
+
+This creates:
+
+- GCS bucket: `greenearth-471522-es-snapshots-<env>`
+- GCP SA: `es-snapshot-<env>@greenearth-471522.iam.gserviceaccount.com`
+- Workload Identity binding for `greenearth-<env>/es-node-sa`
+
+### Create/update snapshot schedule or retention
+
+After changing `snapshot_schedule`, `snapshot_expire_after`, or `snapshot_max_count` in a kustomization overlay, apply the changes to a live cluster with:
+
+```bash
+./deploy.sh stage --ctypes snapshot
+./deploy.sh prod  --ctypes snapshot
+```
+
+This updates the `snapshot-settings` ConfigMap and re-runs the snapshot setup job to apply the new SLM policy to Elasticsearch. It also updates the ES service
+user with necessary permissions for snapshot management.
+
+### Verifying snapshots
+
+```bash
+# Get elastic password
+ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -o go-template='{{.data.elastic | base64decode}}' -n $GE_K8S_NAMESPACE)
+
+# Port-forward first
+kubectl port-forward service/greenearth-es-http 9200 -n $GE_K8S_NAMESPACE
+
+# Confirm snapshot repo is green
+curl -k -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_snapshot/gcs_backup
+
+# Confirm SLM policy and next execution time
+curl -k -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_slm/policy/daily-snapshots
+
+# Manually trigger a snapshot
+curl -k -u "elastic:$ELASTIC_PASSWORD" -X PUT https://localhost:9200/_slm/policy/daily-snapshots/_execute
+
+# List available snapshots
+curl -k -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_snapshot/gcs_backup/_all?verbose=false
+```
+
+### Restoring from a snapshot
+
+#### Pre-Conditions
+
+Data ingestion, exports, and deletion should be paused:
+
+```bash
+# Stop all services/jobs writing to ES.
+./ingest/scripts/ingestctl.sh stop
+```
+
+The ES cluster must be healthy and accepting requests. If the cluster is
+healthy and accepting requests, you can skip to the restore step.
+
+If the cluster is not accepting requests, 
+it may be faster to destroy and rebuild the entire cluster:
+
+```bash
+# Destroy the namespace then rebuild from scratch (warning: desctructive!)
+./index/deploy.sh <env> --teardown
+./index/deploy.sh <env> --ctypes init
+```
+
+#### Restoring
+
+Run the restore script:
+
+```bash
+# Restore latest successful snapshot
+./index/restore.sh --environment stage
+
+# Restore a specific snapshot
+./index/restore.sh --environment prod --snapshot daily-snap-2026.03.15
+
+# Preview without executing
+./index/restore.sh --environment stage --dry-run
+```
+
+Check progress of the data recovery:
+
+```bash
+# List all shards actively recovering
+curl -k -u "elastic:$ELASTIC_PASSWORD" \
+    "https://localhost:9200/_cat/recovery?active_only=true&v&h=index,shard,stage,files_percent,bytes_percent,time"
+```
+
+Restart the ingestion services:
+
+```bash
+cd ingest && ./scripts/ingestctl.sh start
+```
+
+**Note:** If the cluster was destroyed and rebuilt, you'll need to recreate API keys for the
+ES cluster, then redeploy ingestion services and the API server to pick up the new keys.
+
+```bash
+# Recreate API keys on ES cluster:
+cd ingest && ./scripts/k8s_recreate_api_keys.sh
+# Redeploy ingestion services
+./scripts/deploy.sh
+# Restart the scheduled jobs
+./scripts/ingestctl.sh start expiry
+./scripts/ingestctl.sh start extract
+# Redeploy API services
+cd ../../api/ && source .env.example && ./scripts/deploy.sh
+```
 
 ## Cleanup
 
