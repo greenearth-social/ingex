@@ -61,10 +61,10 @@ patches:
                 resources:
                   requests:
                     memory: 32Gi
-                    cpu: "3600m"
+                    cpu: "3000m"
                   limits:
                     memory: 32Gi
-                    cpu: "3600m"
+                    cpu: "3000m"
                 env:
                 - name: ES_JAVA_OPTS
                   value: "-Xms16g -Xmx16g"
