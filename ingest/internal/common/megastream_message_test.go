@@ -802,7 +802,8 @@ func TestMegaStreamMessage_VideoTranscriptParsing(t *testing.T) {
 
 		inferencesJSON := `{
 			"text_embeddings": {
-				"all-MiniLM-L12-v2": "abc"
+				"all-MiniLM-L12-v2": "abc",
+				"all-MiniLM-L6-v2": "def"
 			},
 			"video": {
 				"audio_transcription": {

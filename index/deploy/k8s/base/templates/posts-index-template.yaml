@@ -5,7 +5,7 @@ metadata:
 data:
   posts-index-template.json: |
     {
-      "index_patterns": ["posts_v1*"],
+      "index_patterns": ["posts_v*"],
       "template": {
         "settings": {
           "number_of_shards": $(INDEX_SHARDS),
@@ -70,6 +70,11 @@ data:
                   "dims": 384,
                   "index": true,
                   "similarity": "cosine"
+                },
+                "all_MiniLM_L6_v2": {
+                  "type": "dense_vector",
+                  "dims": 384,
+                  "index": false
                 },
                 "google_embeddinggemma_300m": {
                   "type": "dense_vector",
