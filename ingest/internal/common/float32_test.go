@@ -61,7 +61,7 @@ func TestEmbeddingsJSONMarshaling(t *testing.T) {
 		Content:   "test content",
 		CreatedAt: "2024-01-01T00:00:00Z",
 		Embeddings: map[string]Float32Array{
-			"all_MiniLM_L6_v2": {0.0, 1.0, 2.5, -1.0},
+			"all_MiniLM_L12_v2": {0.0, 1.0, 2.5, -1.0},
 		},
 		IndexedAt: "2024-01-01T00:00:00Z",
 	}
@@ -85,9 +85,9 @@ func TestEmbeddingsJSONMarshaling(t *testing.T) {
 		t.Fatal("embeddings field missing or wrong type")
 	}
 
-	embedding, ok := embeddings["all_MiniLM_L6_v2"].([]interface{})
+	embedding, ok := embeddings["all_MiniLM_L12_v2"].([]interface{})
 	if !ok {
-		t.Fatal("all_MiniLM_L6_v2 field missing or wrong type")
+		t.Fatal("all_MiniLM_L12_v2 field missing or wrong type")
 	}
 
 	// Verify each value is a number (float64 after JSON unmarshal)

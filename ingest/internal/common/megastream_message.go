@@ -279,13 +279,6 @@ func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *Inges
 			}
 		}
 
-		if embL6, ok := textEmbeddings["all-MiniLM-L6-v2"].(string); ok {
-			if decoded, err := decodeEmbedding(embL6); err == nil {
-				m.embeddings["all_MiniLM_L6_v2"] = decoded
-			} else {
-				logger.Debug("Failed to decode L6 embedding for %s: %v", m.atURI, err)
-			}
-		}
 	}
 
 	video, ok := inferences["video"].(map[string]interface{})
