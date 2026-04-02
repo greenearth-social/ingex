@@ -44,7 +44,7 @@ patches:
         value: "-Xms3g -Xmx3g"
       - op: replace
         path: /spec/nodeSets/0/volumeClaimTemplates/0/spec/resources/requests/storage
-        value: 8Gi
+        value: 16Gi
       - op: add
         path: /spec/nodeSets/-
         value:
