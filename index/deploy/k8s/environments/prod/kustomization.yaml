@@ -76,7 +76,7 @@ patches:
               - ReadWriteOnce
               resources:
                 requests:
-                  storage: 1024Gi
+                  storage: 2048Gi
   - target:
       kind: Kibana
       name: greenearth
