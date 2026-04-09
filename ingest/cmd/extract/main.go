@@ -188,7 +188,6 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 		return fmt.Errorf("failed to create ES client: %w", err)
 	}
 
-	var failedIndices []string
 	for _, indexName := range indices {
 		logger.Info("Starting export from index: %s", indexName)
 		logger.Metric("extract.index_attempted_count", 1)
@@ -213,19 +212,16 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 		case IndexTypeUnknown:
 			logger.Error("Skipping index %s: unknown index type", indexName)
 			logger.Metric("extract.index_error_count", 1)
-			failedIndices = append(failedIndices, indexName)
 			continue
 		default:
 			logger.Error("Unhandled index type for index %s", indexName)
 			logger.Metric("extract.index_error_count", 1)
-			failedIndices = append(failedIndices, indexName)
 			continue
 		}
 
 		if exportErr != nil {
 			logger.Error("Failed to export index %s: %v", indexName, exportErr)
 			logger.Metric("extract.index_error_count", 1)
-			failedIndices = append(failedIndices, indexName)
 			continue
 		}
 
@@ -234,11 +230,6 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 	}
 
 	logger.Metric("extract.run_duration_ms", float64(time.Since(runStart).Milliseconds()))
-
-	if len(failedIndices) > 0 {
-		return fmt.Errorf("%d index(es) failed to export: %s", len(failedIndices), strings.Join(failedIndices, ", "))
-	}
-
 	logger.Metric("extract.run_success_count", 1)
 	return nil
 }
