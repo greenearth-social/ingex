@@ -29,6 +29,17 @@ func main() {
 
 	config := common.LoadConfig()
 	logger := common.NewLogger(config.LoggingEnabled)
+	otelCollector, err := common.NewOTelMetricCollector("extract", config.Environment, config.GCPProjectID, config.GCPRegion, config.MetricExportIntervalSec)
+	if err != nil {
+		logger.Error("Failed to create OTel metric collector: %v (continuing without metrics)", err)
+	} else {
+		logger.SetMetricCollector(otelCollector)
+		defer func() {
+			if err := otelCollector.Shutdown(context.Background()); err != nil {
+				logger.Error("Failed to shutdown OTel metric collector: %v", err)
+			}
+		}()
+	}
 
 	logger.Info("Green Earth Ingex - Elasticsearch Export Service")
 	if *dryRun {
@@ -99,6 +110,7 @@ func main() {
 	logger.Info("Starting export from %d index(es): %s", len(indices), strings.Join(indices, ", "))
 	if err := runExport(ctx, config, logger, *dryRun, *skipTLSVerify, *outputPath, indices, *startTime, *endTime, *skipInferences); err != nil {
 		logger.Error("Export failed: %v", err)
+		logger.Metric("extract.run_error_count", 1)
 		os.Exit(1)
 	}
 
@@ -107,6 +119,7 @@ func main() {
 
 func runExport(ctx context.Context, config *common.Config, logger *common.IngestLogger,
 	dryRun, skipTLSVerify bool, outputPath string, indices []string, startTime, endTime string, skipInferences bool) error {
+	runStart := time.Now()
 
 	if config.ElasticsearchURL == "" {
 		return fmt.Errorf("GE_ELASTICSEARCH_URL environment variable is required")
@@ -175,8 +188,10 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 		return fmt.Errorf("failed to create ES client: %w", err)
 	}
 
+	var failedIndices []string
 	for _, indexName := range indices {
 		logger.Info("Starting export from index: %s", indexName)
+		logger.Metric("extract.index_attempted_count", 1)
 
 		indexType := getIndexType(indexName, logger)
 
@@ -188,6 +203,7 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 			if exportErr == nil && !skipInferences && len(atURIs) > 0 {
 				if infErr := runExportForPostInferences(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, atURIs, config); infErr != nil {
 					logger.Error("Failed to export inferences for posts: %v", infErr)
+					logger.Metric("extract.inference_error_count", 1)
 				}
 			}
 		case IndexTypeLikes:
@@ -196,20 +212,34 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 			exportErr = runExportForHashtags(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
 		case IndexTypeUnknown:
 			logger.Error("Skipping index %s: unknown index type", indexName)
+			logger.Metric("extract.index_error_count", 1)
+			failedIndices = append(failedIndices, indexName)
 			continue
 		default:
 			logger.Error("Unhandled index type for index %s", indexName)
+			logger.Metric("extract.index_error_count", 1)
+			failedIndices = append(failedIndices, indexName)
 			continue
 		}
 
 		if exportErr != nil {
 			logger.Error("Failed to export index %s: %v", indexName, exportErr)
+			logger.Metric("extract.index_error_count", 1)
+			failedIndices = append(failedIndices, indexName)
 			continue
 		}
 
+		logger.Metric("extract.index_success_count", 1)
 		logger.Info("Completed export from index: %s", indexName)
 	}
 
+	logger.Metric("extract.run_duration_ms", float64(time.Since(runStart).Milliseconds()))
+
+	if len(failedIndices) > 0 {
+		return fmt.Errorf("%d index(es) failed to export: %s", len(failedIndices), strings.Join(failedIndices, ", "))
+	}
+
+	logger.Metric("extract.run_success_count", 1)
 	return nil
 }
 
@@ -289,6 +319,8 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 		}
 	}
 
+	logger.Metric("extract.records_exported_count", float64(totalRecords))
+	logger.Metric("extract.files_written_count", float64(fileNum))
 	logger.Info("Export complete: %d total records in %d files", totalRecords, fileNum)
 	return allAtURIs, nil
 }
@@ -364,6 +396,8 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 		}
 	}
 
+	logger.Metric("extract.records_exported_count", float64(totalRecords))
+	logger.Metric("extract.files_written_count", float64(fileNum))
 	logger.Info("Export complete: %d total records in %d files", totalRecords, fileNum)
 	return nil
 }
@@ -438,6 +472,8 @@ func runExportForHashtags(ctx context.Context, esClient *elasticsearch.Client, l
 		}
 	}
 
+	logger.Metric("extract.records_exported_count", float64(totalRecords))
+	logger.Metric("extract.files_written_count", float64(fileNum))
 	logger.Info("Export complete: %d total records in %d files", totalRecords, fileNum)
 	return nil
 }
@@ -687,6 +723,7 @@ func runExportForPostInferences(ctx context.Context, esClient *elasticsearch.Cli
 		logger.Debug("Dry-run: Would write %s with %d records", filename, len(allInferences))
 	}
 
+	logger.Metric("extract.records_exported_count", float64(len(allInferences)))
 	logger.Info("Inference export complete: %d records", len(allInferences))
 	return nil
 }

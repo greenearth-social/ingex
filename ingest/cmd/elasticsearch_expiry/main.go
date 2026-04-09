@@ -26,6 +26,17 @@ func main() {
 	config := common.LoadConfig()
 	logger := common.NewLogger(config.LoggingEnabled)
 	logger.SetDebugEnabled(*debug)
+	otelCollector, err := common.NewOTelMetricCollector("elasticsearch-expiry", config.Environment, config.GCPProjectID, config.GCPRegion, config.MetricExportIntervalSec)
+	if err != nil {
+		logger.Error("Failed to create OTel metric collector: %v (continuing without metrics)", err)
+	} else {
+		logger.SetMetricCollector(otelCollector)
+		defer func() {
+			if err := otelCollector.Shutdown(context.Background()); err != nil {
+				logger.Error("Failed to shutdown OTel metric collector: %v", err)
+			}
+		}()
+	}
 
 	logger.Info("Green Earth Ingex - Elasticsearch Expiry Service")
 	logger.Info("Retention period: %d hours (%.1f days)", *retentionHours, float64(*retentionHours)/24.0)
@@ -82,6 +93,7 @@ func main() {
 	// Run the expiry process
 	if err := runExpiry(ctx, config, logger, healthServer, *dryRun, *skipTLSVerify, *retentionHours, *hashtagRetentionHours); err != nil {
 		logger.Error("Expiry process failed: %v", err)
+		logger.Metric("expiry.run_error_count", 1)
 		os.Exit(1)
 	}
 
@@ -89,6 +101,7 @@ func main() {
 }
 
 func runExpiry(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify bool, retentionHours, hashtagRetentionHours int) error {
+	runStart := time.Now()
 	// Default graceful timeout for delete operations during shutdown
 	const graceTimeout = 30 * time.Second
 	// Initialize Elasticsearch client
@@ -175,14 +188,18 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 		}()
 
 		logger.Info("Processing collection: %s (date field: %s)", collection.IndexAlias, collection.DateField)
+		logger.Metric("expiry.collection_attempted_count", 1)
 
 		deletedCount, err := expiryService.ExpireCollection(deleteCtx, collection)
 		deleteCancel() // Clean up the context
 
 		if err != nil {
+			logger.Metric("expiry.collection_error_count", 1)
 			return fmt.Errorf("failed to expire collection %s: %w", collection.IndexAlias, err)
 		}
 
+		logger.Metric("expiry.collection_success_count", 1)
+		logger.Metric("expiry.deleted_count", float64(deletedCount))
 		totalDeleted += deletedCount
 		logger.Info("Processed %s: %d documents %s", collection.IndexAlias, deletedCount,
 			func() string {
@@ -213,6 +230,7 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 	}()
 
 	logger.Info("Processing collection: hashtags (date field: hour)")
+	logger.Metric("expiry.collection_attempted_count", 1)
 	// Create a separate expiry service instance for hashtags with different cutoff
 	hashtagExpiryConfig := elasticsearch_expiry.Config{
 		CutoffDate: hashtagCutoffDate,
@@ -226,9 +244,12 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 	deleteCancel()
 
 	if err != nil {
+		logger.Metric("expiry.collection_error_count", 1)
 		return fmt.Errorf("failed to expire hashtags collection: %w", err)
 	}
 
+	logger.Metric("expiry.collection_success_count", 1)
+	logger.Metric("expiry.deleted_count", float64(deletedCount))
 	totalDeleted += deletedCount
 	logger.Info("Processed hashtags: %d documents %s", deletedCount,
 		func() string {
@@ -244,5 +265,7 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 	}
 	logger.Info("Expiry complete: %d total documents %s across all collections", totalDeleted, action)
 
+	logger.Metric("expiry.run_duration_ms", float64(time.Since(runStart).Milliseconds()))
+	logger.Metric("expiry.run_success_count", 1)
 	return nil
 }
