@@ -102,6 +102,7 @@ func main() {
 
 func runExpiry(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify bool, retentionHours, hashtagRetentionHours int) error {
 	runStart := time.Now()
+	logger.Metric("expiry.run_attempted_count", 1)
 	// Default graceful timeout for delete operations during shutdown
 	const graceTimeout = 30 * time.Second
 	// Initialize Elasticsearch client

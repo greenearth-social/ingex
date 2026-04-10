@@ -120,6 +120,7 @@ func main() {
 func runExport(ctx context.Context, config *common.Config, logger *common.IngestLogger,
 	dryRun, skipTLSVerify bool, outputPath string, indices []string, startTime, endTime string, skipInferences bool) error {
 	runStart := time.Now()
+	logger.Metric("extract.run_attempted_count", 1)
 
 	if config.ElasticsearchURL == "" {
 		return fmt.Errorf("GE_ELASTICSEARCH_URL environment variable is required")
