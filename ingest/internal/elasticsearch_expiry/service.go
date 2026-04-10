@@ -174,10 +174,12 @@ func (s *Service) deleteExpiredDocuments(ctx context.Context, collection Collect
 
 	if response.TimedOut {
 		s.logger.Error("Delete by query timed out for %s", collection.IndexAlias)
+		s.logger.Metric("expiry.timed_out_count", 1)
 	}
 
 	if len(response.Failures) > 0 {
 		s.logger.Error("Delete by query had %d failures for %s", len(response.Failures), collection.IndexAlias)
+		s.logger.Metric("expiry.bulk_failures_count", float64(len(response.Failures)))
 		for i, failure := range response.Failures {
 			s.logger.Error("Failure %d: %v", i+1, failure)
 		}
