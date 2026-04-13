@@ -138,6 +138,35 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		os.Exit(1)
 	}
 
+	// Ensure period-based indices exist and are the write target for likes and
+	// like_tombstones. Runs at startup and every minute so that period rollovers
+	// are detected promptly without waiting for the next batch flush.
+	if !dryRun {
+		go func() {
+			ensureIndices := func() {
+				indexCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				for _, alias := range []string{"likes", "like_tombstones"} {
+					name := common.CurrentIndexName(alias, config.IndexPeriod)
+					if err := common.EnsureIndex(indexCtx, esClient, name, alias, logger); err != nil {
+						logger.Error("Failed to ensure index for %s: %v", alias, err)
+					}
+				}
+			}
+			ensureIndices()
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					ensureIndices()
+				}
+			}
+		}()
+	}
+
 	// Initialize and start rate limiter
 	threshold := config.LikeRateLimitPerHour / (60 / config.LikeRateLimitWindowMinutes)
 	windowDur := time.Duration(config.LikeRateLimitWindowMinutes) * time.Minute
