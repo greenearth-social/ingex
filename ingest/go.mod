@@ -16,7 +16,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk v1.43.0
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
-	modernc.org/sqlite v1.48.0
+	modernc.org/sqlite v1.48.2
 )
 
 require (
