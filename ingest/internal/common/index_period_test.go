@@ -49,13 +49,11 @@ func TestCurrentIndexName_Hour(t *testing.T) {
 func TestCurrentIndexName_10Min(t *testing.T) {
 	got := CurrentIndexName("post_tombstones", IndexPeriod10Min)
 
-	if !strings.HasPrefix(got, "post_tombstones-") {
-		t.Errorf("expected prefix post_tombstones-, got %s", got)
+	if !strings.HasPrefix(got, "post-tombstones-") {
+		t.Errorf("expected prefix post-tombstones-, got %s", got)
 	}
-	// Format: post_tombstones-YYYY-MM-DD-HH-MM → base + 5 date parts
-	// Split on "-": ["post_tombstones", "YYYY", "MM", "DD", "HH", "MM"]
-	// The base has an underscore so it won't split on "_"
-	withoutBase := strings.TrimPrefix(got, "post_tombstones-")
+	// Format: post-tombstones-YYYY-MM-DD-HH-MM
+	withoutBase := strings.TrimPrefix(got, "post-tombstones-")
 	dateParts := strings.Split(withoutBase, "-")
 	if len(dateParts) != 5 {
 		t.Errorf("expected 5 date parts (YYYY-MM-DD-HH-MM), got %d in %s", len(dateParts), got)

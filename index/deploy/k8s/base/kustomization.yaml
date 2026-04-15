@@ -56,7 +56,7 @@ configMapGenerator:
       - likes_index_replicas=0
       - tombstones_index_shards=1
       - tombstones_index_replicas=0
-      - posts_ilm_delete_age=30m
+      - ilm_delete_age=30m
       - index_period=10min
 
 configurations:
@@ -154,13 +154,13 @@ vars:
       apiVersion: v1
     fieldref:
       fieldpath: data.tombstones_index_replicas
-  - name: POSTS_ILM_DELETE_AGE
+  - name: ILM_DELETE_AGE
     objref:
       kind: ConfigMap
       name: ilm-settings
       apiVersion: v1
     fieldref:
-      fieldpath: data.posts_ilm_delete_age
+      fieldpath: data.ilm_delete_age
   - name: INDEX_PERIOD
     objref:
       kind: ConfigMap

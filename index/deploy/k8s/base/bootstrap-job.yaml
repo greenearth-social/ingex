@@ -20,11 +20,11 @@ spec:
             configMapKeyRef:
               name: index-settings
               key: inference_max_age
-        - name: POSTS_ILM_DELETE_AGE
+        - name: ILM_DELETE_AGE
           valueFrom:
             configMapKeyRef:
               name: ilm-settings
-              key: posts_ilm_delete_age
+              key: ilm_delete_age
         - name: INDEX_PERIOD
           valueFrom:
             configMapKeyRef:
@@ -50,7 +50,7 @@ spec:
             -H "Content-Type: application/json" \
             -d "{\"policy\":{\"phases\":{\"hot\":{\"min_age\":\"0ms\",\"actions\":{\"rollover\":{\"max_age\":\"$INFERENCE_MAX_AGE\"}}},\"delete\":{\"min_age\":\"0ms\",\"actions\":{\"delete\":{}}}}}}"
 
-          ILM_DELETE_POLICY="{\"policy\":{\"phases\":{\"delete\":{\"min_age\":\"$POSTS_ILM_DELETE_AGE\",\"actions\":{\"delete\":{}}}}}}"
+          ILM_DELETE_POLICY="{\"policy\":{\"phases\":{\"delete\":{\"min_age\":\"$ILM_DELETE_AGE\",\"actions\":{\"delete\":{}}}}}}"
 
           curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/posts_ilm_policy" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
@@ -156,7 +156,8 @@ spec:
             local template_name=$1
             local template_file=$2
             local alias_name=$3
-            local index_name="${alias_name}-$(current_period_suffix)"
+            local kebab_name=$(echo "$alias_name" | tr '_' '-')
+            local index_name="${kebab_name}-$(current_period_suffix)"
 
             echo "Applying $template_name template..."
             curl -k -X PUT "https://greenearth-es-http:9200/_index_template/$template_name" \

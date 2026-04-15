@@ -35,5 +35,5 @@ configMapGenerator:
       - likes_index_replicas=0
       - tombstones_index_shards=1
       - tombstones_index_replicas=0
-      - posts_ilm_delete_age=30m
+      - ilm_delete_age=30m
       - index_period=10min

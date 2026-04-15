@@ -2043,26 +2043,29 @@ func FetchHashtags(ctx context.Context, client *elasticsearch.Client, logger *In
 // CurrentIndexName returns the deterministic period-based index name for the
 // current UTC time. base is the alias name (e.g. "posts"); period is one of
 // IndexPeriodWeek ("week"), IndexPeriodHour ("hour"), or IndexPeriod10Min ("10min").
+// Underscores in base are converted to hyphens so that all index names are
+// consistently kebab-case (e.g. alias "post_tombstones" → index "post-tombstones-…").
 //
 // Examples:
 //
-//	CurrentIndexName("posts", "week")  → "posts-2026-w15"
-//	CurrentIndexName("likes", "hour")  → "likes-2026-04-12-14"
-//	CurrentIndexName("post_tombstones", "10min") → "post_tombstones-2026-04-12-14-30"
+//	CurrentIndexName("posts", "week")              → "posts-2026-w15"
+//	CurrentIndexName("likes", "hour")              → "likes-2026-04-12-14"
+//	CurrentIndexName("post_tombstones", "10min")   → "post-tombstones-2026-04-12-14-30"
 func CurrentIndexName(base, period string) string {
+	kebabBase := strings.ReplaceAll(base, "_", "-")
 	now := time.Now().UTC()
 	switch period {
 	case IndexPeriodWeek:
 		year, week := now.ISOWeek()
-		return fmt.Sprintf("%s-%d-w%02d", base, year, week)
+		return fmt.Sprintf("%s-%d-w%02d", kebabBase, year, week)
 	case IndexPeriodHour:
-		return fmt.Sprintf("%s-%s", base, now.Format("2006-01-02-15"))
+		return fmt.Sprintf("%s-%s", kebabBase, now.Format("2006-01-02-15"))
 	case IndexPeriod10Min:
 		truncated := now.Truncate(10 * time.Minute)
-		return fmt.Sprintf("%s-%s", base, truncated.Format("2006-01-02-15-04"))
+		return fmt.Sprintf("%s-%s", kebabBase, truncated.Format("2006-01-02-15-04"))
 	default:
 		year, week := now.ISOWeek()
-		return fmt.Sprintf("%s-%d-w%02d", base, year, week)
+		return fmt.Sprintf("%s-%d-w%02d", kebabBase, year, week)
 	}
 }
 

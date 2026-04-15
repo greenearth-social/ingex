@@ -5,7 +5,7 @@ metadata:
 data:
   like-tombstones-ilm-index-template.json: |
     {
-      "index_patterns": ["like_tombstones-*"],
+      "index_patterns": ["like-tombstones-*"],
       "template": {
         "settings": {
           "number_of_shards": $(TOMBSTONES_INDEX_SHARDS),

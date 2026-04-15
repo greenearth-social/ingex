@@ -77,7 +77,8 @@ data:
                 "all_MiniLM_L6_v2": {
                   "type": "dense_vector",
                   "dims": 384,
-                  "index": false
+                  "index": true,
+                  "similarity": "cosine"
                 },
                 "google_embeddinggemma_300m": {
                   "type": "dense_vector",
