@@ -361,6 +361,10 @@ EOF
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
+        --set-env-vars="GE_GCP_PROJECT_ID=$GE_GCP_PROJECT_ID" \
+        --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
+        --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
+        --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=3600 \
@@ -412,6 +416,10 @@ GE_EXTRACT_INDICES: "posts,likes,hashtags"
 GE_ELASTICSEARCH_URL: "$GE_ELASTICSEARCH_URL"
 GE_PARQUET_DESTINATION: "gs://$destination_bucket"
 GE_PARQUET_MAX_RECORDS: "$max_records"
+GE_GCP_PROJECT_ID: "$GE_GCP_PROJECT_ID"
+GE_ENVIRONMENT: "$GE_ENVIRONMENT"
+GE_GCP_REGION: "$GE_GCP_REGION"
+GE_METRIC_EXPORT_INTERVAL_SEC: "60"
 EOF
 
     log_info "Deploying extract job with buildpacks..."
