@@ -460,7 +460,10 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "cluster": ["manage_index_templates", "monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*", "inferences", "inferences-*"],
+            "names": ["posts", "posts_*", "likes", "likes_*",
+              "post_tombstones", "post_tombstones_*", "post-tombstones-*",
+              "like_tombstones", "like_tombstones_*", "like-tombstones-*",
+              "hashtags", "hashtags*", "inferences", "inferences-*"],
             "privileges": ["all", "maintenance", "create_index", "auto_configure"]
           }
         ]
@@ -479,7 +482,10 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "cluster": ["monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "post_tombstones", "post_tombstones_*", "likes", "likes_*", "like_tombstones", "like_tombstones_*", "hashtags", "hashtags*", "inferences", "inferences-*"],
+            "names": ["posts", "posts_*", "likes", "likes_*",
+              "post_tombstones", "post_tombstones_*", "post-tombstones-*",
+              "like_tombstones", "like_tombstones_*", "like-tombstones-*",
+              "hashtags", "hashtags*", "inferences", "inferences-*"],
             "privileges": ["read", "view_index_metadata"]
           }
         ]
