@@ -51,7 +51,8 @@ data:
             },
             "created_at": {
               "type": "date",
-              "format": "iso8601"
+              "format": "iso8601",
+              "index": true
             },
             "thread_root_post": {
               "type": "keyword",
