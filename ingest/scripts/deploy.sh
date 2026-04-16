@@ -361,6 +361,10 @@ EOF
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
+        --set-env-vars="GE_GCP_PROJECT_ID=$GE_GCP_PROJECT_ID" \
+        --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
+        --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
+        --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=3600 \
@@ -401,19 +405,6 @@ deploy_extract_job() {
     cp cmd/extract/main.go "$temp_dir/cmd/extract/"
     cp cmd/extract/main.go "$temp_dir/"
 
-    # Prepare env variables file
-    local temp_var_dir=$(mktemp -d)
-    trap "rm -rf $temp_var_dir" EXIT
-    cat > "$temp_var_dir/extract-env-vars.yaml" <<EOF
-GE_ELASTICSEARCH_TLS_SKIP_VERIFY: "true"
-GE_LOGGING_ENABLED: "true"
-GE_GIT_SHA: "$GIT_SHA"
-GE_EXTRACT_INDICES: "posts,likes,hashtags"
-GE_ELASTICSEARCH_URL: "$GE_ELASTICSEARCH_URL"
-GE_PARQUET_DESTINATION: "gs://$destination_bucket"
-GE_PARQUET_MAX_RECORDS: "$max_records"
-EOF
-
     log_info "Deploying extract job with buildpacks..."
 
     gcloud run jobs deploy "extract-$GE_ENVIRONMENT" \
@@ -422,8 +413,18 @@ EOF
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --env-vars-file="$temp_var_dir/extract-env-vars.yaml" \
+        --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
+        --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
+        --set-env-vars="GE_LOGGING_ENABLED=true" \
+        --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
+        --set-env-vars="^|^GE_EXTRACT_INDICES=posts,likes,hashtags" \
+        --set-env-vars="GE_PARQUET_DESTINATION=gs://$destination_bucket" \
+        --set-env-vars="GE_PARQUET_MAX_RECORDS=$max_records" \
+        --set-env-vars="GE_GCP_PROJECT_ID=$GE_GCP_PROJECT_ID" \
+        --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
+        --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
+        --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
         --cpu=2 \
         --memory=4Gi \
         --task-timeout=7200 \
