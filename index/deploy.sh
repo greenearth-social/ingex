@@ -376,6 +376,10 @@ deploy_schema_update() {
         exit 1
     }
 
+    log_info "Cleaning up previous jobs before applying updated manifests..."
+    kubectl delete job es-service-user-setup elasticsearch-snapshot-setup elasticsearch-bootstrap -n "$namespace" --ignore-not-found=true
+    kubectl wait --for=delete job/es-service-user-setup job/elasticsearch-snapshot-setup job/elasticsearch-bootstrap -n "$namespace" --timeout=30s 2>/dev/null || true
+
     log_info "Applying updated ConfigMaps (templates)..."
     kubectl apply -k "$kustomize_dir"
 
