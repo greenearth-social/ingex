@@ -71,7 +71,7 @@ spec:
               \"name\": \"<snap-{now{yyyy-MM-dd-HH-mm}}>\",
               \"repository\": \"gcs_backup\",
               \"config\": {
-                \"indices\": [\"posts*\", \"post_tombstones*\", \"hashtags*\", \"likes*\", \"like_tombstones*\", \"inferences*\"],
+                \"indices\": [\"posts*\", \"post_tombstones*\", \"post-tombstones*\", \"hashtags*\", \"likes*\", \"like_tombstones*\", \"like-tombstones*\", \"inferences*\"],
                 \"include_global_state\": false,
                 \"feature_states\": []
               },
