@@ -460,7 +460,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "cluster": ["manage_index_templates", "monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "likes", "likes_*",
+            "names": ["posts*", "likes*",
               "post_tombstones", "post_tombstones_*", "post-tombstones-*",
               "like_tombstones", "like_tombstones_*", "like-tombstones-*",
               "hashtags", "hashtags*", "inferences", "inferences-*"],
@@ -482,7 +482,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
         "cluster": ["monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "likes", "likes_*",
+            "names": ["posts*", "likes*",
               "post_tombstones", "post_tombstones_*", "post-tombstones-*",
               "like_tombstones", "like_tombstones_*", "like-tombstones-*",
               "hashtags", "hashtags*", "inferences", "inferences-*"],

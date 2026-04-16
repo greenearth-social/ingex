@@ -64,7 +64,7 @@ INGEST_KEY_RESPONSE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" "${ES_POD}" -- curl 
         "cluster": ["monitor", "manage_index_templates"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "likes", "likes_*",
+            "names": ["posts*", "likes*",
               "post_tombstones", "post_tombstones_*", "post-tombstones-*",
               "like_tombstones", "like_tombstones_*", "like-tombstones-*",
               "hashtags", "hashtags*", "inferences", "inferences-*"],
@@ -121,7 +121,7 @@ READONLY_KEY_RESPONSE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" "${ES_POD}" -- cur
         "cluster": ["monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_*", "likes", "likes_*",
+            "names": ["posts*", "likes*",
               "post_tombstones", "post_tombstones_*", "post-tombstones-*",
               "like_tombstones", "like_tombstones_*", "like-tombstones-*",
               "hashtags", "hashtags*", "inferences", "inferences-*"],
