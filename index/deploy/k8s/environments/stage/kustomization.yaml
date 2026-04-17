@@ -113,3 +113,14 @@ configMapGenerator:
       - inference_index_shards=2
       - inference_index_replicas=1
       - inference_max_age=1h
+  - name: ilm-settings
+    behavior: replace
+    literals:
+      - posts_index_shards=2
+      - posts_index_replicas=1
+      - likes_index_shards=2
+      - likes_index_replicas=1
+      - tombstones_index_shards=1
+      - tombstones_index_replicas=1
+      - ilm_delete_age=4h
+      - index_period=hour

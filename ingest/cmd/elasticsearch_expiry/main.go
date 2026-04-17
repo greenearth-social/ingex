@@ -132,28 +132,9 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 	// Mark service as healthy once we've successfully initialized
 	healthServer.SetHealthy(true, fmt.Sprintf("Expiring documents older than %d hours (%.1f days)", retentionHours, float64(retentionHours)/24.0))
 
-	// Define the collections to clean up
-	// For now, always use the indexed_at field for expiry, since we care about how long the row has
-	// been in our database, not the time the original event occurred.
-	// Exception: hashtags use the 'hour' field since they are time-bucketed data
-	collections := []elasticsearch_expiry.Collection{
-		{
-			IndexAlias: "posts",
-			DateField:  "indexed_at",
-		},
-		{
-			IndexAlias: "likes",
-			DateField:  "indexed_at",
-		},
-		{
-			IndexAlias: "post_tombstones",
-			DateField:  "indexed_at",
-		},
-		{
-			IndexAlias: "like_tombstones",
-			DateField:  "indexed_at",
-		},
-	}
+	// posts, likes, post_tombstones, and like_tombstones are now managed by ILM
+	// (delete-only policy). The expiry service only handles hashtags.
+	collections := []elasticsearch_expiry.Collection{}
 
 	// Add hashtags collection with separate retention
 	hashtagCutoffDate := time.Now().UTC().Add(-time.Duration(hashtagRetentionHours) * time.Hour)

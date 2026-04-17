@@ -20,6 +20,11 @@ resources:
   - templates/like-tombstones-alias.yaml
   - templates/hashtags-alias.yaml
   - templates/inferences-index-template.yaml
+  - templates/posts-ilm-index-template.yaml
+  - templates/likes-ilm-index-template.yaml
+  - templates/post-tombstones-ilm-index-template.yaml
+  - templates/like-tombstones-ilm-index-template.yaml
+  - update-recent-alias-cronjob.yaml
 
 configMapGenerator:
   - name: snapshot-settings
@@ -41,6 +46,18 @@ configMapGenerator:
       - inference_index_shards=1
       - inference_index_replicas=0
       - inference_max_age=1d
+  - name: ilm-settings
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - posts_index_shards=1
+      - posts_index_replicas=0
+      - likes_index_shards=1
+      - likes_index_replicas=0
+      - tombstones_index_shards=1
+      - tombstones_index_replicas=0
+      - ilm_delete_age=30m
+      - index_period=10min
 
 configurations:
   - varreference.yaml
@@ -95,3 +112,59 @@ vars:
       apiVersion: v1
     fieldref:
       fieldpath: data.inference_max_age
+  - name: POSTS_INDEX_SHARDS
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.posts_index_shards
+  - name: POSTS_INDEX_REPLICAS
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.posts_index_replicas
+  - name: LIKES_INDEX_SHARDS
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.likes_index_shards
+  - name: LIKES_INDEX_REPLICAS
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.likes_index_replicas
+  - name: TOMBSTONES_INDEX_SHARDS
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.tombstones_index_shards
+  - name: TOMBSTONES_INDEX_REPLICAS
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.tombstones_index_replicas
+  - name: ILM_DELETE_AGE
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.ilm_delete_age
+  - name: INDEX_PERIOD
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.index_period

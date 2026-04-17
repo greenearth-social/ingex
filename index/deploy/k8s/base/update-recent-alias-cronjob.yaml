@@ -1,0 +1,99 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: update-recent-alias
+spec:
+  # Run every 5 minutes. The shortest period is 10min (local), so this ensures
+  # posts_recent is updated within at most 5 minutes of each period boundary.
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: update-alias
+            image: curlimages/curl:8.4.0
+            env:
+            - name: ES_SERVICE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: es-service-user-secret
+                  key: password
+            - name: INDEX_PERIOD
+              valueFrom:
+                configMapKeyRef:
+                  name: ilm-settings
+                  key: index_period
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              # Compute the current period suffix using the same logic as the bootstrap job
+              # and the ingest service, so all three agree on the expected index name.
+              current_period_suffix() {
+                case "$INDEX_PERIOD" in
+                  week)
+                    date -u +%G-w%V ;;
+                  hour)
+                    date -u +%Y-%m-%d-%H ;;
+                  10min)
+                    HH=$(date -u +%H)
+                    MM=$(date -u +%M)
+                    MM10=$(( (MM / 10) * 10 ))
+                    printf "%s-%02d" "$(date -u +%Y-%m-%d)-$HH" "$MM10" ;;
+                  *)
+                    date -u +%G-w%V ;;
+                esac
+              }
+
+              EXPECTED="posts-$(current_period_suffix)"
+              ES="https://greenearth-es-http:9200"
+              AUTH="es-service-user:$ES_SERVICE_PASSWORD"
+
+              echo "Expected posts_recent target: $EXPECTED"
+
+              # Fetch current posts_recent alias state
+              ALIAS_JSON=$(curl -k -s -u "$AUTH" "$ES/posts_recent/_alias" 2>/dev/null || echo "{}")
+
+              # Check if posts_recent already points to the expected index
+              if echo "$ALIAS_JSON" | grep -q "\"$EXPECTED\""; then
+                echo "posts_recent already points to $EXPECTED — no update needed"
+                exit 0
+              fi
+
+              # Verify the expected index exists before switching (the ingest service
+              # creates it before writing, so this should always be true in steady state)
+              STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" \
+                -u "$AUTH" "$ES/$EXPECTED")
+              if [ "$STATUS" != "200" ]; then
+                echo "Expected index $EXPECTED does not yet exist (status $STATUS) — skipping update"
+                exit 0
+              fi
+
+              echo "Updating posts_recent to point to $EXPECTED..."
+
+              # Collect all current members of posts_recent to remove them atomically
+              REMOVE_ACTIONS=""
+              CURRENT_MEMBERS=$(curl -k -s -u "$AUTH" "$ES/*/_alias/posts_recent" 2>/dev/null | \
+                grep -o '"[^"]*":{"aliases":{"posts_recent"' | grep -o '^"[^"]*"' | tr -d '"' || true)
+
+              for idx in $CURRENT_MEMBERS; do
+                if [ "$idx" != "$EXPECTED" ]; then
+                  REMOVE_ACTIONS="${REMOVE_ACTIONS}{\"remove\":{\"index\":\"$idx\",\"alias\":\"posts_recent\"}},"
+                fi
+              done
+
+              UPDATE_BODY="{\"actions\":[${REMOVE_ACTIONS}{\"add\":{\"index\":\"$EXPECTED\",\"alias\":\"posts_recent\"}}]}"
+
+              curl -k --fail-with-body -X POST "$ES/_aliases" \
+                -u "$AUTH" \
+                -H "Content-Type: application/json" \
+                -d "$UPDATE_BODY"
+
+              echo "posts_recent updated to $EXPECTED"

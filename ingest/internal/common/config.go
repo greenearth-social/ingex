@@ -6,6 +6,14 @@ import (
 	"time"
 )
 
+// IndexPeriod controls how frequently a new time-based index is created.
+// Valid values: "week", "hour", "10min".
+const (
+	IndexPeriodWeek  = "week"
+	IndexPeriodHour  = "hour"
+	IndexPeriod10Min = "10min"
+)
+
 // Config holds all configuration values for the ingest service
 type Config struct {
 	// WebSocket configuration
@@ -54,6 +62,9 @@ type Config struct {
 	LikeRateLimitPerHour       int    // GE_LIKE_RATE_LIMIT_PER_HOUR, default 2000
 	LikeRateLimitWindowMinutes int    // GE_LIKE_RATE_LIMIT_WINDOW_MIN, default 5
 	LikeBlockDurationMinutes   int    // GE_LIKE_BLOCK_DURATION_MIN, default 60
+
+	// Index period configuration
+	IndexPeriod string // GE_INDEX_PERIOD: "week", "hour", or "10min"
 }
 
 // LoadConfig loads configuration from environment variables with defaults
@@ -88,6 +99,7 @@ func LoadConfig() *Config {
 		LikeRateLimitPerHour:       getEnvInt("GE_LIKE_RATE_LIMIT_PER_HOUR", 2000),
 		LikeRateLimitWindowMinutes: getEnvInt("GE_LIKE_RATE_LIMIT_WINDOW_MIN", 5),
 		LikeBlockDurationMinutes:   getEnvInt("GE_LIKE_BLOCK_DURATION_MIN", 60),
+		IndexPeriod:                getEnv("GE_INDEX_PERIOD", IndexPeriod10Min),
 	}
 }
 

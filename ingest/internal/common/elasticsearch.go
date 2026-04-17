@@ -13,6 +13,11 @@ import (
 	"github.com/elastic/go-elasticsearch/v9"
 )
 
+// indexAliasInfo holds per-index alias configuration returned by GetAlias.
+type indexAliasInfo struct {
+	IsWriteIndex bool `json:"is_write_index"`
+}
+
 // Float32Array is a wrapper for []float32 that ensures values are always marshaled as floats
 type Float32Array []float32
 
@@ -2033,4 +2038,160 @@ func FetchHashtags(ctx context.Context, client *elasticsearch.Client, logger *In
 	logger.Debug("Hashtag search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
 
 	return response, nil
+}
+
+// CurrentIndexName returns the deterministic period-based index name for the
+// current UTC time. base is the alias name (e.g. "posts"); period is one of
+// IndexPeriodWeek ("week"), IndexPeriodHour ("hour"), or IndexPeriod10Min ("10min").
+// Underscores in base are converted to hyphens so that all index names are
+// consistently kebab-case (e.g. alias "post_tombstones" → index "post-tombstones-…").
+//
+// Examples:
+//
+//	CurrentIndexName("posts", "week")              → "posts-2026-w15"
+//	CurrentIndexName("likes", "hour")              → "likes-2026-04-12-14"
+//	CurrentIndexName("post_tombstones", "10min")   → "post-tombstones-2026-04-12-14-30"
+func CurrentIndexName(base, period string) string {
+	kebabBase := strings.ReplaceAll(base, "_", "-")
+	now := time.Now().UTC()
+	switch period {
+	case IndexPeriodWeek:
+		year, week := now.ISOWeek()
+		return fmt.Sprintf("%s-%d-w%02d", kebabBase, year, week)
+	case IndexPeriodHour:
+		return fmt.Sprintf("%s-%s", kebabBase, now.Format("2006-01-02-15"))
+	case IndexPeriod10Min:
+		truncated := now.Truncate(10 * time.Minute)
+		return fmt.Sprintf("%s-%s", kebabBase, truncated.Format("2006-01-02-15-04"))
+	default:
+		year, week := now.ISOWeek()
+		return fmt.Sprintf("%s-%d-w%02d", kebabBase, year, week)
+	}
+}
+
+// EnsureIndex creates the named index if it does not already exist, then
+// makes it the write target for alias. It is idempotent: if the index already
+// exists and is already the write target, it returns without making any changes.
+//
+// All other indices currently in alias retain their membership; only the
+// is_write_index flag is shifted to indexName.
+func EnsureIndex(ctx context.Context, client *elasticsearch.Client, indexName, alias string, logger *IngestLogger) error {
+	// 1. Create the index. The matching index template will apply settings and
+	//    mappings automatically. A 400 "resource_already_exists_exception" is
+	//    expected on subsequent calls and treated as success.
+	createRes, err := client.Indices.Create(
+		indexName,
+		client.Indices.Create.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("create index %s: %w", indexName, err)
+	}
+	defer func() {
+		if cerr := createRes.Body.Close(); cerr != nil {
+			logger.Error("Failed to close create-index response body: %v", cerr)
+		}
+	}()
+
+	if createRes.IsError() {
+		var errBody struct {
+			Error struct {
+				Type string `json:"type"`
+			} `json:"error"`
+		}
+		if jerr := json.NewDecoder(createRes.Body).Decode(&errBody); jerr != nil || errBody.Error.Type != "resource_already_exists_exception" {
+			return fmt.Errorf("create index %s: %s", indexName, createRes.String())
+		}
+	} else {
+		logger.Info("Created index %s", indexName)
+	}
+
+	// 2. Retrieve the current alias membership so we know which index (if any)
+	//    currently holds is_write_index: true.
+	aliasRes, err := client.Indices.GetAlias(
+		client.Indices.GetAlias.WithContext(ctx),
+		client.Indices.GetAlias.WithName(alias),
+		client.Indices.GetAlias.WithIgnoreUnavailable(true),
+	)
+	if err != nil {
+		return fmt.Errorf("get alias %s: %w", alias, err)
+	}
+	defer func() {
+		if cerr := aliasRes.Body.Close(); cerr != nil {
+			logger.Error("Failed to close get-alias response body: %v", cerr)
+		}
+	}()
+
+	// Parse response: map[indexName]{ aliases: map[aliasName]{ is_write_index: bool } }
+	var aliasState map[string]struct {
+		Aliases map[string]indexAliasInfo `json:"aliases"`
+	}
+	if !aliasRes.IsError() {
+		if jerr := json.NewDecoder(aliasRes.Body).Decode(&aliasState); jerr != nil {
+			return fmt.Errorf("parse alias response for %s: %w", alias, jerr)
+		}
+	}
+
+	// 3. Check if indexName is already the write target — if so, nothing to do.
+	if info, ok := aliasState[indexName]; ok {
+		if aliasInfo, ok := info.Aliases[alias]; ok && aliasInfo.IsWriteIndex {
+			return nil
+		}
+	}
+
+	// 4. Build an atomic alias update:
+	//    - Set is_write_index: false on any current write index.
+	//    - Add indexName with is_write_index: true.
+	type aliasAction struct {
+		Add *struct {
+			Index        string `json:"index"`
+			Alias        string `json:"alias"`
+			IsWriteIndex bool   `json:"is_write_index"`
+		} `json:"add,omitempty"`
+	}
+
+	var actions []aliasAction
+
+	for existingIndex, info := range aliasState {
+		if existingIndex == indexName {
+			continue
+		}
+		if aliasInfo, ok := info.Aliases[alias]; ok && aliasInfo.IsWriteIndex {
+			actions = append(actions, aliasAction{Add: &struct {
+				Index        string `json:"index"`
+				Alias        string `json:"alias"`
+				IsWriteIndex bool   `json:"is_write_index"`
+			}{Index: existingIndex, Alias: alias, IsWriteIndex: false}})
+		}
+	}
+
+	actions = append(actions, aliasAction{Add: &struct {
+		Index        string `json:"index"`
+		Alias        string `json:"alias"`
+		IsWriteIndex bool   `json:"is_write_index"`
+	}{Index: indexName, Alias: alias, IsWriteIndex: true}})
+
+	updateBody, err := json.Marshal(map[string]interface{}{"actions": actions})
+	if err != nil {
+		return fmt.Errorf("marshal alias update for %s: %w", alias, err)
+	}
+
+	updateRes, err := client.Indices.UpdateAliases(
+		strings.NewReader(string(updateBody)),
+		client.Indices.UpdateAliases.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("update alias %s: %w", alias, err)
+	}
+	defer func() {
+		if cerr := updateRes.Body.Close(); cerr != nil {
+			logger.Error("Failed to close update-alias response body: %v", cerr)
+		}
+	}()
+
+	if updateRes.IsError() {
+		return fmt.Errorf("update alias %s: %s", alias, updateRes.String())
+	}
+
+	logger.Info("Set %s as write index for alias %s", indexName, alias)
+	return nil
 }

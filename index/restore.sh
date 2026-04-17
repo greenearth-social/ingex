@@ -137,7 +137,7 @@ else:
     log_info "Selected most recent successful snapshot: $SNAPSHOT_NAME"
 }
 
-SNAPSHOT_INDICES="posts*,post_tombstones*,hashtags*,likes*,like_tombstones*,inferences*"
+SNAPSHOT_INDICES="posts*,post_tombstones*,post-tombstones*,hashtags*,likes*,like_tombstones*,like-tombstones*,inferences*"
 
 delete_existing_indices() {
     log_info "Checking for existing indices on cluster..."

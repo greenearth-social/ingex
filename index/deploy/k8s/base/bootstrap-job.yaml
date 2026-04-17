@@ -20,6 +20,16 @@ spec:
             configMapKeyRef:
               name: index-settings
               key: inference_max_age
+        - name: ILM_DELETE_AGE
+          valueFrom:
+            configMapKeyRef:
+              name: ilm-settings
+              key: ilm_delete_age
+        - name: INDEX_PERIOD
+          valueFrom:
+            configMapKeyRef:
+              name: ilm-settings
+              key: index_period
         command:
         - /bin/sh
         - -c
@@ -39,6 +49,23 @@ spec:
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
             -d "{\"policy\":{\"phases\":{\"hot\":{\"min_age\":\"0ms\",\"actions\":{\"rollover\":{\"max_age\":\"$INFERENCE_MAX_AGE\"}}},\"delete\":{\"min_age\":\"0ms\",\"actions\":{\"delete\":{}}}}}}"
+
+          ILM_DELETE_POLICY="{\"policy\":{\"phases\":{\"delete\":{\"min_age\":\"$ILM_DELETE_AGE\",\"actions\":{\"delete\":{}}}}}}"
+
+          curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/posts_ilm_policy" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d "$ILM_DELETE_POLICY"
+
+          curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/likes_ilm_policy" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d "$ILM_DELETE_POLICY"
+
+          curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/tombstones_ilm_policy" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d "$ILM_DELETE_POLICY"
 
           echo "ILM policies created! Applying index templates..."
 
@@ -104,6 +131,83 @@ spec:
           fi
           echo "inferences_template completed!"
 
+          # Compute the current period index name using the same logic as the ingest service.
+          # INDEX_PERIOD values: "week" → YYYY-wWW, "hour" → YYYY-MM-DD-HH, "10min" → YYYY-MM-DD-HH-MM
+          current_period_suffix() {
+            case "$INDEX_PERIOD" in
+              week)
+                date -u +%G-w%V ;;
+              hour)
+                date -u +%Y-%m-%d-%H ;;
+              10min)
+                # Truncate minutes to the nearest 10
+                HH=$(date -u +%H)
+                MM=$(date -u +%M)
+                MM10=$(( (MM / 10) * 10 ))
+                printf "%s-%02d" "$(date -u +%Y-%m-%d)-$HH" "$MM10" ;;
+              *)
+                date -u +%G-w%V ;;
+            esac
+          }
+
+          # Helper to apply an ILM index template and create the initial period index.
+          # Args: template_name template_file alias_name
+          #
+          # Index creation is separated from the alias write-target assignment so
+          # that this function is idempotent even when another index in the alias
+          # is already the write target (e.g. a _v1 index from a prior deployment).
+          apply_ilm_template_and_index() {
+            local template_name=$1
+            local template_file=$2
+            local alias_name=$3
+            local kebab_name=$(echo "$alias_name" | tr '_' '-')
+            local index_name="${kebab_name}-$(current_period_suffix)"
+
+            echo "Applying $template_name template..."
+            curl -k -X PUT "https://greenearth-es-http:9200/_index_template/$template_name" \
+              -u "es-service-user:$ES_SERVICE_PASSWORD" \
+              -H "Content-Type: application/json" \
+              -d @/templates/$template_file
+
+            if index_exists "$index_name"; then
+              echo "$index_name already exists - skipping index creation"
+            else
+              echo "Creating initial ILM index $index_name..."
+              curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/$index_name" \
+                -u "es-service-user:$ES_SERVICE_PASSWORD" \
+                -H "Content-Type: application/json"
+            fi
+
+            # Atomically set $index_name as the write target for $alias_name.
+            # Collect all current alias members and clear their is_write_index flag
+            # so that there is never more than one write index at a time.
+            echo "Setting $index_name as write index for alias $alias_name..."
+            CURRENT_MEMBERS=$(curl -k -s -u "es-service-user:$ES_SERVICE_PASSWORD" \
+              "https://greenearth-es-http:9200/*/_alias/$alias_name" 2>/dev/null | \
+              grep -o "\"[^\"]*\":{\"aliases\":{\"$alias_name\"" | \
+              grep -o '^"[^"]*"' | tr -d '"' || true)
+
+            ALIAS_ACTIONS=""
+            for idx in $CURRENT_MEMBERS; do
+              if [ "$idx" != "$index_name" ]; then
+                ALIAS_ACTIONS="${ALIAS_ACTIONS}{\"add\":{\"index\":\"$idx\",\"alias\":\"$alias_name\",\"is_write_index\":false}},"
+              fi
+            done
+            ALIAS_ACTIONS="${ALIAS_ACTIONS}{\"add\":{\"index\":\"$index_name\",\"alias\":\"$alias_name\",\"is_write_index\":true}}"
+
+            curl -k --fail-with-body -X POST "https://greenearth-es-http:9200/_aliases" \
+              -u "es-service-user:$ES_SERVICE_PASSWORD" \
+              -H "Content-Type: application/json" \
+              -d "{\"actions\":[$ALIAS_ACTIONS]}"
+
+            echo "$template_name completed!"
+          }
+
+          apply_ilm_template_and_index "posts_ilm_template" "posts-ilm-index-template.json" "posts"
+          apply_ilm_template_and_index "likes_ilm_template" "likes-ilm-index-template.json" "likes"
+          apply_ilm_template_and_index "post_tombstones_ilm_template" "post-tombstones-ilm-index-template.json" "post_tombstones"
+          apply_ilm_template_and_index "like_tombstones_ilm_template" "like-tombstones-ilm-index-template.json" "like_tombstones"
+
           echo "Bootstrap completed successfully!"
         volumeMounts:
         - name: templates
@@ -126,6 +230,14 @@ spec:
               name: hashtags-index-template
           - configMap:
               name: inferences-index-template
+          - configMap:
+              name: posts-ilm-index-template
+          - configMap:
+              name: likes-ilm-index-template
+          - configMap:
+              name: post-tombstones-ilm-index-template
+          - configMap:
+              name: like-tombstones-ilm-index-template
       - name: aliases
         projected:
           sources:

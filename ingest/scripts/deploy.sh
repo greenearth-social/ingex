@@ -21,6 +21,16 @@ GE_AWS_S3_PREFIX="${GE_AWS_S3_PREFIX:-mega/}"
 GE_JETSTREAM_INSTANCES="${GE_JETSTREAM_INSTANCES:-1}"
 GE_MEGASTREAM_INSTANCES="${GE_MEGASTREAM_INSTANCES:-1}"
 
+# Index period: controls time-based index partitioning for posts/likes/tombstones
+# prod → week (ISO week), stage → hour, local/default → 10min
+if [ "$GE_ENVIRONMENT" = "prod" ]; then
+    GE_INDEX_PERIOD="${GE_INDEX_PERIOD:-week}"
+elif [ "$GE_ENVIRONMENT" = "stage" ]; then
+    GE_INDEX_PERIOD="${GE_INDEX_PERIOD:-hour}"
+else
+    GE_INDEX_PERIOD="${GE_INDEX_PERIOD:-10min}"
+fi
+
 # Get current git SHA (short version) for deployment tracking
 GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
@@ -215,6 +225,7 @@ deploy_jetstream_service() {
         --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
         --set-env-vars="GE_BLOCKLIST_DESTINATION=gs://$GE_GCP_PROJECT_ID-ingex-blocklist-$GE_ENVIRONMENT" \
         --set-env-vars="GE_LIKE_RATE_LIMIT_PER_HOUR=600" \
+        --set-env-vars="GE_INDEX_PERIOD=$GE_INDEX_PERIOD" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --scaling="$GE_JETSTREAM_INSTANCES" \
         --cpu=1 \
@@ -272,6 +283,7 @@ deploy_megastream_service() {
         --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
         --set-env-vars="GE_AWS_S3_BUCKET=$GE_AWS_S3_BUCKET" \
         --set-env-vars="GE_AWS_S3_PREFIX=$GE_AWS_S3_PREFIX" \
+        --set-env-vars="GE_INDEX_PERIOD=$GE_INDEX_PERIOD" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest,GE_AWS_S3_ACCESS_KEY=$aws_access_key_secret:latest,GE_AWS_S3_SECRET_KEY=$aws_secret_key_secret:latest" \
         --scaling="$GE_MEGASTREAM_INSTANCES" \
         --cpu=1 \
