@@ -203,6 +203,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						wc := gcsClient.Bucket(blocklistBucket).Object(objectPath).NewWriter(ctx)
 						if _, werr := wc.Write(data); werr != nil {
 							logger.Error("Failed to write blocklist to GCS: %v", werr)
+							logger.Metric("jetstream.blocklist_export_error_count", 1)
 							if cerr := wc.Close(); cerr != nil {
 								logger.Error("Failed to close GCS writer after write error: %v", cerr)
 							}
@@ -211,6 +212,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						}
 						if werr := wc.Close(); werr != nil {
 							logger.Error("Failed to close GCS writer for blocklist: %v", werr)
+							logger.Metric("jetstream.blocklist_export_error_count", 1)
 							historyMu.Unlock()
 							continue
 						}
@@ -289,6 +291,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					if hasPendingUpdate {
 						if err := stateManager.UpdateCursor(pendingCursor); err != nil {
 							logger.Error("Failed to flush final cursor update: %v", err)
+							logger.Metric("jetstream.state_update_error_count", 1)
 						}
 						client.UpdateCursor(pendingCursor)
 					}
@@ -299,6 +302,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					if hasPendingUpdate {
 						if err := stateManager.UpdateCursor(pendingCursor); err != nil {
 							logger.Error("Failed to update cursor: %v", err)
+							logger.Metric("jetstream.state_update_error_count", 1)
 						} else {
 							hasPendingUpdate = false
 							// Keep the client's reconnection cursor in sync so that
@@ -359,6 +363,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			if msg.IsLikeDelete() {
 				if msg.GetAtURI() == "" {
 					logger.Error("Skipping like deletion with empty at_uri (author_did: %s)", msg.GetAuthorDID())
+					logger.Metric("jetstream.validation_skip_count", 1)
 					skippedCount++
 					continue
 				}
@@ -447,12 +452,14 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 				if msg.GetAtURI() == "" {
 					logger.Error("Skipping like with empty at_uri (author_did: %s)", msg.GetAuthorDID())
+					logger.Metric("jetstream.validation_skip_count", 1)
 					skippedCount++
 					continue
 				}
 
 				if msg.GetSubjectURI() == "" {
 					logger.Error("Skipping like with empty subject_uri (at_uri: %s, author_did: %s)", msg.GetAtURI(), msg.GetAuthorDID())
+					logger.Metric("jetstream.validation_skip_count", 1)
 					skippedCount++
 					continue
 				}

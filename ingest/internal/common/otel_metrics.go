@@ -8,6 +8,7 @@ import (
 
 	"fmt"
 	gcpmetric "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -19,12 +20,13 @@ import (
 
 // OTelMetricCollector exports metrics via OpenTelemetry to GCP Cloud Monitoring or stdout.
 type OTelMetricCollector struct {
-	meter      metric.Meter
-	provider   *sdkmetric.MeterProvider
-	mu         sync.RWMutex
-	histograms map[string]metric.Float64Histogram
-	gauges     map[string]metric.Float64Gauge
-	counters   map[string]metric.Int64Counter
+	meter       metric.Meter
+	provider    *sdkmetric.MeterProvider
+	serviceName string
+	mu          sync.RWMutex
+	histograms  map[string]metric.Float64Histogram
+	gauges      map[string]metric.Float64Gauge
+	counters    map[string]metric.Int64Counter
 }
 
 // NewOTelMetricCollector creates a new OTel-based metric collector.
@@ -75,11 +77,12 @@ func NewOTelMetricCollector(serviceName, env, projectID, region string, exportIn
 	meter := provider.Meter("greenearth/ingex")
 
 	return &OTelMetricCollector{
-		meter:      meter,
-		provider:   provider,
-		histograms: make(map[string]metric.Float64Histogram),
-		gauges:     make(map[string]metric.Float64Gauge),
-		counters:   make(map[string]metric.Int64Counter),
+		meter:       meter,
+		provider:    provider,
+		serviceName: serviceName,
+		histograms:  make(map[string]metric.Float64Histogram),
+		gauges:      make(map[string]metric.Float64Gauge),
+		counters:    make(map[string]metric.Int64Counter),
 	}, nil
 }
 
@@ -102,11 +105,12 @@ func newOTelMetricCollectorWithReader(reader sdkmetric.Reader, serviceName, env 
 	meter := provider.Meter("greenearth/ingex")
 
 	return &OTelMetricCollector{
-		meter:      meter,
-		provider:   provider,
-		histograms: make(map[string]metric.Float64Histogram),
-		gauges:     make(map[string]metric.Float64Gauge),
-		counters:   make(map[string]metric.Int64Counter),
+		meter:       meter,
+		provider:    provider,
+		serviceName: serviceName,
+		histograms:  make(map[string]metric.Float64Histogram),
+		gauges:      make(map[string]metric.Float64Gauge),
+		counters:    make(map[string]metric.Int64Counter),
 	}
 }
 
@@ -116,15 +120,16 @@ func newOTelMetricCollectorWithReader(reader sdkmetric.Reader, serviceName, env 
 // - All others → histogram
 //   - E.g., names ending in "_ms" or "_sec" → histogram
 func (c *OTelMetricCollector) Record(name string, value float64) {
+	serviceAttr := metric.WithAttributes(attribute.String("service", c.serviceName))
 	if isCounterMetric(name) {
 		counter := c.getOrCreateCounter(name)
-		counter.Add(context.Background(), int64(value))
+		counter.Add(context.Background(), int64(value), serviceAttr)
 	} else if isGaugeMetric(name) {
 		gauge := c.getOrCreateGauge(name)
-		gauge.Record(context.Background(), value)
+		gauge.Record(context.Background(), value, serviceAttr)
 	} else {
 		hist := c.getOrCreateHistogram(name)
-		hist.Record(context.Background(), value)
+		hist.Record(context.Background(), value, serviceAttr)
 	}
 }
 

@@ -215,6 +215,7 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 	)
 	logger.Metric("es.bulk_index_posts.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
+		logger.Metric("es.bulk_index_posts.error_count", 1)
 		return fmt.Errorf("bulk request failed: %w", err)
 	}
 	defer func() {
@@ -224,6 +225,7 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 	}()
 
 	if res.IsError() {
+		logger.Metric("es.bulk_index_posts.error_count", 1)
 		return fmt.Errorf("bulk request returned error: %s", res.String())
 	}
 
@@ -247,6 +249,7 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
 		logger.Error("Bulk indexing failed with errors. Response items: %s", string(itemsJSON))
+		logger.Metric("es.bulk_index_posts.error_count", 1)
 		return fmt.Errorf("bulk indexing failed: some documents had errors (see logs for details)")
 	}
 
@@ -312,6 +315,7 @@ func BulkIndexPostTombstones(ctx context.Context, client *elasticsearch.Client, 
 	)
 	logger.Metric("es.bulk_index_tombstones.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
+		logger.Metric("es.bulk_index_tombstones.error_count", 1)
 		return fmt.Errorf("bulk tombstone request failed: %w", err)
 	}
 	defer func() {
@@ -321,6 +325,7 @@ func BulkIndexPostTombstones(ctx context.Context, client *elasticsearch.Client, 
 	}()
 
 	if res.IsError() {
+		logger.Metric("es.bulk_index_tombstones.error_count", 1)
 		return fmt.Errorf("bulk tombstone request returned error: %s", res.String())
 	}
 
@@ -344,6 +349,7 @@ func BulkIndexPostTombstones(ctx context.Context, client *elasticsearch.Client, 
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
 		logger.Error("Bulk tombstone indexing failed with errors. Response items: %s", string(itemsJSON))
+		logger.Metric("es.bulk_index_tombstones.error_count", 1)
 		return fmt.Errorf("bulk tombstone indexing failed: some documents had errors (see logs for details)")
 	}
 
@@ -401,6 +407,7 @@ func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string,
 	)
 	logger.Metric("es.bulk_delete.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
+		logger.Metric("es.bulk_delete.error_count", 1)
 		return fmt.Errorf("bulk delete request failed: %w", err)
 	}
 	defer func() {
@@ -410,6 +417,7 @@ func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string,
 	}()
 
 	if res.IsError() {
+		logger.Metric("es.bulk_delete.error_count", 1)
 		return fmt.Errorf("bulk delete request returned error: %s", res.String())
 	}
 
@@ -445,6 +453,7 @@ func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string,
 		if hasRealErrors {
 			itemsJSON, _ := json.Marshal(bulkResponse.Items)
 			logger.Error("Bulk delete failed with errors. Response items: %s", string(itemsJSON))
+			logger.Metric("es.bulk_delete.error_count", 1)
 			return fmt.Errorf("bulk delete failed: some documents had errors (see logs for details)")
 		}
 	}
@@ -607,6 +616,7 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 	)
 	logger.Metric("es.bulk_index_likes.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
+		logger.Metric("es.bulk_index_likes.error_count", 1)
 		return fmt.Errorf("bulk like request failed: %w", err)
 	}
 	defer func() {
@@ -616,6 +626,7 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 	}()
 
 	if res.IsError() {
+		logger.Metric("es.bulk_index_likes.error_count", 1)
 		return fmt.Errorf("bulk like request returned error: %s", res.String())
 	}
 
@@ -639,6 +650,7 @@ func BulkIndexLikes(ctx context.Context, client *elasticsearch.Client, index str
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
 		logger.Error("Bulk like indexing failed with errors. Response items: %s", string(itemsJSON))
+		logger.Metric("es.bulk_index_likes.error_count", 1)
 		return fmt.Errorf("bulk like indexing failed: some documents had errors (see logs for details)")
 	}
 
@@ -689,6 +701,7 @@ func BulkGetLikes(ctx context.Context, client *elasticsearch.Client, index strin
 	)
 	logger.Metric("es.bulk_get_likes.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
+		logger.Metric("es.bulk_get_likes.error_count", 1)
 		return nil, fmt.Errorf("mget request failed: %w", err)
 	}
 	defer func() {
@@ -698,6 +711,7 @@ func BulkGetLikes(ctx context.Context, client *elasticsearch.Client, index strin
 	}()
 
 	if res.IsError() {
+		logger.Metric("es.bulk_get_likes.error_count", 1)
 		return nil, fmt.Errorf("mget request returned error: %s", res.String())
 	}
 
@@ -791,6 +805,7 @@ func BulkIndexLikeTombstones(ctx context.Context, client *elasticsearch.Client, 
 	)
 	logger.Metric("es.bulk_index_like_tombstones.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
+		logger.Metric("es.bulk_index_like_tombstones.error_count", 1)
 		return fmt.Errorf("bulk like tombstone request failed: %w", err)
 	}
 	defer func() {
@@ -800,6 +815,7 @@ func BulkIndexLikeTombstones(ctx context.Context, client *elasticsearch.Client, 
 	}()
 
 	if res.IsError() {
+		logger.Metric("es.bulk_index_like_tombstones.error_count", 1)
 		return fmt.Errorf("bulk like tombstone request returned error: %s", res.String())
 	}
 
@@ -823,6 +839,7 @@ func BulkIndexLikeTombstones(ctx context.Context, client *elasticsearch.Client, 
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
 		logger.Error("Bulk like tombstone indexing failed with errors. Response items: %s", string(itemsJSON))
+		logger.Metric("es.bulk_index_like_tombstones.error_count", 1)
 		return fmt.Errorf("bulk like tombstone indexing failed: some documents had errors (see logs for details)")
 	}
 
@@ -1502,6 +1519,7 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	)
 	logger.Metric("es.update_like_counts.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
+		logger.Metric("es.update_like_counts.error_count", 1)
 		return fmt.Errorf("bulk update request failed: %w", err)
 	}
 	defer func() {
@@ -1511,6 +1529,7 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	}()
 
 	if res.IsError() {
+		logger.Metric("es.update_like_counts.error_count", 1)
 		return fmt.Errorf("bulk update request returned error: %s", res.String())
 	}
 
@@ -1560,6 +1579,7 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 			itemsJSON, _ := json.Marshal(bulkResponse.Items)
 			logger.Error("Bulk like-count update failed with errors")
 			logger.Debug("Response items with errors: %s", string(itemsJSON))
+			logger.Metric("es.update_like_counts.error_count", 1)
 			return fmt.Errorf("bulk update failed: some updates had errors")
 		}
 	}
@@ -1723,6 +1743,7 @@ func BulkUpdateHashtagCounts(ctx context.Context, client *elasticsearch.Client, 
 	)
 	logger.Metric("es.update_hashtags.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
+		logger.Metric("es.update_hashtags.error_count", 1)
 		return fmt.Errorf("bulk request failed: %w", err)
 	}
 	defer func() {
@@ -1732,6 +1753,7 @@ func BulkUpdateHashtagCounts(ctx context.Context, client *elasticsearch.Client, 
 	}()
 
 	if res.IsError() {
+		logger.Metric("es.update_hashtags.error_count", 1)
 		return fmt.Errorf("bulk request returned error: %s", res.String())
 	}
 
@@ -1756,6 +1778,7 @@ func BulkUpdateHashtagCounts(ctx context.Context, client *elasticsearch.Client, 
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
 		logger.Error("Bulk hashtag update failed with errors. Response items: %s", string(itemsJSON))
+		logger.Metric("es.update_hashtags.error_count", 1)
 		return fmt.Errorf("bulk hashtag update failed: some updates had errors (see logs for details)")
 	}
 
@@ -1828,6 +1851,7 @@ func BulkIndexInferences(ctx context.Context, client *elasticsearch.Client, inde
 	)
 	logger.Metric("es.bulk_index_inferences.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
+		logger.Metric("es.bulk_index_inferences.error_count", 1)
 		return fmt.Errorf("bulk inference request failed: %w", err)
 	}
 	defer func() {
@@ -1837,6 +1861,7 @@ func BulkIndexInferences(ctx context.Context, client *elasticsearch.Client, inde
 	}()
 
 	if res.IsError() {
+		logger.Metric("es.bulk_index_inferences.error_count", 1)
 		return fmt.Errorf("bulk inference request returned error: %s", res.String())
 	}
 
@@ -1860,6 +1885,7 @@ func BulkIndexInferences(ctx context.Context, client *elasticsearch.Client, inde
 	if bulkResponse.Errors {
 		itemsJSON, _ := json.Marshal(bulkResponse.Items)
 		logger.Error("Bulk inference indexing failed with errors. Response items: %s", string(itemsJSON))
+		logger.Metric("es.bulk_index_inferences.error_count", 1)
 		return fmt.Errorf("bulk inference indexing failed: some documents had errors (see logs for details)")
 	}
 

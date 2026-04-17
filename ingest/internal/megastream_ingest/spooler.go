@@ -128,6 +128,7 @@ func (ls *LocalSpooler) Start(ctx context.Context) error {
 			files, err := ls.discoverFiles()
 			if err != nil {
 				ls.logger.Error("Failed to discover files: %v", err)
+				ls.logger.Metric("megastream.file_discovery_error_count", 1)
 			} else {
 				ls.processFiles(ctx, files)
 			}
@@ -229,6 +230,7 @@ func (ls *LocalSpooler) processFiles(ctx context.Context, files []string) {
 
 		if err := ls.processFile(ctx, filePath, filename); err != nil {
 			ls.logger.Error("Failed to process file %s: %v", filename, err)
+			ls.logger.Metric("megastream.file_error_count", 1)
 		} else {
 			fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(filename)
 			if err != nil {
@@ -238,6 +240,7 @@ func (ls *LocalSpooler) processFiles(ctx context.Context, files []string) {
 
 			if err := ls.stateManager.UpdateCursor(fileTimeUs); err != nil {
 				ls.logger.Error("Failed to update cursor for file %s: %v", filename, err)
+				ls.logger.Metric("megastream.state_update_error_count", 1)
 			} else {
 				ls.logger.Debug("Updated cursor to %d after processing file: %s", fileTimeUs, filename)
 			}
@@ -295,6 +298,7 @@ func (ss *S3Spooler) Start(ctx context.Context) error {
 			files, err := ss.discoverFiles(ctx)
 			if err != nil {
 				ss.logger.Error("Failed to discover files: %v", err)
+				ss.logger.Metric("megastream.file_discovery_error_count", 1)
 			} else {
 				ss.processFiles(ctx, files)
 			}
@@ -429,6 +433,7 @@ func (ss *S3Spooler) processFiles(ctx context.Context, keys []string) {
 
 		if err := ss.processFile(ctx, key, filename); err != nil {
 			ss.logger.Error("Failed to process S3 file %s: %v", key, err)
+			ss.logger.Metric("megastream.file_error_count", 1)
 		} else {
 			fileTimeUs, err := common.ParseMegastreamFilenameTimestamp(filename)
 			if err != nil {
@@ -441,6 +446,7 @@ func (ss *S3Spooler) processFiles(ctx context.Context, keys []string) {
 			// https://github.com/greenearth-social/ingex/issues/44
 			if err := ss.stateManager.UpdateCursor(fileTimeUs); err != nil {
 				ss.logger.Error("Failed to update cursor for file %s: %v", filename, err)
+				ss.logger.Metric("megastream.state_update_error_count", 1)
 			} else {
 				ss.logger.Debug("Updated cursor to %d after processing file: %s", fileTimeUs, filename)
 			}
@@ -651,6 +657,7 @@ func processDatabase(ctx context.Context, dbPath, filename string, rowChan chan<
 		var atURI, did, rawPost, inferences string
 		if err := rows.Scan(&atURI, &did, &rawPost, &inferences); err != nil {
 			logger.Error("Failed to scan row from %s: %v", filename, err)
+			logger.Metric("megastream.row_skip_count", 1)
 			continue
 		}
 

@@ -147,6 +147,7 @@ func (c *Client) readLoop(ctx context.Context) {
 					c.mu.Unlock()
 					if shouldReconnect {
 						c.logger.Info("Reconnecting in 5 seconds...")
+						c.logger.Metric("jetstream.ws_reconnect_count", 1)
 						// Use a timer with context checking instead of blocking sleep
 						select {
 						case <-time.After(5 * time.Second):
@@ -170,6 +171,7 @@ func (c *Client) readLoop(ctx context.Context) {
 				c.mu.Unlock()
 				if shouldReconnect {
 					c.logger.Info("Reconnecting in 5 seconds...")
+					c.logger.Metric("jetstream.ws_reconnect_count", 1)
 					// Use a timer with context checking instead of blocking sleep
 					select {
 					case <-time.After(5 * time.Second):
@@ -189,6 +191,7 @@ func (c *Client) readLoop(ctx context.Context) {
 			case <-time.After(5 * time.Second):
 				// If we can't send within 5 seconds, log and drop
 				c.logger.Error("Message channel full for 5 seconds, dropping message")
+				c.logger.Metric("jetstream.dropped_messages_count", 1)
 			case <-ctx.Done():
 				// Context cancelled while trying to send
 				return
