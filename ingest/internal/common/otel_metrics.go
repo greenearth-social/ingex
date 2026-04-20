@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"fmt"
+
 	gcpmetric "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"

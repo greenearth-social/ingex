@@ -50,16 +50,16 @@ type ExternalEmbed struct {
 
 // ElasticsearchDoc represents the document structure for indexing
 type ElasticsearchDoc struct {
-	AtURI            string                  `json:"at_uri"`
-	AuthorDID        string                  `json:"author_did"`
-	Content          string                  `json:"content"`
-	CreatedAt        string                  `json:"created_at"`
-	ThreadRootPost   string                  `json:"thread_root_post,omitempty"`
-	ThreadParentPost string                  `json:"thread_parent_post,omitempty"`
-	QuotePost        string                  `json:"quote_post,omitempty"`
-	Embeddings       map[string]Float32Array `json:"embeddings,omitempty"`
-	IndexedAt        string                  `json:"indexed_at"`
-	LikeCount        int                     `json:"like_count"`
+	AtURI                   string                  `json:"at_uri"`
+	AuthorDID               string                  `json:"author_did"`
+	Content                 string                  `json:"content"`
+	CreatedAt               string                  `json:"created_at"`
+	ThreadRootPost          string                  `json:"thread_root_post,omitempty"`
+	ThreadParentPost        string                  `json:"thread_parent_post,omitempty"`
+	QuotePost               string                  `json:"quote_post,omitempty"`
+	Embeddings              map[string]Float32Array `json:"embeddings,omitempty"`
+	IndexedAt               string                  `json:"indexed_at"`
+	LikeCount               int                     `json:"like_count"`
 	Media                   []MediaItem             `json:"media,omitempty"`
 	ContainsImages          bool                    `json:"contains_images"`
 	ContainsVideo           bool                    `json:"contains_video"`
@@ -1130,7 +1130,6 @@ func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *Inges
 
 	return response, nil
 }
-
 
 // QueryPostsByAuthorDID retrieves all post at_uris for a given author_did using scroll API
 func QueryPostsByAuthorDID(ctx context.Context, client *elasticsearch.Client, index string, authorDID string, logger *IngestLogger) ([]string, error) {
