@@ -217,18 +217,23 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	// post_tombstones. Runs at startup and every minute so that period rollovers
 	// are detected promptly without waiting for the next batch flush.
 	if !dryRun {
-		go func() {
-			ensureIndices := func() {
-				indexCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				for _, alias := range []string{"posts", "post_tombstones"} {
-					name := common.CurrentIndexName(alias, config.IndexPeriod)
-					if err := common.EnsureIndex(indexCtx, esClient, name, alias, logger); err != nil {
-						logger.Error("Failed to ensure index for %s: %v", alias, err)
-					}
+		ensureIndices := func() error {
+			indexCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			for _, alias := range []string{"posts", "post_tombstones"} {
+				name := common.CurrentIndexName(alias, config.IndexPeriod)
+				if err := common.EnsureIndex(indexCtx, esClient, name, alias, logger); err != nil {
+					return fmt.Errorf("failed to ensure index for %s: %w", alias, err)
 				}
 			}
-			ensureIndices()
+			return nil
+		}
+
+		if err := ensureIndices(); err != nil {
+			return err
+		}
+
+		go func() {
 			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
 			for {
@@ -236,7 +241,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					ensureIndices()
+					if err := ensureIndices(); err != nil {
+						logger.Error("%v", err)
+					}
 				}
 			}
 		}()
