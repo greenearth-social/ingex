@@ -117,6 +117,18 @@ func runExpiry(ctx context.Context, config *common.Config, logger *common.Ingest
 		return fmt.Errorf("failed to create Elasticsearch client: %w", err)
 	}
 
+	// Ensure hashtags has a valid write index before running delete-by-query.
+	// This prevents alias write-target errors when an alias points to multiple
+	// indices without an is_write_index designation.
+	if !dryRun {
+		indexCtx, indexCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer indexCancel()
+		hashtagsIndexName := common.CurrentIndexName("hashtags", config.IndexPeriod)
+		if err := common.EnsureIndex(indexCtx, esClient, hashtagsIndexName, "hashtags", logger); err != nil {
+			return fmt.Errorf("failed to ensure index for hashtags: %w", err)
+		}
+	}
+
 	// Calculate the cutoff date using hours
 	cutoffDate := time.Now().UTC().Add(-time.Duration(retentionHours) * time.Hour)
 	logger.Info("Deleting documents older than: %s", cutoffDate.Format(time.RFC3339))
