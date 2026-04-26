@@ -1,132 +1,21 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: greenearth-prod
-
 resources:
-  - ../../base
-  - elasticsearch-pod-monitoring.yaml
-  - max-map-count-daemonset.yaml
+  - ../../bases/elasticsearch
 
-patches:
+patchesJson6902:
   - target:
+      group: elasticsearch.k8s.elastic.co
+      version: v1
       kind: Elasticsearch
-      name: greenearth
-    patch: |-
-      - op: replace
-        path: /spec/nodeSets/0/name
-        value: master
-      - op: replace
-        path: /spec/nodeSets/0/count
-        value: 2
-      - op: replace
-        path: /spec/nodeSets/0/config
-        value:
-          node.roles: ["master"]
-          node.store.allow_mmap: true
-      - op: add
-        path: /spec/nodeSets/0/config/node.store.allow_mmap
-        value: true
-      - op: replace
-        path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
-        value: 6Gi
-      - op: replace
-        path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/memory
-        value: 6Gi
-      - op: replace
-        path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/cpu
-        value: "500m"
-      - op: replace
-        path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/cpu
-        value: "500m"
-      - op: replace
-        path: /spec/nodeSets/0/podTemplate/spec/containers/0/env/0/value
-        value: "-Xms3g -Xmx3g"
-      - op: replace
-        path: /spec/nodeSets/0/volumeClaimTemplates/0/spec/resources/requests/storage
-        value: 16Gi
-      - op: add
-        path: /spec/nodeSets/-
-        value:
-          name: data
-          count: 4
-          config:
-            node.roles: ["data", "ingest"]
-            node.store.allow_mmap: true
-          podTemplate:
-            spec:
-              serviceAccountName: es-node-sa
-              containers:
-              - name: elasticsearch
-                resources:
-                  requests:
-                    memory: 32Gi
-                    cpu: "3000m"
-                  limits:
-                    memory: 32Gi
-                    cpu: "3000m"
-                env:
-                - name: ES_JAVA_OPTS
-                  value: "-Xms16g -Xmx16g"
-          volumeClaimTemplates:
-          - metadata:
-              name: elasticsearch-data
-            spec:
-              accessModes:
-              - ReadWriteOnce
-              resources:
-                requests:
-                  storage: 2048Gi
+      name: greenearth-es
+      namespace: greenearth-prod
+    path: patches/master-node-cpu.yaml
   - target:
-      kind: Kibana
-      name: greenearth
-    patch: |-
-      - op: replace
-        path: /spec/podTemplate/spec/containers/0/resources/requests/memory
-        value: 1Gi
-      - op: replace
-        path: /spec/podTemplate/spec/containers/0/resources/limits/memory
-        value: 1Gi
-      - op: replace
-        path: /spec/podTemplate/spec/containers/0/resources/requests/cpu
-        value: "500m"
-      - op: replace
-        path: /spec/podTemplate/spec/containers/0/resources/limits/cpu
-        value: "500m"
-  - target:
-      kind: ServiceAccount
-      name: es-node-sa
-    patch: |-
-      - op: replace
-        path: /metadata/annotations/iam.gke.io~1gcp-service-account
-        value: es-snapshot-prod@greenearth-471522.iam.gserviceaccount.com
-
-configMapGenerator:
-  - name: snapshot-settings
-    behavior: replace
-    literals:
-      - snapshot_bucket=greenearth-471522-es-snapshots-prod
-      - snapshot_schedule=0 0 9 * * ?
-      - snapshot_expire_after=14d
-      - snapshot_max_count=14
-  - name: index-settings
-    behavior: replace
-    literals:
-      - index_shards=60
-      - index_replicas=1
-      - hashtag_index_shards=10
-      - hashtag_index_replicas=1
-      - inference_index_shards=4
-      - inference_index_replicas=1
-      - inference_max_age=1d
-  - name: ilm-settings
-    behavior: replace
-    literals:
-      - posts_index_shards=7
-      - posts_index_replicas=1
-      - likes_index_shards=7
-      - likes_index_replicas=1
-      - tombstones_index_shards=3
-      - tombstones_index_replicas=1
-      - ilm_delete_age=60d
-      - index_period=week
+      group: elasticsearch.k8s.elastic.co
+      version: v1
+      kind: Elasticsearch
+      name: greenearth-es
+      namespace: greenearth-prod
+    path: patches/data-node-cpu.yaml
