@@ -2,6 +2,12 @@
 
 A data ingestion and indexing system for BlueSky content. This project provides real-time streaming or batch processing capabilities to capture, process, and search BlueSky posts and likes in an ElasticSearch backend.
 
+## Contributing
+
+Interested in contributing? We'd love to have you! 
+
+First, please join our discord and introduce yourself: https://discord.com/invite/8bWEyrkrJC. Unless you've joined the discord and engaged with the community there, all issues/PRs will be auto-closed.
+
 ## System Architecture
 
 For detailed architecture information, see [VPC_ARCHITECTURE.md](VPC_ARCHITECTURE.md).
