@@ -1,3 +1,4 @@
+// File: ingest/cmd/megastream_ingest/integration_test.go
 package main
 
 import (
@@ -82,3 +83,4 @@ func TestMegastreamIngestIntegration(t *testing.T) {
 		ReplayMode:         false,
 		ReplayStart:        time.Time{},
 		ReplayEnd:          time.Time{},
+	}
