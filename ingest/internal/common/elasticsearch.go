@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -2093,13 +2094,14 @@ func EnsureIndex(ctx context.Context, client *elasticsearch.Client, indexName, a
 	}()
 
 	if createRes.IsError() {
+		bodyBytes, _ := io.ReadAll(createRes.Body)
 		var errBody struct {
 			Error struct {
 				Type string `json:"type"`
 			} `json:"error"`
 		}
-		if jerr := json.NewDecoder(createRes.Body).Decode(&errBody); jerr != nil || errBody.Error.Type != "resource_already_exists_exception" {
-			return fmt.Errorf("create index %s: %s", indexName, createRes.String())
+		if jerr := json.Unmarshal(bodyBytes, &errBody); jerr != nil || errBody.Error.Type != "resource_already_exists_exception" {
+			return fmt.Errorf("create index %s: [%d] %s", indexName, createRes.StatusCode, string(bodyBytes))
 		}
 	} else {
 		logger.Info("Created index %s", indexName)
