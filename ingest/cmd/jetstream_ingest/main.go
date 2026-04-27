@@ -156,9 +156,23 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			return nil
 		}
 
-		if err := ensureIndices(); err != nil {
-			logger.Error("%v", err)
-			os.Exit(1)
+		{
+			backoff := time.Second
+			for {
+				if err := ensureIndices(); err == nil {
+					break
+				} else {
+					logger.Error("ensureIndices failed (retrying in %v): %v", backoff, err)
+				}
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return
+				}
+				if backoff < 60*time.Second {
+					backoff *= 2
+				}
+			}
 		}
 
 		go func() {
