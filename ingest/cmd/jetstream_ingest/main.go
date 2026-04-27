@@ -394,6 +394,11 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			logger.Metric("jetstream.inbound_count", 1)
 			msg := common.NewJetstreamMessage(rawMsg, logger)
 
+			if !common.ShouldSampleDID(msg.GetAuthorDID()) {
+				skippedCount++
+				continue
+			}
+
 			// Handle like deletions
 			if msg.IsLikeDelete() {
 				if msg.GetAtURI() == "" {
