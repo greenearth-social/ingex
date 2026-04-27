@@ -300,6 +300,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			// Skip rows with empty at_uri unless it's an account deletion event
 			if row.AtURI == "" && !msg.IsAccountDeletion() {
 				logger.Debug("Skipping row with empty at_uri from file %s (did: %s)", row.SourceFilename, row.DID)
+				logger.Metric("megastream.row_skip_count", 1)
 				skippedCount++
 				continue
 			}
@@ -378,6 +379,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Now process account deletion
 				if err := handleAccountDeletion(ctx, msg, esClient, dryRun, logger, &deletedCount); err != nil {
 					logger.Error("Failed to handle account deletion for DID %s: %v", msg.GetAuthorDID(), err)
+					logger.Metric("megastream.account_deletion_error_count", 1)
 				}
 			} else if msg.IsDelete() {
 				// Post deletion - add to batch
