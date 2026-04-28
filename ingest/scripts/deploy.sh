@@ -21,16 +21,6 @@ GE_AWS_S3_PREFIX="${GE_AWS_S3_PREFIX:-mega/}"
 GE_JETSTREAM_INSTANCES="${GE_JETSTREAM_INSTANCES:-1}"
 GE_MEGASTREAM_INSTANCES="${GE_MEGASTREAM_INSTANCES:-1}"
 
-# Index period: controls time-based index partitioning for posts/likes/tombstones
-# prod → week (ISO week), stage → hour, local/default → 10min
-if [ "$GE_ENVIRONMENT" = "prod" ]; then
-    GE_INDEX_PERIOD="${GE_INDEX_PERIOD:-week}"
-elif [ "$GE_ENVIRONMENT" = "stage" ]; then
-    GE_INDEX_PERIOD="${GE_INDEX_PERIOD:-hour}"
-else
-    GE_INDEX_PERIOD="${GE_INDEX_PERIOD:-10min}"
-fi
-
 # Get current git SHA (short version) for deployment tracking
 GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
@@ -484,9 +474,22 @@ show_service_status() {
 main() {
     local service="${1:-all}"
 
+    # Derive GE_INDEX_PERIOD from GE_ENVIRONMENT after all flags have been parsed.
+    # Using unconditional assignment so a stale GE_INDEX_PERIOD in the caller's
+    # shell cannot override the environment-appropriate value.
+    # prod → week (ISO week), stage → hour, local/default → 10min
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        GE_INDEX_PERIOD="week"
+    elif [ "$GE_ENVIRONMENT" = "stage" ]; then
+        GE_INDEX_PERIOD="hour"
+    else
+        GE_INDEX_PERIOD="10min"
+    fi
+
     echo "=================================================="
     echo "Green Earth Ingex - Cloud Run Source Deployment"
     echo "Environment: $GE_ENVIRONMENT"
+    echo "Index period: $GE_INDEX_PERIOD"
     echo "Project: $GE_GCP_PROJECT_ID"
     echo "Region: $GE_GCP_REGION"
     echo "Git SHA: $GIT_SHA"
