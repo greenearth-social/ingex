@@ -92,107 +92,75 @@ func (c *Client) Start(ctx context.Context) error {
 func (c *Client) readLoop(ctx context.Context) {
 	defer close(c.msgChan)
 
-	for {
-		select {
-		case <-ctx.Done():
-			c.logger.Info("Context cancelled, closing WebSocket connection")
-			c.mu.Lock()
-			c.reconnect = false
-			if c.conn != nil {
-				if err := c.conn.Close(); err != nil {
-					c.logger.Error("Failed to close WebSocket connection: %v", err)
-				}
+	// Close the active connection when ctx is cancelled so ReadMessage unblocks.
+	go func() {
+		<-ctx.Done()
+		c.mu.Lock()
+		c.reconnect = false
+		if c.conn != nil {
+			if err := c.conn.Close(); err != nil {
+				c.logger.Error("Failed to close WebSocket connection on shutdown: %v", err)
 			}
-			c.mu.Unlock()
-			return
-		default:
-			c.mu.RLock()
-			conn := c.conn
-			shouldReconnect := c.reconnect
-			c.mu.RUnlock()
+		}
+		c.mu.Unlock()
+	}()
 
-			if conn == nil {
-				if !shouldReconnect {
+	for {
+		c.mu.RLock()
+		conn := c.conn
+		shouldReconnect := c.reconnect
+		c.mu.RUnlock()
+
+		if conn == nil {
+			if !shouldReconnect {
+				return
+			}
+			c.logger.Info("Attempting to reconnect...")
+			if err := c.Connect(ctx); err != nil {
+				c.logger.Error("Reconnection failed: %v, retrying in 5 seconds", err)
+				select {
+				case <-time.After(5 * time.Second):
+				case <-ctx.Done():
 					return
 				}
-				c.logger.Info("Attempting to reconnect...")
-				if err := c.Connect(ctx); err != nil {
-					c.logger.Error("Reconnection failed: %v, retrying in 5 seconds", err)
-					// Use a timer with context checking instead of blocking sleep
-					select {
-					case <-time.After(5 * time.Second):
-					case <-ctx.Done():
-						return
-					}
-					continue
-				}
-				c.mu.RLock()
-				conn = c.conn
-				c.mu.RUnlock()
-			}
-
-			// Set read deadline to allow periodic context checking
-			if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-				c.logger.Error("Failed to set read deadline: %v", err)
 				continue
 			}
+			c.mu.RLock()
+			conn = c.conn
+			c.mu.RUnlock()
+		}
 
-			_, message, err := conn.ReadMessage()
-			if err != nil {
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					c.logger.Info("WebSocket connection closed normally")
-					c.mu.Lock()
-					c.conn = nil
-					shouldReconnect := c.reconnect
-					c.mu.Unlock()
-					if shouldReconnect {
-						c.logger.Info("Reconnecting in 5 seconds...")
-						// Use a timer with context checking instead of blocking sleep
-						select {
-						case <-time.After(5 * time.Second):
-						case <-ctx.Done():
-							return
-						}
-						continue
-					}
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			if ctx.Err() != nil {
+				return // ctx cancelled — the shutdown goroutine closed the conn
+			}
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				c.logger.Info("WebSocket connection closed normally")
+			} else {
+				c.logger.Error("Error reading from WebSocket: %v", err)
+			}
+			c.mu.Lock()
+			c.conn = nil
+			shouldReconnect = c.reconnect
+			c.mu.Unlock()
+			if shouldReconnect {
+				c.logger.Info("Reconnecting in 5 seconds...")
+				select {
+				case <-time.After(5 * time.Second):
+				case <-ctx.Done():
 					return
 				}
-
-				// Check if it's a timeout (which is expected due to read deadline)
-				if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
-					continue
-				}
-
-				c.logger.Error("Error reading from WebSocket: %v", err)
-				c.mu.Lock()
-				c.conn = nil
-				shouldReconnect := c.reconnect
-				c.mu.Unlock()
-				if shouldReconnect {
-					c.logger.Info("Reconnecting in 5 seconds...")
-					// Use a timer with context checking instead of blocking sleep
-					select {
-					case <-time.After(5 * time.Second):
-					case <-ctx.Done():
-						return
-					}
-					continue
-				}
-				return
 			}
+			continue
+		}
 
-			// Send message to channel with blocking and timeout
-			// This applies backpressure when the consumer is slower than the producer
-			select {
-			case c.msgChan <- string(message):
-				// Message sent successfully
-			case <-time.After(5 * time.Second):
-				// If we can't send within 5 seconds, log and drop
-				c.logger.Error("Message channel full for 5 seconds, dropping message")
-			case <-ctx.Done():
-				// Context cancelled while trying to send
-				return
-			}
+		select {
+		case c.msgChan <- string(message):
+		case <-time.After(5 * time.Second):
+			c.logger.Error("Message channel full for 5 seconds, dropping message")
+		case <-ctx.Done():
+			return
 		}
 	}
 }

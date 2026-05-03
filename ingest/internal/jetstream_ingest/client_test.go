@@ -272,6 +272,42 @@ func TestClientMessageChannelBufferFull(t *testing.T) {
 	}
 }
 
+// TestClientShutdownOnIdleConnection verifies that cancelling the context closes
+// the message channel even when the server is silent (no messages being sent).
+// This exercises the shutdown goroutine added to readLoop: previously the code
+// relied on a read deadline to break out of ReadMessage, which caused gorilla to
+// permanently mark the connection as failed and panic on the next read.
+func TestClientShutdownOnIdleConnection(t *testing.T) {
+	logger := common.NewLogger(false)
+
+	// Server accepts the connection but never sends any messages.
+	server := newMockWebSocketServer(t, func(conn *websocket.Conn) {
+		time.Sleep(5 * time.Second)
+	})
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	client := NewClient(wsURL, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	if err := client.Start(ctx); err != nil {
+		t.Fatalf("Failed to start client: %v", err)
+	}
+
+	// Cancel the context while ReadMessage is blocking (no deadline set).
+	cancel()
+
+	// The shutdown goroutine should close the connection, unblocking ReadMessage
+	// and causing readLoop to exit, which closes msgChan.
+	select {
+	case <-client.GetMessageChannel():
+		// channel closed — shutdown completed
+	case <-time.After(2 * time.Second):
+		t.Fatal("message channel did not close within 2 s after context cancellation")
+	}
+}
+
 func TestGetMessageChannel(t *testing.T) {
 	logger := common.NewLogger(false)
 	client := NewClient("ws://example.com/subscribe", logger)
