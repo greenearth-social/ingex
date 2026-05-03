@@ -304,6 +304,12 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				continue
 			}
 
+			if !common.ShouldSampleDID(row.DID, config.Environment) {
+				logger.Metric("megastream.sample_dropped_count", 1)
+				skippedCount++
+				continue
+			}
+
 			// Handle different event types with if-else chain
 			if msg.IsAccountDeletion() {
 				// Flush all pending batches before account deletion
