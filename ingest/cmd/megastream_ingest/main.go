@@ -305,6 +305,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			}
 
 			if !common.ShouldSampleDID(row.DID, config.Environment) {
+				logger.Metric("megastream.sample_dropped_count", 1)
 				skippedCount++
 				continue
 			}
