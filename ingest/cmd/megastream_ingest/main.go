@@ -304,7 +304,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				continue
 			}
 
-			if !common.ShouldSampleDID(row.DID) {
+			if !common.ShouldSampleDID(row.DID, config.Environment) {
 				skippedCount++
 				continue
 			}

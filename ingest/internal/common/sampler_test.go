@@ -7,9 +7,9 @@ import (
 
 func TestShouldSampleDID_Determinism(t *testing.T) {
 	did := "did:plc:abc123xyz"
-	first := ShouldSampleDID(did)
+	first := ShouldSampleDID(did, "stage")
 	for i := 0; i < 100; i++ {
-		if ShouldSampleDID(did) != first {
+		if ShouldSampleDID(did, "stage") != first {
 			t.Fatalf("ShouldSampleDID returned different results for same DID")
 		}
 	}
@@ -20,7 +20,7 @@ func TestShouldSampleDID_Distribution(t *testing.T) {
 	sampled := 0
 	for i := 0; i < total; i++ {
 		did := fmt.Sprintf("did:plc:user%d", i)
-		if ShouldSampleDID(did) {
+		if ShouldSampleDID(did, "stage") {
 			sampled++
 		}
 	}
@@ -36,5 +36,13 @@ func TestShouldSampleDID_EmptyDID(t *testing.T) {
 			t.Fatalf("ShouldSampleDID panicked on empty DID: %v", r)
 		}
 	}()
-	ShouldSampleDID("")
+	ShouldSampleDID("", "stage")
+}
+
+func TestShouldSampleDID_NonStagePassthrough(t *testing.T) {
+	for _, env := range []string{"prod", "local", ""} {
+		if !ShouldSampleDID("did:plc:abc123xyz", env) {
+			t.Fatalf("expected all DIDs to pass through in environment %q", env)
+		}
+	}
 }

@@ -394,7 +394,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			logger.Metric("jetstream.inbound_count", 1)
 			msg := common.NewJetstreamMessage(rawMsg, logger)
 
-			if !common.ShouldSampleDID(msg.GetAuthorDID()) {
+			if !common.ShouldSampleDID(msg.GetAuthorDID(), config.Environment) {
 				skippedCount++
 				continue
 			}
