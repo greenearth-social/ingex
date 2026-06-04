@@ -151,20 +151,35 @@ kubectl port-forward service/greenearth-es-http 9200 -n greenearth-local
 # Get elastic password
 ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n greenearth-local -o go-template='{{.data.elastic | base64decode}}')
 
-# Create API key (adjust index names as needed)
+# Create API key
+# Two index entries are required: one for the ILM-managed backing indices (hyphenated,
+# e.g. post-tombstones-2026-06-03-23-30) and one for the alias names (underscored,
+# e.g. post_tombstones). EnsureIndex calls both indices.create and indices.updateAliases,
+# and ES evaluates permissions against whichever name appears in each request.
 curl -k -X POST "https://localhost:9200/_security/api_key" \
   -u "elastic:$ELASTIC_PASSWORD" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "ingest-service-key",
-    "expiration": "90d",
     "role_descriptors": {
       "ingest_role": {
         "cluster": ["manage_index_templates", "monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1", "likes", "likes_v1", "like_tombstones", "like_tombstones_v1"],
-            "privileges": ["create_doc", "create", "delete", "index", "write", "maintenance", "all"]
+            "names": [
+              "posts-*", "post-tombstones-*",
+              "likes-*", "like-tombstones-*",
+              "inferences-*", "hashtags_v1*"
+            ],
+            "privileges": ["all"]
+          },
+          {
+            "names": [
+              "posts", "post_tombstones",
+              "likes", "like_tombstones",
+              "inferences", "hashtags"
+            ],
+            "privileges": ["all"]
           }
         ]
       }
@@ -190,7 +205,7 @@ Use the `encoded` value from the response.
 - `GE_SPOOL_INTERVAL_SEC` - Polling interval in seconds for spool mode (default: 60)
 - `SPOOL_STATE_FILE` - Path to state file for tracking processed files (default: ".processed_files.json")
 
-### Example Configuration
+### Local Testing
 
 **Local Source:**
 
@@ -209,37 +224,15 @@ export GE_LOGGING_ENABLED="true"
 export GE_AWS_S3_BUCKET="my-bucket"
 export GE_AWS_S3_PREFIX="megastream/databases/"
 export GE_AWS_REGION="us-west-2"
-export GE_ELASTICSEARCH_URL="https://my-cluster.es.amazonaws.com:9200"
+export GE_ELASTICSEARCH_URL="https://localhost:9200"
 export GE_ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
 
-./megastream_ingest --source s3 --mode spool
+./megastream_ingest --source s3 --mode spool --skip-tls-verify --no-rewind
 ```
 
 ## Deployment
 
-### Local Testing
-
-Run against local Elasticsearch cluster (see [../index/README.md](../index/README.md)):
-
-```bash
-# Start port-forward to local Elasticsearch
-kubectl port-forward service/greenearth-es-http 9200 -n greenearth-local
-
-# Run megastream_ingest
-./megastream_ingest --source local --mode once --skip-tls-verify
-
-# Or run jetstream_ingest
-./jetstream_ingest --skip-tls-verify
-```
-
-See individual command READMEs for detailed deployment instructions.
-
-### Production Deployment
-
-- **Target Platform**: (TODO) Azure Kubernetes Service (AKS)
-- **Container Runtime**: (TODO) Docker with multi-stage builds
-- **Deployment Method**: (TODO) Kubernetes manifests via Terraform
-- **Monitoring**: (TODO) Add health checks and metrics endpoints
+See `./scripts/gc_setup.sh` and `./scripts/deploy.sh`
 
 ## Development
 
@@ -318,7 +311,7 @@ See individual command READMEs for command-specific integration testing:
 
 The ingest services write to the following Elasticsearch indexes:
 
-### Posts (`posts` alias → `posts_v1`)
+### Posts
 
 BlueSky posts with full content and embeddings (from megastream_ingest):
 
