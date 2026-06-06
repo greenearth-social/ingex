@@ -393,7 +393,7 @@ deploy_extract_job() {
 
     max_records=1000000      # 1M records
     window_minutes=33       # ~1/2 hour
-    indices="posts,likes,hashtags"
+    indices="posts,likes,hashtags,replies"
     log_info "$GE_ENVIRONMENT environment: 1M max records, approx. 30 min window, indices: posts,likes,hashtags"
     destination_bucket="$GE_GCP_PROJECT_ID-ingex-extract-$GE_ENVIRONMENT"
 
@@ -420,7 +420,7 @@ deploy_extract_job() {
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
-        --set-env-vars="^|^GE_EXTRACT_INDICES=posts,likes,hashtags" \
+        --set-env-vars="^|^GE_EXTRACT_INDICES=posts,likes,hashtags,replies" \
         --set-env-vars="GE_PARQUET_DESTINATION=gs://$destination_bucket" \
         --set-env-vars="GE_PARQUET_MAX_RECORDS=$max_records" \
         --set-env-vars="GE_GCP_PROJECT_ID=$GE_GCP_PROJECT_ID" \
