@@ -147,7 +147,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		ensureIndices := func() error {
 			indexCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			for _, alias := range []string{"likes", "like_tombstones", "posts"} {
+			for _, alias := range []string{"likes", "like_tombstones", "posts", "replies"} {
 				name := common.CurrentIndexName(alias, config.IndexPeriod)
 				if err := common.EnsureIndex(indexCtx, esClient, name, alias, logger); err != nil {
 					return fmt.Errorf("failed to ensure index for %s: %w", alias, err)
@@ -689,9 +689,11 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 							}
 						}
 
-						if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
-							logger.Error("Worker %d: Failed to decrement post like counts: %v", id, err)
-							// Don't set success=false - this is a secondary operation
+						for _, alias := range []string{"posts", "replies"} {
+							if err := common.BulkUpdatePostLikeCounts(ctx, esClient, alias, updates, dryRun, logger); err != nil {
+								logger.Error("Worker %d: Failed to decrement post like counts in %s: %v", id, alias, err)
+								// Don't set success=false - this is a secondary operation
+							}
 						}
 					}
 				}
@@ -719,9 +721,11 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 					}
 				}
 
-				if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
-					logger.Error("Worker %d: Failed to update post like counts: %v", id, err)
-					// Don't set success=false - this is a secondary operation
+				for _, alias := range []string{"posts", "replies"} {
+					if err := common.BulkUpdatePostLikeCounts(ctx, esClient, alias, updates, dryRun, logger); err != nil {
+						logger.Error("Worker %d: Failed to update post like counts in %s: %v", id, alias, err)
+						// Don't set success=false - this is a secondary operation
+					}
 				}
 			}
 		}
