@@ -574,6 +574,15 @@ cleanup:
 	return nil
 }
 
+// postAliasFromDoc returns the ES alias for a document.
+// Posts with a non-empty thread_parent_post are replies and go to the replies alias.
+func postAliasFromDoc(doc common.ElasticsearchDoc) string {
+	if doc.ThreadParentPost != "" {
+		return "replies"
+	}
+	return "posts"
+}
+
 // indexPosts creates Elasticsearch documents from messages and indexes them
 // Like counts start at 0 and are incremented by jetstream when likes arrive
 // Returns the number of documents indexed
@@ -582,17 +591,30 @@ func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *
 		return 0, nil
 	}
 
-	batch := make([]common.ElasticsearchDoc, 0, len(msgs))
+	postsBatch := make([]common.ElasticsearchDoc, 0, len(msgs))
+	repliesBatch := make([]common.ElasticsearchDoc, 0)
+
 	for _, m := range msgs {
 		doc := common.CreateElasticsearchDoc(m, 0)
-		batch = append(batch, doc)
+		if postAliasFromDoc(doc) == "replies" {
+			repliesBatch = append(repliesBatch, doc)
+		} else {
+			postsBatch = append(postsBatch, doc)
+		}
 	}
 
-	if err := common.BulkIndex(ctx, esClient, "posts", batch, dryRun, logger); err != nil {
-		return 0, fmt.Errorf("failed to bulk index batch: %w", err)
+	if len(postsBatch) > 0 {
+		if err := common.BulkIndex(ctx, esClient, "posts", postsBatch, dryRun, logger); err != nil {
+			return 0, fmt.Errorf("failed to bulk index posts: %w", err)
+		}
+	}
+	if len(repliesBatch) > 0 {
+		if err := common.BulkIndex(ctx, esClient, "replies", repliesBatch, dryRun, logger); err != nil {
+			return 0, fmt.Errorf("failed to bulk index replies: %w", err)
+		}
 	}
 
-	return len(batch), nil
+	return len(postsBatch) + len(repliesBatch), nil
 }
 
 // handleAccountDeletion handles account deletion events by querying and deleting all posts and likes
