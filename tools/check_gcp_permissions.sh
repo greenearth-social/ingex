@@ -2,6 +2,11 @@
 
 # Check whether the current gcloud identity has the IAM permissions needed to
 # run index/deploy.sh and ingest/scripts/deploy.sh.
+#
+# There is no `gcloud projects test-iam-permissions` command, so this calls
+# the Cloud Resource Manager `testIamPermissions` API directly via curl using
+# a gcloud-issued access token.
+#
 # Usage: ./check_gcp_permissions.sh
 
 set -e
@@ -10,53 +15,53 @@ echo "=== Identity & Project ==="
 gcloud auth list
 gcloud config get-value project
 PROJECT=$(gcloud config get-value project)
+TOKEN=$(gcloud auth print-access-token)
 
-echo ""
-echo "=== GKE (index/deploy.sh: cluster create/access) ==="
-gcloud projects test-iam-permissions $PROJECT \
-  --permissions="container.clusters.get,container.clusters.create,container.clusters.getCredentials,container.clusters.list"
+# Prints only the permissions from $1 (comma-separated) that the current
+# identity actually has on the project; anything missing from the response
+# is a permission they lack.
+test_permissions() {
+    local label="$1"
+    local permissions="$2"
+    local json_permissions
+    json_permissions=$(echo "$permissions" | sed 's/,/", "/g')
 
-echo ""
-echo "=== Cloud Run (ingest/scripts/deploy.sh: deploy services & jobs) ==="
-gcloud projects test-iam-permissions $PROJECT \
-  --permissions="run.services.create,run.services.update,run.services.get,run.jobs.create,run.jobs.update,run.jobs.run"
+    echo ""
+    echo "=== $label ==="
+    curl -s -X POST \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"permissions\": [\"$json_permissions\"]}" \
+        "https://cloudresourcemanager.googleapis.com/v1/projects/${PROJECT}:testIamPermissions"
+    echo ""
+}
 
-echo ""
-echo "=== Cloud Build (triggered by 'gcloud run deploy --source=.') ==="
-gcloud projects test-iam-permissions $PROJECT \
-  --permissions="cloudbuild.builds.create,cloudbuild.builds.get,cloudbuild.builds.list"
+test_permissions "GKE (index/deploy.sh: cluster create/access)" \
+  "container.clusters.get,container.clusters.create,container.clusters.getCredentials,container.clusters.list"
 
-echo ""
-echo "=== Artifact Registry (image push during source-based deploy) ==="
-gcloud projects test-iam-permissions $PROJECT \
-  --permissions="artifactregistry.repositories.uploadArtifacts,artifactregistry.repositories.downloadArtifacts,artifactregistry.repositories.get"
+test_permissions "Cloud Run (ingest/scripts/deploy.sh: deploy services & jobs)" \
+  "run.services.create,run.services.update,run.services.get,run.jobs.create,run.jobs.update,run.jobs.run"
 
-echo ""
-echo "=== Secret Manager (env var injection: ES API key, AWS keys) ==="
-gcloud projects test-iam-permissions $PROJECT \
-  --permissions="secretmanager.secrets.create,secretmanager.versions.add,secretmanager.versions.access,secretmanager.secrets.get"
+test_permissions "Cloud Build (triggered by 'gcloud run deploy --source=.')" \
+  "cloudbuild.builds.create,cloudbuild.builds.get,cloudbuild.builds.list"
 
-echo ""
-echo "=== Cloud Storage (state files, parquet export, blocklist, ES snapshots) ==="
-gcloud projects test-iam-permissions $PROJECT \
-  --permissions="storage.buckets.get,storage.buckets.create,storage.objects.create,storage.objects.get,storage.objects.list"
+test_permissions "Artifact Registry (image push during source-based deploy)" \
+  "artifactregistry.repositories.uploadArtifacts,artifactregistry.repositories.downloadArtifacts,artifactregistry.repositories.get"
 
-echo ""
-echo "=== VPC Access Connector (used by all Cloud Run services) ==="
-gcloud projects test-iam-permissions $PROJECT \
-  --permissions="vpcaccess.connectors.create,vpcaccess.connectors.get,vpcaccess.connectors.use"
+test_permissions "Secret Manager (env var injection: ES API key, AWS keys)" \
+  "secretmanager.secrets.create,secretmanager.versions.add,secretmanager.versions.access,secretmanager.secrets.get"
 
-echo ""
-echo "=== IAM / Service Accounts (deploy-as ingex-runner-\$ENV) ==="
-gcloud projects test-iam-permissions $PROJECT \
-  --permissions="iam.serviceAccounts.actAs,iam.serviceAccounts.get,iam.serviceAccounts.create,iam.serviceAccounts.setIamPolicy"
+test_permissions "Cloud Storage (state files, parquet export, blocklist, ES snapshots)" \
+  "storage.buckets.get,storage.buckets.create,storage.objects.create,storage.objects.get,storage.objects.list"
 
-echo ""
-echo "=== Monitoring (OTel custom metrics export) ==="
-gcloud projects test-iam-permissions $PROJECT \
-  --permissions="monitoring.timeSeries.create,monitoring.metricDescriptors.create"
+test_permissions "VPC Access Connector (used by all Cloud Run services)" \
+  "vpcaccess.connectors.create,vpcaccess.connectors.get,vpcaccess.connectors.use"
 
-echo ""
-echo "=== Service Usage (enabling APIs - only relevant for fresh setup) ==="
-gcloud projects test-iam-permissions $PROJECT \
-  --permissions="serviceusage.services.enable,serviceusage.services.get"
+test_permissions "IAM / Service Accounts (deploy-as ingex-runner-\$ENV)" \
+  "iam.serviceAccounts.actAs,iam.serviceAccounts.get,iam.serviceAccounts.create,iam.serviceAccounts.setIamPolicy"
+
+test_permissions "Monitoring (OTel custom metrics export)" \
+  "monitoring.timeSeries.create,monitoring.metricDescriptors.create"
+
+test_permissions "Service Usage (enabling APIs - only relevant for fresh setup)" \
+  "serviceusage.services.enable,serviceusage.services.get"
