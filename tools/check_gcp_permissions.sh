@@ -10,10 +10,6 @@
 #   ./check_gcp_permissions.sh > teammate.txt   # run by the teammate
 #   diff me.txt teammate.txt
 #
-# There is no `gcloud projects test-iam-permissions` command, so this calls
-# the Cloud Resource Manager `testIamPermissions` API directly via curl using
-# a gcloud-issued access token.
-#
 # Usage: ./check_gcp_permissions.sh
 
 set -e
