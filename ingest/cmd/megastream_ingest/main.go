@@ -320,10 +320,10 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				if len(msgs) > 0 {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
 					count, err := indexPosts(batchCtx, msgs, esClient, dryRun, logger)
+					processedCount += count
 					if err != nil {
 						logger.Error("Failed to index batch before account deletion: %v", err)
 					} else {
-						processedCount += count
 						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
 						if processedCount%1000 == 0 {
 							if stateManager.CheckForNewerInstance(myStartTime) {
@@ -449,10 +449,10 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				if len(msgs) >= batchSize {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
 					count, err := indexPosts(batchCtx, msgs, esClient, dryRun, logger)
+					processedCount += count
 					if err != nil {
 						logger.Error("Failed to bulk index batch: %v", err)
 					} else {
-						processedCount += count
 						if lastMsg := msgs[len(msgs)-1]; lastMsg.GetTimeUs() > 0 {
 							logger.Metric("freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
 						}
@@ -517,10 +517,10 @@ cleanup:
 	// Index remaining documents in batch
 	if len(msgs) > 0 {
 		count, err := indexPosts(cleanupCtx, msgs, esClient, dryRun, logger)
+		processedCount += count
 		if err != nil {
 			logger.Error("Failed to bulk index final batch: %v", err)
 		} else {
-			processedCount += count
 			if dryRun {
 				logger.Debug("Dry-run: Would index final batch: %d documents", count)
 			} else {
@@ -620,7 +620,6 @@ func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *
 
 	if len(postsBatch) > 0 {
 		if err := common.BulkIndex(ctx, esClient, "posts", postsBatch, dryRun, logger); err != nil {
-			logger.Error("Failed to bulk index posts: %v", err)
 			firstErr = err
 		} else {
 			indexedCount += len(postsBatch)
@@ -628,7 +627,6 @@ func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *
 	}
 	if len(repliesBatch) > 0 {
 		if err := common.BulkIndex(ctx, esClient, "replies", repliesBatch, dryRun, logger); err != nil {
-			logger.Error("Failed to bulk index replies: %v", err)
 			if firstErr == nil {
 				firstErr = err
 			}
