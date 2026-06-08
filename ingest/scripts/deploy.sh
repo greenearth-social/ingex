@@ -388,13 +388,11 @@ deploy_extract_job() {
     # Set extraction parameters based on environment
     local max_records
     local window_minutes
-    local indices
     local destination_bucket
 
     max_records=1000000      # 1M records
     window_minutes=33       # ~1/2 hour
-    indices="posts,likes,hashtags,replies"
-    log_info "$GE_ENVIRONMENT environment: 1M max records, approx. 30 min window, indices: posts,likes,hashtags"
+    log_info "$GE_ENVIRONMENT environment: 1M max records, approx. 30 min window, indices: posts,likes,hashtags,replies"
     destination_bucket="$GE_GCP_PROJECT_ID-ingex-extract-$GE_ENVIRONMENT"
 
     # Prepare source directory (similar to expiry job)
