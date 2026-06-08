@@ -537,7 +537,7 @@ func parseIndices(indicesStr string) []string {
 func ParseIndexType(indexName string) (IndexType, error) {
 	lowerName := strings.ToLower(indexName)
 
-	if strings.Contains(lowerName, "repl") {
+	if strings.Contains(lowerName, "replies") {
 		return IndexTypeReplies, nil
 	}
 
