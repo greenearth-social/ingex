@@ -615,18 +615,29 @@ func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *
 		}
 	}
 
+	indexedCount := 0
+	var firstErr error
+
 	if len(postsBatch) > 0 {
 		if err := common.BulkIndex(ctx, esClient, "posts", postsBatch, dryRun, logger); err != nil {
-			return 0, fmt.Errorf("failed to bulk index posts: %w", err)
+			logger.Error("Failed to bulk index posts: %v", err)
+			firstErr = err
+		} else {
+			indexedCount += len(postsBatch)
 		}
 	}
 	if len(repliesBatch) > 0 {
 		if err := common.BulkIndex(ctx, esClient, "replies", repliesBatch, dryRun, logger); err != nil {
-			return 0, fmt.Errorf("failed to bulk index replies: %w", err)
+			logger.Error("Failed to bulk index replies: %v", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		} else {
+			indexedCount += len(repliesBatch)
 		}
 	}
 
-	return len(postsBatch) + len(repliesBatch), nil
+	return indexedCount, firstErr
 }
 
 // handleAccountDeletion handles account deletion events by querying and deleting all posts and likes
