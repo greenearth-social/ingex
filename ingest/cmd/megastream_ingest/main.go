@@ -21,8 +21,6 @@ import (
 	"github.com/greenearth/ingest/internal/megastream_ingest"
 )
 
-// TODO: Move to multithreaded implementation
-
 func main() {
 	// Parse command line flags
 	dryRun := flag.Bool("dry-run", false, "Run in dry-run mode (no writes to Elasticsearch)")
