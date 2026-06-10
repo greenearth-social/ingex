@@ -690,7 +690,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 						}
 
 						for _, alias := range []string{"posts", "replies"} {
-							if err := common.BulkUpdatePostLikeCounts(ctx, esClient, alias, updates, dryRun, logger); err != nil {
+							if err := common.BulkUpdateLikeCounts(ctx, esClient, alias, updates, dryRun, logger); err != nil {
 								logger.Error("Worker %d: Failed to decrement post like counts in %s: %v", id, alias, err)
 								// Don't set success=false - this is a secondary operation
 							}
@@ -722,7 +722,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 				}
 
 				for _, alias := range []string{"posts", "replies"} {
-					if err := common.BulkUpdatePostLikeCounts(ctx, esClient, alias, updates, dryRun, logger); err != nil {
+					if err := common.BulkUpdateLikeCounts(ctx, esClient, alias, updates, dryRun, logger); err != nil {
 						logger.Error("Worker %d: Failed to update post like counts in %s: %v", id, alias, err)
 						// Don't set success=false - this is a secondary operation
 					}

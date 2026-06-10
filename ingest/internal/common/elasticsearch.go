@@ -1423,9 +1423,9 @@ func aggregateLikeCountUpdates(updates []LikeCountUpdate) map[string]int {
 	return aggregated
 }
 
-// BulkUpdatePostLikeCounts updates like_count fields on posts using the ES update API
+// BulkUpdateLikeCounts updates like_count fields on documents using the ES update API.
 // Routes each update to the correct shard by extracting the author DID from the AT-URI.
-func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) error {
+func BulkUpdateLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) error {
 	if len(updates) == 0 {
 		return nil
 	}
