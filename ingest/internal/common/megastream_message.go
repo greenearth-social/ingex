@@ -3,6 +3,8 @@ package common
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/greenearth/ingest/internal/embeddings"
 )
 
 // MegaStreamMessage defines the interface for processing messages from the MegaStream database
@@ -272,14 +274,14 @@ func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *Inges
 
 	if textEmbeddings, ok := inferences["text_embeddings"].(map[string]interface{}); ok {
 		if embL12, ok := textEmbeddings["all-MiniLM-L12-v2"].(string); ok {
-			if decoded, err := decodeEmbedding(embL12); err == nil {
+			if decoded, err := embeddings.Decode(embL12); err == nil {
 				m.embeddings["all_MiniLM_L12_v2"] = decoded
 			} else {
 				logger.Debug("Failed to decode L12 embedding for %s: %v", m.atURI, err)
 			}
 		}
 		if embL6, ok := textEmbeddings["all-MiniLM-L6-v2"].(string); ok {
-			if decoded, err := decodeEmbedding(embL6); err == nil {
+			if decoded, err := embeddings.Decode(embL6); err == nil {
 				m.embeddings["all_MiniLM_L6_v2"] = decoded
 			} else {
 				logger.Debug("Failed to decode L6 embedding for %s: %v", m.atURI, err)
@@ -302,7 +304,7 @@ func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *Inges
 
 	if embeddingsMap, ok := audioTranscription["embeddings"].(map[string]interface{}); ok {
 		if embGemma, ok := embeddingsMap["google/embeddinggemma-300m"].(string); ok {
-			if decoded, err := decodeEmbedding(embGemma); err == nil {
+			if decoded, err := embeddings.Decode(embGemma); err == nil {
 				m.embeddings["google_embeddinggemma_300m"] = decoded
 			} else {
 				logger.Debug("Failed to decode embeddinggemma-300m for %s: %v", m.atURI, err)
