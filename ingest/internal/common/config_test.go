@@ -155,6 +155,12 @@ func clearEnvVars() {
 		"GE_GCP_PROJECT_ID",
 		"GE_GCP_REGION",
 		"GE_ENVIRONMENT",
+		"GE_INFERENCE_BASE_URL",
+		"GE_INFERENCE_API_KEY",
+		"GE_INFERENCE_TIMEOUT",
+		"GE_INFERENCE_CHUNK_SIZE",
+		"GE_INFERENCE_MAX_CONCURRENCY",
+		"GE_INFERENCE_RETRY_MAX",
 		"PORT",
 	}
 
@@ -167,5 +173,62 @@ func setEnvForTest(t *testing.T, key, value string) {
 	t.Helper()
 	if err := os.Setenv(key, value); err != nil {
 		t.Fatalf("Failed to set environment variable %s: %v", key, err)
+	}
+}
+
+func TestLoadConfig_InferenceDefaults(t *testing.T) {
+	clearEnvVars()
+
+	config := LoadConfig()
+
+	if config.InferenceBaseURL != "" {
+		t.Errorf("Expected default InferenceBaseURL to be empty (disabled), got %s", config.InferenceBaseURL)
+	}
+	if config.InferenceAPIKey != "" {
+		t.Errorf("Expected default InferenceAPIKey to be empty, got %s", config.InferenceAPIKey)
+	}
+	if config.InferenceTimeout != 10*time.Second {
+		t.Errorf("Expected default InferenceTimeout to be 10s, got %v", config.InferenceTimeout)
+	}
+	if config.InferenceChunkSize != 1024 {
+		t.Errorf("Expected default InferenceChunkSize to be 1024, got %d", config.InferenceChunkSize)
+	}
+	if config.InferenceMaxConcurrency != 8 {
+		t.Errorf("Expected default InferenceMaxConcurrency to be 8, got %d", config.InferenceMaxConcurrency)
+	}
+	if config.InferenceRetryMax != 3 {
+		t.Errorf("Expected default InferenceRetryMax to be 3, got %d", config.InferenceRetryMax)
+	}
+}
+
+func TestLoadConfig_InferenceFromEnvironment(t *testing.T) {
+	setEnvForTest(t, "GE_INFERENCE_BASE_URL", "https://inference-stage.greenearth.social")
+	setEnvForTest(t, "GE_INFERENCE_API_KEY", "test-key")
+	setEnvForTest(t, "GE_INFERENCE_TIMEOUT", "30s")
+	setEnvForTest(t, "GE_INFERENCE_CHUNK_SIZE", "256")
+	setEnvForTest(t, "GE_INFERENCE_MAX_CONCURRENCY", "16")
+	setEnvForTest(t, "GE_INFERENCE_RETRY_MAX", "5")
+
+	defer clearEnvVars()
+
+	config := LoadConfig()
+
+	if config.InferenceBaseURL != "https://inference-stage.greenearth.social" {
+		t.Errorf("Expected InferenceBaseURL from env, got %s", config.InferenceBaseURL)
+	}
+	if config.InferenceAPIKey != "test-key" {
+		t.Errorf("Expected InferenceAPIKey from env, got %s", config.InferenceAPIKey)
+	}
+	if config.InferenceTimeout != 30*time.Second {
+		t.Errorf("Expected InferenceTimeout from env to be 30s, got %v", config.InferenceTimeout)
+	}
+	if config.InferenceChunkSize != 256 {
+		t.Errorf("Expected InferenceChunkSize from env to be 256, got %d", config.InferenceChunkSize)
+	}
+	if config.InferenceMaxConcurrency != 16 {
+		t.Errorf("Expected InferenceMaxConcurrency from env to be 16, got %d", config.InferenceMaxConcurrency)
+	}
+	if config.InferenceRetryMax != 5 {
+		t.Errorf("Expected InferenceRetryMax from env to be 5, got %d", config.InferenceRetryMax)
 	}
 }
