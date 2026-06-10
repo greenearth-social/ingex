@@ -654,7 +654,7 @@ func handleAccountDeletion(
 	return nil
 }
 
-// processAccountDocDeletions processes post deletions in batches for account deletion
+// processAccountDocDeletions processes post/reply deletions in batches for account deletion
 func processAccountDocDeletions(
 	ctx context.Context,
 	postAtURIs []string,
