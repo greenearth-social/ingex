@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -319,24 +320,20 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Flush post creation batch
 				if len(msgs) > 0 {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count, err := indexPosts(batchCtx, msgs, esClient, dryRun, logger)
+					count := indexPosts(batchCtx, msgs, esClient, dryRun, logger, "account deletion flush")
 					processedCount += count
-					if err != nil {
-						logger.Error("Failed to index batch before account deletion: %v", err)
+					// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
+					if processedCount%1000 == 0 {
+						if stateManager.CheckForNewerInstance(myStartTime) {
+							logger.Info("Newer instance detected, exiting")
+							cancelBatchCtx()
+							goto cleanup
+						}
+					}
+					if dryRun {
+						logger.Info("Dry-run: Would index batch before account deletion: %d documents", count)
 					} else {
-						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
-						if processedCount%1000 == 0 {
-							if stateManager.CheckForNewerInstance(myStartTime) {
-								logger.Info("Newer instance detected, exiting")
-								cancelBatchCtx()
-								goto cleanup
-							}
-						}
-						if dryRun {
-							logger.Info("Dry-run: Would index batch before account deletion: %d documents", count)
-						} else {
-							logger.Info("Indexed batch before account deletion: %d documents", count)
-						}
+						logger.Info("Indexed batch before account deletion: %d documents", count)
 					}
 					msgs = msgs[:0]
 
@@ -448,31 +445,27 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 				if len(msgs) >= batchSize {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count, err := indexPosts(batchCtx, msgs, esClient, dryRun, logger)
+					count := indexPosts(batchCtx, msgs, esClient, dryRun, logger, "main batch loop")
 					processedCount += count
-					if err != nil {
-						logger.Error("Failed to bulk index batch: %v", err)
+					if lastMsg := msgs[len(msgs)-1]; lastMsg.GetTimeUs() > 0 {
+						logger.Metric("freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
+					}
+					// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
+					if processedCount%1000 == 0 {
+						if stateManager.CheckForNewerInstance(myStartTime) {
+							logger.Info("Newer instance detected, exiting")
+							cancelBatchCtx()
+							goto cleanup
+						}
+					}
+					if dryRun {
+						logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", count, processedCount, deletedCount, skippedCount)
 					} else {
-						if lastMsg := msgs[len(msgs)-1]; lastMsg.GetTimeUs() > 0 {
-							logger.Metric("freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
-						}
-						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
-						if processedCount%1000 == 0 {
-							if stateManager.CheckForNewerInstance(myStartTime) {
-								logger.Info("Newer instance detected, exiting")
-								cancelBatchCtx()
-								goto cleanup
-							}
-						}
-						if dryRun {
-							logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", count, processedCount, deletedCount, skippedCount)
-						} else {
-							logger.Debug("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", count, processedCount, deletedCount, skippedCount)
-						}
-						// Log info every 100 batches (~10k documents)
-						if (processedCount / count % 100) == 0 {
-							logger.Info("Progress: %d documents processed (deleted: %d, skipped: %d)", processedCount, deletedCount, skippedCount)
-						}
+						logger.Debug("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", count, processedCount, deletedCount, skippedCount)
+					}
+					// Log info every 100 batches (~10k documents)
+					if count > 0 && (processedCount/count%100) == 0 {
+						logger.Info("Progress: %d documents processed (deleted: %d, skipped: %d)", processedCount, deletedCount, skippedCount)
 					}
 					msgs = msgs[:0]
 
@@ -516,16 +509,12 @@ cleanup:
 
 	// Index remaining documents in batch
 	if len(msgs) > 0 {
-		count, err := indexPosts(cleanupCtx, msgs, esClient, dryRun, logger)
+		count := indexPosts(cleanupCtx, msgs, esClient, dryRun, logger, "cleanup")
 		processedCount += count
-		if err != nil {
-			logger.Error("Failed to bulk index final batch: %v", err)
+		if dryRun {
+			logger.Debug("Dry-run: Would index final batch: %d documents", count)
 		} else {
-			if dryRun {
-				logger.Debug("Dry-run: Would index final batch: %d documents", count)
-			} else {
-				logger.Debug("Indexed final batch: %d documents", count)
-			}
+			logger.Debug("Indexed final batch: %d documents", count)
 		}
 	}
 
@@ -596,11 +585,12 @@ func postAliasFromDoc(doc common.ElasticsearchDoc) string {
 }
 
 // indexPosts creates Elasticsearch documents from messages and indexes them
-// Like counts start at 0 and are incremented by jetstream when likes arrive
-// Returns the number of documents indexed
-func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, dryRun bool, logger *common.IngestLogger) (int, error) {
+// concurrently — posts and replies are sent to ES in parallel goroutines.
+// Like counts start at 0 and are incremented by jetstream when likes arrive.
+// Returns the number of documents successfully indexed.
+func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, dryRun bool, logger *common.IngestLogger, batchContext string) int {
 	if len(msgs) == 0 {
-		return 0, nil
+		return 0
 	}
 
 	postsBatch := make([]common.ElasticsearchDoc, 0, len(msgs))
@@ -615,27 +605,38 @@ func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *
 		}
 	}
 
-	indexedCount := 0
-	var firstErr error
+	var (
+		postsIndexed   int
+		repliesIndexed int
+		wg             sync.WaitGroup
+	)
 
 	if len(postsBatch) > 0 {
-		if err := common.BulkIndex(ctx, esClient, "posts", postsBatch, dryRun, logger); err != nil {
-			firstErr = err
-		} else {
-			indexedCount += len(postsBatch)
-		}
-	}
-	if len(repliesBatch) > 0 {
-		if err := common.BulkIndex(ctx, esClient, "replies", repliesBatch, dryRun, logger); err != nil {
-			if firstErr == nil {
-				firstErr = err
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := common.BulkIndex(ctx, esClient, "posts", postsBatch, dryRun, logger); err != nil {
+				logger.Error("[%s] Failed to bulk index posts: %v", batchContext, err)
+			} else {
+				postsIndexed = len(postsBatch)
 			}
-		} else {
-			indexedCount += len(repliesBatch)
-		}
+		}()
 	}
 
-	return indexedCount, firstErr
+	if len(repliesBatch) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := common.BulkIndex(ctx, esClient, "replies", repliesBatch, dryRun, logger); err != nil {
+				logger.Error("[%s] Failed to bulk index replies: %v", batchContext, err)
+			} else {
+				repliesIndexed = len(repliesBatch)
+			}
+		}()
+	}
+
+	wg.Wait()
+	return postsIndexed + repliesIndexed
 }
 
 // handleAccountDeletion handles account deletion events by querying and deleting all posts and likes
