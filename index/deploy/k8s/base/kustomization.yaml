@@ -16,6 +16,8 @@ resources:
   - templates/likes-ilm-index-template.yaml
   - templates/post-tombstones-ilm-index-template.yaml
   - templates/like-tombstones-ilm-index-template.yaml
+  - templates/replies-ilm-index-template.yaml
+  - templates/reply-tombstones-ilm-index-template.yaml
   - update-recent-alias-cronjob.yaml
 
 configMapGenerator:
@@ -48,6 +50,8 @@ configMapGenerator:
       - likes_index_replicas=0
       - tombstones_index_shards=1
       - tombstones_index_replicas=0
+      - replies_index_shards=1
+      - replies_index_replicas=0
       - ilm_delete_age=30m
       - index_period=10min
 
@@ -146,6 +150,20 @@ vars:
       apiVersion: v1
     fieldref:
       fieldpath: data.tombstones_index_replicas
+  - name: REPLIES_INDEX_SHARDS
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.replies_index_shards
+  - name: REPLIES_INDEX_REPLICAS
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.replies_index_replicas
   - name: ILM_DELETE_AGE
     objref:
       kind: ConfigMap

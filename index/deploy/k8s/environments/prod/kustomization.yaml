@@ -128,5 +128,7 @@ configMapGenerator:
       - likes_index_replicas=1
       - tombstones_index_shards=3
       - tombstones_index_replicas=1
+      - replies_index_shards=7
+      - replies_index_replicas=1
       - ilm_delete_age=60d
       - index_period=week

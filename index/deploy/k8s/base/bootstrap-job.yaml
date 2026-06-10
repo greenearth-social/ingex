@@ -52,6 +52,11 @@ spec:
             -H "Content-Type: application/json" \
             -d "$ILM_DELETE_POLICY"
 
+          curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/replies_ilm_policy" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d "$ILM_DELETE_POLICY"
+
           curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/likes_ilm_policy" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
@@ -134,6 +139,20 @@ spec:
             -d @/templates/post-tombstones-ilm-index-template.json
           echo "post_tombstones_ilm_template completed!"
 
+          echo "Applying replies_ilm_template template..."
+          curl -k -X PUT "https://greenearth-es-http:9200/_index_template/replies_ilm_template" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d @/templates/replies-ilm-index-template.json
+          echo "replies_ilm_template completed!"
+
+          echo "Applying reply_tombstones_ilm_template template..."
+          curl -k -X PUT "https://greenearth-es-http:9200/_index_template/reply_tombstones_ilm_template" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d @/templates/reply-tombstones-ilm-index-template.json
+          echo "reply_tombstones_ilm_template completed!"
+
           echo "Applying like_tombstones_ilm_template template..."
           curl -k -X PUT "https://greenearth-es-http:9200/_index_template/like_tombstones_ilm_template" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
@@ -184,6 +203,10 @@ spec:
               name: post-tombstones-ilm-index-template
           - configMap:
               name: like-tombstones-ilm-index-template
+          - configMap:
+              name: replies-ilm-index-template
+          - configMap:
+              name: reply-tombstones-ilm-index-template
       - name: aliases
         projected:
           sources:

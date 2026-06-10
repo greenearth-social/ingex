@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,8 +20,6 @@ import (
 	"github.com/greenearth/ingest/internal/common"
 	"github.com/greenearth/ingest/internal/megastream_ingest"
 )
-
-// TODO: Move to multithreaded implementation
 
 func main() {
 	// Parse command line flags
@@ -220,7 +219,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		ensureIndices := func() error {
 			indexCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			for _, alias := range []string{"posts", "post_tombstones"} {
+			for _, alias := range []string{"posts", "post_tombstones", "replies", "reply_tombstones"} {
 				name := common.CurrentIndexName(alias, config.IndexPeriod)
 				if err := common.EnsureIndex(indexCtx, esClient, name, alias, logger); err != nil {
 					return fmt.Errorf("failed to ensure index for %s: %w", alias, err)
@@ -319,24 +318,20 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Flush post creation batch
 				if len(msgs) > 0 {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count, err := indexPosts(batchCtx, msgs, esClient, dryRun, logger)
-					if err != nil {
-						logger.Error("Failed to index batch before account deletion: %v", err)
+					count := indexDocuments(batchCtx, msgs, esClient, dryRun, logger, "account deletion flush")
+					processedCount += count
+					// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
+					if processedCount%1000 == 0 {
+						if stateManager.CheckForNewerInstance(myStartTime) {
+							logger.Info("Newer instance detected, exiting")
+							cancelBatchCtx()
+							goto cleanup
+						}
+					}
+					if dryRun {
+						logger.Info("Dry-run: Would index batch before account deletion: %d documents", count)
 					} else {
-						processedCount += count
-						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
-						if processedCount%1000 == 0 {
-							if stateManager.CheckForNewerInstance(myStartTime) {
-								logger.Info("Newer instance detected, exiting")
-								cancelBatchCtx()
-								goto cleanup
-							}
-						}
-						if dryRun {
-							logger.Info("Dry-run: Would index batch before account deletion: %d documents", count)
-						} else {
-							logger.Info("Indexed batch before account deletion: %d documents", count)
-						}
+						logger.Info("Indexed batch before account deletion: %d documents", count)
 					}
 					msgs = msgs[:0]
 
@@ -357,25 +352,16 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Flush post deletion batch (tombstones + deletes)
 				if len(tombstoneBatch) > 0 {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					if err := common.BulkIndexPostTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
-						logger.Error("Failed to bulk index tombstones before account deletion: %v", err)
-					} else {
-						if dryRun {
-							logger.Debug("Dry-run: Would index tombstones before account deletion: %d", len(tombstoneBatch))
-						} else {
-							logger.Debug("Indexed tombstones before account deletion: %d", len(tombstoneBatch))
-						}
-					}
-					if err := common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
-						logger.Error("Failed to bulk delete posts before account deletion: %v", err)
-					} else {
-						deletedCount += len(deleteBatch)
-						if dryRun {
-							logger.Debug("Dry-run: Would delete posts before account deletion: %d", len(deleteBatch))
-						} else {
-							logger.Debug("Deleted posts before account deletion: %d", len(deleteBatch))
-						}
-					}
+					var wg sync.WaitGroup
+					wg.Add(2)
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "reply_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
+					wg.Wait()
+					wg.Add(2)
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "posts", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "replies", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
+					wg.Wait()
+					deletedCount += len(deleteBatch)
 					tombstoneBatch = tombstoneBatch[:0]
 					deleteBatch = deleteBatch[:0]
 					cancelBatchCtx()
@@ -396,26 +382,16 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 				if len(tombstoneBatch) >= batchSize {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					if err := common.BulkIndexPostTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
-						logger.Error("Failed to bulk index tombstones: %v", err)
-					} else {
-						if dryRun {
-							logger.Debug("Dry-run: Would index %d tombstones", len(tombstoneBatch))
-						} else {
-							logger.Debug("Indexed %d tombstones", len(tombstoneBatch))
-						}
-					}
-
-					if err := common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
-						logger.Error("Failed to bulk delete posts: %v", err)
-					} else {
-						deletedCount += len(deleteBatch)
-						if dryRun {
-							logger.Debug("Dry-run: Would delete batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
-						} else {
-							logger.Debug("Deleted batch: %d posts (total deleted: %d)", len(deleteBatch), deletedCount)
-						}
-					}
+					var wg sync.WaitGroup
+					wg.Add(2)
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "reply_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
+					wg.Wait()
+					wg.Add(2)
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "posts", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "replies", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
+					wg.Wait()
+					deletedCount += len(deleteBatch)
 
 					tombstoneBatch = tombstoneBatch[:0]
 					deleteBatch = deleteBatch[:0]
@@ -440,31 +416,27 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 				if len(msgs) >= batchSize {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count, err := indexPosts(batchCtx, msgs, esClient, dryRun, logger)
-					if err != nil {
-						logger.Error("Failed to bulk index batch: %v", err)
+					count := indexDocuments(batchCtx, msgs, esClient, dryRun, logger, "main batch loop")
+					processedCount += count
+					if lastMsg := msgs[len(msgs)-1]; lastMsg.GetTimeUs() > 0 {
+						logger.Metric("freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
+					}
+					// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
+					if processedCount%1000 == 0 {
+						if stateManager.CheckForNewerInstance(myStartTime) {
+							logger.Info("Newer instance detected, exiting")
+							cancelBatchCtx()
+							goto cleanup
+						}
+					}
+					if dryRun {
+						logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", count, processedCount, deletedCount, skippedCount)
 					} else {
-						processedCount += count
-						if lastMsg := msgs[len(msgs)-1]; lastMsg.GetTimeUs() > 0 {
-							logger.Metric("freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
-						}
-						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
-						if processedCount%1000 == 0 {
-							if stateManager.CheckForNewerInstance(myStartTime) {
-								logger.Info("Newer instance detected, exiting")
-								cancelBatchCtx()
-								goto cleanup
-							}
-						}
-						if dryRun {
-							logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", count, processedCount, deletedCount, skippedCount)
-						} else {
-							logger.Debug("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", count, processedCount, deletedCount, skippedCount)
-						}
-						// Log info every 100 batches (~10k documents)
-						if (processedCount / count % 100) == 0 {
-							logger.Info("Progress: %d documents processed (deleted: %d, skipped: %d)", processedCount, deletedCount, skippedCount)
-						}
+						logger.Debug("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", count, processedCount, deletedCount, skippedCount)
+					}
+					// Log info every 100 batches (~10k documents)
+					if count > 0 && (processedCount/count%100) == 0 {
+						logger.Info("Progress: %d documents processed (deleted: %d, skipped: %d)", processedCount, deletedCount, skippedCount)
 					}
 					msgs = msgs[:0]
 
@@ -508,16 +480,12 @@ cleanup:
 
 	// Index remaining documents in batch
 	if len(msgs) > 0 {
-		count, err := indexPosts(cleanupCtx, msgs, esClient, dryRun, logger)
-		if err != nil {
-			logger.Error("Failed to bulk index final batch: %v", err)
+		count := indexDocuments(cleanupCtx, msgs, esClient, dryRun, logger, "cleanup")
+		processedCount += count
+		if dryRun {
+			logger.Debug("Dry-run: Would index final batch: %d documents", count)
 		} else {
-			processedCount += count
-			if dryRun {
-				logger.Debug("Dry-run: Would index final batch: %d documents", count)
-			} else {
-				logger.Debug("Indexed final batch: %d documents", count)
-			}
+			logger.Debug("Indexed final batch: %d documents", count)
 		}
 	}
 
@@ -548,51 +516,84 @@ cleanup:
 
 	// Index remaining tombstones and delete posts
 	if len(tombstoneBatch) > 0 {
-		if err := common.BulkIndexPostTombstones(cleanupCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
-			logger.Error("Failed to bulk index final tombstone batch: %v", err)
-		} else {
-			if dryRun {
-				logger.Debug("Dry-run: Would index final batch: %d tombstones", len(tombstoneBatch))
-			} else {
-				logger.Debug("Indexed final batch: %d tombstones", len(tombstoneBatch))
-			}
-		}
-
-		if err := common.BulkDelete(cleanupCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
-			logger.Error("Failed to bulk delete final batch: %v", err)
-		} else {
-			deletedCount += len(deleteBatch)
-			if dryRun {
-				logger.Debug("Dry-run: Would delete final batch: %d posts", len(deleteBatch))
-			} else {
-				logger.Debug("Deleted final batch: %d posts", len(deleteBatch))
-			}
-		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go common.BulkIndexWorker(&wg, cleanupCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
+		go common.BulkIndexWorker(&wg, cleanupCtx, esClient, "reply_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
+		wg.Wait()
+		wg.Add(2)
+		go common.BulkIndexWorker(&wg, cleanupCtx, esClient, "posts", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
+		go common.BulkIndexWorker(&wg, cleanupCtx, esClient, "replies", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
+		wg.Wait()
+		deletedCount += len(deleteBatch)
 	}
 
 	logger.Info("Spooler ingestion complete. Processed: %d, Deleted: %d, Skipped: %d, Hashtag updates: %d", processedCount, deletedCount, skippedCount, hashtagCount)
 	return nil
 }
 
-// indexPosts creates Elasticsearch documents from messages and indexes them
-// Like counts start at 0 and are incremented by jetstream when likes arrive
-// Returns the number of documents indexed
-func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, dryRun bool, logger *common.IngestLogger) (int, error) {
+// postAliasFromDoc returns the ES alias for a document.
+// Posts with a non-empty thread_parent_post are replies and go to the replies alias.
+func postAliasFromDoc(doc common.ElasticsearchDoc) string {
+	if doc.ThreadParentPost != "" {
+		return "replies"
+	}
+	return "posts"
+}
+
+// indexDocuments creates Elasticsearch documents from messages and indexes them
+// concurrently — posts and replies are routed to their respective indices in parallel goroutines.
+// Like counts start at 0 and are incremented by jetstream when likes arrive.
+// Returns the number of documents successfully indexed.
+func indexDocuments(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, dryRun bool, logger *common.IngestLogger, batchContext string) int {
 	if len(msgs) == 0 {
-		return 0, nil
+		return 0
 	}
 
-	batch := make([]common.ElasticsearchDoc, 0, len(msgs))
+	postsBatch := make([]common.ElasticsearchDoc, 0, len(msgs))
+	repliesBatch := make([]common.ElasticsearchDoc, 0)
+
 	for _, m := range msgs {
 		doc := common.CreateElasticsearchDoc(m, 0)
-		batch = append(batch, doc)
+		if postAliasFromDoc(doc) == "replies" {
+			repliesBatch = append(repliesBatch, doc)
+		} else {
+			postsBatch = append(postsBatch, doc)
+		}
 	}
 
-	if err := common.BulkIndex(ctx, esClient, "posts", batch, dryRun, logger); err != nil {
-		return 0, fmt.Errorf("failed to bulk index batch: %w", err)
+	var (
+		postsIndexed   int
+		repliesIndexed int
+		wg             sync.WaitGroup
+	)
+
+	if len(postsBatch) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := common.BulkIndex(ctx, esClient, "posts", postsBatch, dryRun, logger); err != nil {
+				logger.Error("[%s] Failed to bulk index posts: %v", batchContext, err)
+			} else {
+				postsIndexed = len(postsBatch)
+			}
+		}()
 	}
 
-	return len(batch), nil
+	if len(repliesBatch) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := common.BulkIndex(ctx, esClient, "replies", repliesBatch, dryRun, logger); err != nil {
+				logger.Error("[%s] Failed to bulk index replies: %v", batchContext, err)
+			} else {
+				repliesIndexed = len(repliesBatch)
+			}
+		}()
+	}
+
+	wg.Wait()
+	return postsIndexed + repliesIndexed
 }
 
 // handleAccountDeletion handles account deletion events by querying and deleting all posts and likes
@@ -618,6 +619,24 @@ func handleAccountDeletion(
 	}
 	logger.Debug("Found %d posts for account deletion (DID: %s)", len(posts), authorDID)
 
+	// Process post deletions
+	if err := processAccountDocDeletions(ctx, posts, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
+		return fmt.Errorf("failed to process post deletions for account (DID: %s): %w", authorDID, err)
+	}
+	*deletedCount += len(posts)
+
+	// Query replies
+	replies, err := common.QueryPostsByAuthorDID(queryCtx, esClient, "replies", authorDID, logger)
+	if err != nil {
+		return fmt.Errorf("failed to query replies for account deletion (DID: %s): %w", authorDID, err)
+	}
+	logger.Debug("Found %d replies for account deletion (DID: %s)", len(replies), authorDID)
+
+	if err := processAccountDocDeletions(ctx, replies, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
+		return fmt.Errorf("failed to process reply deletions for account (DID: %s): %w", authorDID, err)
+	}
+	*deletedCount += len(replies)
+
 	// Query all likes
 	likes, err := common.QueryLikesByAuthorDID(queryCtx, esClient, "likes", authorDID, logger)
 	if err != nil {
@@ -625,24 +644,18 @@ func handleAccountDeletion(
 	}
 	logger.Debug("Found %d likes for account deletion (DID: %s)", len(likes), authorDID)
 
-	// Process post deletions
-	if err := processAccountPostDeletions(ctx, posts, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
-		return fmt.Errorf("failed to process post deletions for account (DID: %s): %w", authorDID, err)
-	}
-	*deletedCount += len(posts)
-
 	// Process like deletions
 	if err := processAccountLikeDeletions(ctx, likes, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
 		return fmt.Errorf("failed to process like deletions for account (DID: %s): %w", authorDID, err)
 	}
 	*deletedCount += len(likes)
 
-	logger.Debug("Completed account deletion for DID: %s (posts: %d, likes: %d)", authorDID, len(posts), len(likes))
+	logger.Debug("Completed account deletion for DID: %s (posts: %d, replies: %d, likes: %d)", authorDID, len(posts), len(replies), len(likes))
 	return nil
 }
 
-// processAccountPostDeletions processes post deletions in batches for account deletion
-func processAccountPostDeletions(
+// processAccountDocDeletions processes post/reply deletions in batches for account deletion
+func processAccountDocDeletions(
 	ctx context.Context,
 	postAtURIs []string,
 	esClient *elasticsearch.Client,
@@ -758,14 +771,43 @@ func flushPostDeletionBatch(
 	batchCtx, cancelBatchCtx := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelBatchCtx()
 
-	// Index tombstones first
-	if err := common.BulkIndexPostTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
-		return fmt.Errorf("failed to bulk index post tombstones: %w", err)
+	// Index tombstones to both post_tombstones and reply_tombstones
+	var postTombstoneErr, replyTombstoneErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		postTombstoneErr = common.BulkIndexPostTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger)
+	}()
+	go func() {
+		defer wg.Done()
+		replyTombstoneErr = common.BulkIndexPostTombstones(batchCtx, esClient, "reply_tombstones", tombstoneBatch, dryRun, logger)
+	}()
+	wg.Wait()
+	if postTombstoneErr != nil {
+		return fmt.Errorf("failed to index tombstones to post_tombstones: %w", postTombstoneErr)
+	}
+	if replyTombstoneErr != nil {
+		return fmt.Errorf("failed to index tombstones to reply_tombstones: %w", replyTombstoneErr)
 	}
 
-	// Then delete posts
-	if err := common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
-		return fmt.Errorf("failed to bulk delete posts: %w", err)
+	// Then delete from both posts and replies
+	var postsDeleteErr, repliesDeleteErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		postsDeleteErr = common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger)
+	}()
+	go func() {
+		defer wg.Done()
+		repliesDeleteErr = common.BulkDelete(batchCtx, esClient, "replies", deleteBatch, dryRun, logger)
+	}()
+	wg.Wait()
+	if postsDeleteErr != nil {
+		return fmt.Errorf("failed to delete from posts: %w", postsDeleteErr)
+	}
+	if repliesDeleteErr != nil {
+		return fmt.Errorf("failed to delete from replies: %w", repliesDeleteErr)
 	}
 
 	return nil

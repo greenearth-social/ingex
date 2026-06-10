@@ -147,7 +147,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		ensureIndices := func() error {
 			indexCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			for _, alias := range []string{"likes", "like_tombstones", "posts"} {
+			for _, alias := range []string{"likes", "like_tombstones", "posts", "replies"} {
 				name := common.CurrentIndexName(alias, config.IndexPeriod)
 				if err := common.EnsureIndex(indexCtx, esClient, name, alias, logger); err != nil {
 					return fmt.Errorf("failed to ensure index for %s: %w", alias, err)
@@ -689,10 +689,11 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 							}
 						}
 
-						if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
-							logger.Error("Worker %d: Failed to decrement post like counts: %v", id, err)
-							// Don't set success=false - this is a secondary operation
-						}
+						var wg sync.WaitGroup
+						wg.Add(2)
+						go common.BulkIndexWorker(&wg, ctx, esClient, "posts", updates, dryRun, logger, common.BulkUpdateLikeCounts, "decrement like counts in")
+						go common.BulkIndexWorker(&wg, ctx, esClient, "replies", updates, dryRun, logger, common.BulkUpdateLikeCounts, "decrement like counts in")
+						wg.Wait()
 					}
 				}
 			}
@@ -719,10 +720,11 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 					}
 				}
 
-				if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
-					logger.Error("Worker %d: Failed to update post like counts: %v", id, err)
-					// Don't set success=false - this is a secondary operation
-				}
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go common.BulkIndexWorker(&wg, ctx, esClient, "posts", updates, dryRun, logger, common.BulkUpdateLikeCounts, "increment like counts in")
+				go common.BulkIndexWorker(&wg, ctx, esClient, "replies", updates, dryRun, logger, common.BulkUpdateLikeCounts, "increment like counts in")
+				wg.Wait()
 			}
 		}
 

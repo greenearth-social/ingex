@@ -146,7 +146,7 @@ func TestExtractDIDFromATURI(t *testing.T) {
 	}
 }
 
-func TestBulkUpdatePostLikeCounts_DryRun(t *testing.T) {
+func TestBulkUpdateLikeCounts_DryRun(t *testing.T) {
 	logger := NewLogger(false)
 
 	updates := []LikeCountUpdate{
@@ -154,29 +154,29 @@ func TestBulkUpdatePostLikeCounts_DryRun(t *testing.T) {
 	}
 
 	// Dry-run should not error with nil client
-	err := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", updates, true, logger)
+	err := BulkUpdateLikeCounts(context.TODO(), nil, "posts", updates, true, logger)
 	if err != nil {
 		t.Errorf("Expected no error in dry-run mode, got: %v", err)
 	}
 }
 
-func TestBulkUpdatePostLikeCounts_EmptyBatch(t *testing.T) {
+func TestBulkUpdateLikeCounts_EmptyBatch(t *testing.T) {
 	logger := NewLogger(false)
 
 	// Empty batch should not error
-	err := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", []LikeCountUpdate{}, false, logger)
+	err := BulkUpdateLikeCounts(context.TODO(), nil, "posts", []LikeCountUpdate{}, false, logger)
 	if err != nil {
 		t.Errorf("Expected no error for empty batch, got: %v", err)
 	}
 
 	// Nil batch should not error
-	err2 := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", nil, false, logger)
+	err2 := BulkUpdateLikeCounts(context.TODO(), nil, "posts", nil, false, logger)
 	if err2 != nil {
 		t.Errorf("Expected no error for nil batch, got: %v", err2)
 	}
 }
 
-func TestBulkUpdatePostLikeCounts_EmptySubjectURI(t *testing.T) {
+func TestBulkUpdateLikeCounts_EmptySubjectURI(t *testing.T) {
 	logger := NewLogger(false)
 
 	updates := []LikeCountUpdate{
@@ -185,7 +185,7 @@ func TestBulkUpdatePostLikeCounts_EmptySubjectURI(t *testing.T) {
 	}
 
 	// Should return error when all updates have empty subject_uri
-	err := BulkUpdatePostLikeCounts(context.TODO(), nil, "posts", updates, false, logger)
+	err := BulkUpdateLikeCounts(context.TODO(), nil, "posts", updates, false, logger)
 	if err == nil {
 		t.Error("Expected error when all updates have empty subject_uri")
 	}
@@ -195,7 +195,7 @@ func TestBulkUpdatePostLikeCounts_EmptySubjectURI(t *testing.T) {
 	}
 }
 
-func TestBulkUpdatePostLikeCounts_MixedEmptyAndValid(t *testing.T) {
+func TestBulkUpdateLikeCounts_MixedEmptyAndValid(t *testing.T) {
 	updates := []LikeCountUpdate{
 		{SubjectURI: "", Increment: 1},
 		{SubjectURI: "at://valid", Increment: 1},
