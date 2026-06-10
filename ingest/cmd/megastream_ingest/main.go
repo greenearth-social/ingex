@@ -354,48 +354,12 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
 					var wg sync.WaitGroup
 					wg.Add(2)
-					go func() {
-						defer wg.Done()
-						if err := common.BulkIndexPostTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
-							logger.Error("Failed to bulk index tombstones to post_tombstones before account deletion: %v", err)
-						} else if dryRun {
-							logger.Debug("Dry-run: Would index tombstones to post_tombstones before account deletion: %d", len(tombstoneBatch))
-						} else {
-							logger.Debug("Indexed tombstones to post_tombstones before account deletion: %d", len(tombstoneBatch))
-						}
-					}()
-					go func() {
-						defer wg.Done()
-						if err := common.BulkIndexPostTombstones(batchCtx, esClient, "reply_tombstones", tombstoneBatch, dryRun, logger); err != nil {
-							logger.Error("Failed to bulk index tombstones to reply_tombstones before account deletion: %v", err)
-						} else if dryRun {
-							logger.Debug("Dry-run: Would index tombstones to reply_tombstones before account deletion: %d", len(tombstoneBatch))
-						} else {
-							logger.Debug("Indexed tombstones to reply_tombstones before account deletion: %d", len(tombstoneBatch))
-						}
-					}()
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "reply_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
 					wg.Wait()
 					wg.Add(2)
-					go func() {
-						defer wg.Done()
-						if err := common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
-							logger.Error("Failed to bulk delete from posts before account deletion: %v", err)
-						} else if dryRun {
-							logger.Debug("Dry-run: Would delete from posts before account deletion: %d", len(deleteBatch))
-						} else {
-							logger.Debug("Deleted from posts before account deletion: %d", len(deleteBatch))
-						}
-					}()
-					go func() {
-						defer wg.Done()
-						if err := common.BulkDelete(batchCtx, esClient, "replies", deleteBatch, dryRun, logger); err != nil {
-							logger.Error("Failed to bulk delete from replies before account deletion: %v", err)
-						} else if dryRun {
-							logger.Debug("Dry-run: Would delete from replies before account deletion: %d", len(deleteBatch))
-						} else {
-							logger.Debug("Deleted from replies before account deletion: %d", len(deleteBatch))
-						}
-					}()
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "posts", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "replies", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
 					wg.Wait()
 					deletedCount += len(deleteBatch)
 					tombstoneBatch = tombstoneBatch[:0]
@@ -420,48 +384,12 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
 					var wg sync.WaitGroup
 					wg.Add(2)
-					go func() {
-						defer wg.Done()
-						if err := common.BulkIndexPostTombstones(batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
-							logger.Error("Failed to bulk index tombstones to post_tombstones: %v", err)
-						} else if dryRun {
-							logger.Debug("Dry-run: Would index %d tombstones to post_tombstones", len(tombstoneBatch))
-						} else {
-							logger.Debug("Indexed %d tombstones to post_tombstones", len(tombstoneBatch))
-						}
-					}()
-					go func() {
-						defer wg.Done()
-						if err := common.BulkIndexPostTombstones(batchCtx, esClient, "reply_tombstones", tombstoneBatch, dryRun, logger); err != nil {
-							logger.Error("Failed to bulk index tombstones to reply_tombstones: %v", err)
-						} else if dryRun {
-							logger.Debug("Dry-run: Would index %d tombstones to reply_tombstones", len(tombstoneBatch))
-						} else {
-							logger.Debug("Indexed %d tombstones to reply_tombstones", len(tombstoneBatch))
-						}
-					}()
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "reply_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
 					wg.Wait()
 					wg.Add(2)
-					go func() {
-						defer wg.Done()
-						if err := common.BulkDelete(batchCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
-							logger.Error("Failed to bulk delete from posts: %v", err)
-						} else if dryRun {
-							logger.Debug("Dry-run: Would delete batch: %d docs from posts (total deleted: %d)", len(deleteBatch), deletedCount)
-						} else {
-							logger.Debug("Deleted batch: %d docs from posts (total deleted: %d)", len(deleteBatch), deletedCount)
-						}
-					}()
-					go func() {
-						defer wg.Done()
-						if err := common.BulkDelete(batchCtx, esClient, "replies", deleteBatch, dryRun, logger); err != nil {
-							logger.Error("Failed to bulk delete from replies: %v", err)
-						} else if dryRun {
-							logger.Debug("Dry-run: Would delete batch: %d docs from replies (total deleted: %d)", len(deleteBatch), deletedCount)
-						} else {
-							logger.Debug("Deleted batch: %d docs from replies (total deleted: %d)", len(deleteBatch), deletedCount)
-						}
-					}()
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "posts", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
+					go common.BulkIndexWorker(&wg, batchCtx, esClient, "replies", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
 					wg.Wait()
 					deletedCount += len(deleteBatch)
 
@@ -590,48 +518,12 @@ cleanup:
 	if len(tombstoneBatch) > 0 {
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			if err := common.BulkIndexPostTombstones(cleanupCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger); err != nil {
-				logger.Error("Failed to bulk index final tombstone batch to post_tombstones: %v", err)
-			} else if dryRun {
-				logger.Debug("Dry-run: Would index final batch: %d tombstones to post_tombstones", len(tombstoneBatch))
-			} else {
-				logger.Debug("Indexed final batch: %d tombstones to post_tombstones", len(tombstoneBatch))
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			if err := common.BulkIndexPostTombstones(cleanupCtx, esClient, "reply_tombstones", tombstoneBatch, dryRun, logger); err != nil {
-				logger.Error("Failed to bulk index final tombstone batch to reply_tombstones: %v", err)
-			} else if dryRun {
-				logger.Debug("Dry-run: Would index final batch: %d tombstones to reply_tombstones", len(tombstoneBatch))
-			} else {
-				logger.Debug("Indexed final batch: %d tombstones to reply_tombstones", len(tombstoneBatch))
-			}
-		}()
+		go common.BulkIndexWorker(&wg, cleanupCtx, esClient, "post_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
+		go common.BulkIndexWorker(&wg, cleanupCtx, esClient, "reply_tombstones", tombstoneBatch, dryRun, logger, common.BulkIndexPostTombstones, "index tombstones to")
 		wg.Wait()
 		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			if err := common.BulkDelete(cleanupCtx, esClient, "posts", deleteBatch, dryRun, logger); err != nil {
-				logger.Error("Failed to bulk delete final batch from posts: %v", err)
-			} else if dryRun {
-				logger.Debug("Dry-run: Would delete final batch: %d docs from posts", len(deleteBatch))
-			} else {
-				logger.Debug("Deleted final batch: %d docs from posts", len(deleteBatch))
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			if err := common.BulkDelete(cleanupCtx, esClient, "replies", deleteBatch, dryRun, logger); err != nil {
-				logger.Error("Failed to bulk delete final batch from replies: %v", err)
-			} else if dryRun {
-				logger.Debug("Dry-run: Would delete final batch: %d docs from replies", len(deleteBatch))
-			} else {
-				logger.Debug("Deleted final batch: %d docs from replies", len(deleteBatch))
-			}
-		}()
+		go common.BulkIndexWorker(&wg, cleanupCtx, esClient, "posts", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
+		go common.BulkIndexWorker(&wg, cleanupCtx, esClient, "replies", deleteBatch, dryRun, logger, common.BulkDelete, "delete from")
 		wg.Wait()
 		deletedCount += len(deleteBatch)
 	}
@@ -728,7 +620,7 @@ func handleAccountDeletion(
 	logger.Debug("Found %d posts for account deletion (DID: %s)", len(posts), authorDID)
 
 	// Process post deletions
-	if err := processAccountPostDeletions(ctx, posts, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
+	if err := processAccountDocDeletions(ctx, posts, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
 		return fmt.Errorf("failed to process post deletions for account (DID: %s): %w", authorDID, err)
 	}
 	*deletedCount += len(posts)
@@ -740,7 +632,7 @@ func handleAccountDeletion(
 	}
 	logger.Debug("Found %d replies for account deletion (DID: %s)", len(replies), authorDID)
 
-	if err := processAccountPostDeletions(ctx, replies, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
+	if err := processAccountDocDeletions(ctx, replies, esClient, authorDID, msg.GetTimeUs(), dryRun, logger); err != nil {
 		return fmt.Errorf("failed to process reply deletions for account (DID: %s): %w", authorDID, err)
 	}
 	*deletedCount += len(replies)
@@ -758,12 +650,12 @@ func handleAccountDeletion(
 	}
 	*deletedCount += len(likes)
 
-	logger.Debug("Completed account deletion for DID: %s (posts: %d, likes: %d)", authorDID, len(posts), len(likes))
+	logger.Debug("Completed account deletion for DID: %s (posts: %d, replies: %d, likes: %d)", authorDID, len(posts), len(replies), len(likes))
 	return nil
 }
 
-// processAccountPostDeletions processes post deletions in batches for account deletion
-func processAccountPostDeletions(
+// processAccountDocDeletions processes post deletions in batches for account deletion
+func processAccountDocDeletions(
 	ctx context.Context,
 	postAtURIs []string,
 	esClient *elasticsearch.Client,
