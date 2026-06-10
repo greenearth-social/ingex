@@ -691,20 +691,8 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 
 						var wg sync.WaitGroup
 						wg.Add(2)
-						go func() {
-							defer wg.Done()
-							if err := common.BulkUpdateLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
-								logger.Error("Worker %d: Failed to decrement post like counts in posts: %v", id, err)
-								// Don't set success=false - this is a secondary operation
-							}
-						}()
-						go func() {
-							defer wg.Done()
-							if err := common.BulkUpdateLikeCounts(ctx, esClient, "replies", updates, dryRun, logger); err != nil {
-								logger.Error("Worker %d: Failed to decrement post like counts in replies: %v", id, err)
-								// Don't set success=false - this is a secondary operation
-							}
-						}()
+						go common.BulkIndexWorker(&wg, ctx, esClient, "posts", updates, dryRun, logger, common.BulkUpdateLikeCounts, "decrement like counts in")
+						go common.BulkIndexWorker(&wg, ctx, esClient, "replies", updates, dryRun, logger, common.BulkUpdateLikeCounts, "decrement like counts in")
 						wg.Wait()
 					}
 				}
@@ -734,20 +722,8 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 
 				var wg sync.WaitGroup
 				wg.Add(2)
-				go func() {
-					defer wg.Done()
-					if err := common.BulkUpdateLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
-						logger.Error("Worker %d: Failed to update post like counts in posts: %v", id, err)
-						// Don't set success=false - this is a secondary operation
-					}
-				}()
-				go func() {
-					defer wg.Done()
-					if err := common.BulkUpdateLikeCounts(ctx, esClient, "replies", updates, dryRun, logger); err != nil {
-						logger.Error("Worker %d: Failed to update post like counts in replies: %v", id, err)
-						// Don't set success=false - this is a secondary operation
-					}
-				}()
+				go common.BulkIndexWorker(&wg, ctx, esClient, "posts", updates, dryRun, logger, common.BulkUpdateLikeCounts, "increment like counts in")
+				go common.BulkIndexWorker(&wg, ctx, esClient, "replies", updates, dryRun, logger, common.BulkUpdateLikeCounts, "increment like counts in")
 				wg.Wait()
 			}
 		}
