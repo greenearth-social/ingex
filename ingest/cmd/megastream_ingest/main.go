@@ -318,7 +318,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Flush post creation batch
 				if len(msgs) > 0 {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count := indexPosts(batchCtx, msgs, esClient, dryRun, logger, "account deletion flush")
+					count := indexDocuments(batchCtx, msgs, esClient, dryRun, logger, "account deletion flush")
 					processedCount += count
 					// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
 					if processedCount%1000 == 0 {
@@ -488,7 +488,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 				if len(msgs) >= batchSize {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count := indexPosts(batchCtx, msgs, esClient, dryRun, logger, "main batch loop")
+					count := indexDocuments(batchCtx, msgs, esClient, dryRun, logger, "main batch loop")
 					processedCount += count
 					if lastMsg := msgs[len(msgs)-1]; lastMsg.GetTimeUs() > 0 {
 						logger.Metric("freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
@@ -552,7 +552,7 @@ cleanup:
 
 	// Index remaining documents in batch
 	if len(msgs) > 0 {
-		count := indexPosts(cleanupCtx, msgs, esClient, dryRun, logger, "cleanup")
+		count := indexDocuments(cleanupCtx, msgs, esClient, dryRun, logger, "cleanup")
 		processedCount += count
 		if dryRun {
 			logger.Debug("Dry-run: Would index final batch: %d documents", count)
@@ -649,11 +649,11 @@ func postAliasFromDoc(doc common.ElasticsearchDoc) string {
 	return "posts"
 }
 
-// indexPosts creates Elasticsearch documents from messages and indexes them
-// concurrently — posts and replies are sent to ES in parallel goroutines.
+// indexDocuments creates Elasticsearch documents from messages and indexes them
+// concurrently — posts and replies are routed to their respective indices in parallel goroutines.
 // Like counts start at 0 and are incremented by jetstream when likes arrive.
 // Returns the number of documents successfully indexed.
-func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, dryRun bool, logger *common.IngestLogger, batchContext string) int {
+func indexDocuments(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, dryRun bool, logger *common.IngestLogger, batchContext string) int {
 	if len(msgs) == 0 {
 		return 0
 	}
