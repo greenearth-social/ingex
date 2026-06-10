@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/elastic/go-elasticsearch/v9"
 	"github.com/greenearth/ingest/internal/common"
+	"github.com/greenearth/ingest/internal/inference"
 	"github.com/greenearth/ingest/internal/megastream_ingest"
 )
 
@@ -213,6 +214,22 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		return err
 	}
 
+	// Initialize post-tower embedder when the inference service is configured.
+	// A nil embedder disables post embedding generation (AttachPostTowerEmbeddings is a no-op).
+	var embedder *inference.BatchEmbedder
+	if config.InferenceBaseURL != "" && !dryRun {
+		inferenceClient := inference.NewClient(inference.ClientConfig{
+			BaseURL:    config.InferenceBaseURL,
+			APIKey:     config.InferenceAPIKey,
+			Timeout:    config.InferenceTimeout,
+			MaxRetries: config.InferenceRetryMax,
+		}, logger)
+		embedder = inference.NewBatchEmbedder(inferenceClient, config.InferenceChunkSize, config.InferenceMaxConcurrency, logger)
+		logger.Info("Post-tower embeddings enabled (inference service: %s)", config.InferenceBaseURL)
+	} else {
+		logger.Info("Post-tower embeddings disabled (GE_INFERENCE_BASE_URL not set or dry-run)")
+	}
+
 	// Ensure period-based indices exist and are the write target for posts and
 	// post_tombstones. Runs at startup and every minute so that period rollovers
 	// are detected promptly without waiting for the next batch flush.
@@ -319,7 +336,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Flush post creation batch
 				if len(msgs) > 0 {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count, err := indexPosts(batchCtx, msgs, esClient, dryRun, logger)
+					count, err := indexPosts(batchCtx, msgs, esClient, embedder, dryRun, logger)
 					if err != nil {
 						logger.Error("Failed to index batch before account deletion: %v", err)
 					} else {
@@ -440,7 +457,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 				if len(msgs) >= batchSize {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count, err := indexPosts(batchCtx, msgs, esClient, dryRun, logger)
+					count, err := indexPosts(batchCtx, msgs, esClient, embedder, dryRun, logger)
 					if err != nil {
 						logger.Error("Failed to bulk index batch: %v", err)
 					} else {
@@ -508,7 +525,7 @@ cleanup:
 
 	// Index remaining documents in batch
 	if len(msgs) > 0 {
-		count, err := indexPosts(cleanupCtx, msgs, esClient, dryRun, logger)
+		count, err := indexPosts(cleanupCtx, msgs, esClient, embedder, dryRun, logger)
 		if err != nil {
 			logger.Error("Failed to bulk index final batch: %v", err)
 		} else {
@@ -577,7 +594,7 @@ cleanup:
 // indexPosts creates Elasticsearch documents from messages and indexes them
 // Like counts start at 0 and are incremented by jetstream when likes arrive
 // Returns the number of documents indexed
-func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, dryRun bool, logger *common.IngestLogger) (int, error) {
+func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, embedder *inference.BatchEmbedder, dryRun bool, logger *common.IngestLogger) (int, error) {
 	if len(msgs) == 0 {
 		return 0, nil
 	}
@@ -587,6 +604,8 @@ func indexPosts(ctx context.Context, msgs []common.MegaStreamMessage, esClient *
 		doc := common.CreateElasticsearchDoc(m, 0)
 		batch = append(batch, doc)
 	}
+
+	inference.AttachPostTowerEmbeddings(ctx, embedder, batch)
 
 	if err := common.BulkIndex(ctx, esClient, "posts", batch, dryRun, logger); err != nil {
 		return 0, fmt.Errorf("failed to bulk index batch: %w", err)
