@@ -22,7 +22,7 @@ const postTowerPredictPath = "/models/post-tower/predict"
 // ClientConfig configures the inference service client
 type ClientConfig struct {
 	BaseURL        string        // e.g. https://inference-stage.greenearth.social; empty disables the client
-	APIKey         string        // sent as the X-API-Key header
+	APIKey         string //nolint:gosec // G117: struct field name, not a secret value; sent as the X-API-Key header
 	Timeout        time.Duration // per-request HTTP timeout
 	MaxRetries     int           // retries beyond the first attempt
 	RetryBaseDelay time.Duration // base delay for exponential backoff
@@ -136,7 +136,7 @@ func (c *Client) doOnce(ctx context.Context, body []byte) ([][]float32, bool, er
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", c.config.APIKey)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: BaseURL comes from service configuration, not user input
 	if err != nil {
 		return nil, ctx.Err() == nil, fmt.Errorf("inference request failed: %w", err)
 	}
