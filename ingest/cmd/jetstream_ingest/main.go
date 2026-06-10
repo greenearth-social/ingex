@@ -689,12 +689,23 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 							}
 						}
 
-						for _, alias := range []string{"posts", "replies"} {
-							if err := common.BulkUpdateLikeCounts(ctx, esClient, alias, updates, dryRun, logger); err != nil {
-								logger.Error("Worker %d: Failed to decrement post like counts in %s: %v", id, alias, err)
+						var wg sync.WaitGroup
+						wg.Add(2)
+						go func() {
+							defer wg.Done()
+							if err := common.BulkUpdateLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
+								logger.Error("Worker %d: Failed to decrement post like counts in posts: %v", id, err)
 								// Don't set success=false - this is a secondary operation
 							}
-						}
+						}()
+						go func() {
+							defer wg.Done()
+							if err := common.BulkUpdateLikeCounts(ctx, esClient, "replies", updates, dryRun, logger); err != nil {
+								logger.Error("Worker %d: Failed to decrement post like counts in replies: %v", id, err)
+								// Don't set success=false - this is a secondary operation
+							}
+						}()
+						wg.Wait()
 					}
 				}
 			}
@@ -721,12 +732,23 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 					}
 				}
 
-				for _, alias := range []string{"posts", "replies"} {
-					if err := common.BulkUpdateLikeCounts(ctx, esClient, alias, updates, dryRun, logger); err != nil {
-						logger.Error("Worker %d: Failed to update post like counts in %s: %v", id, alias, err)
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					if err := common.BulkUpdateLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
+						logger.Error("Worker %d: Failed to update post like counts in posts: %v", id, err)
 						// Don't set success=false - this is a secondary operation
 					}
-				}
+				}()
+				go func() {
+					defer wg.Done()
+					if err := common.BulkUpdateLikeCounts(ctx, esClient, "replies", updates, dryRun, logger); err != nil {
+						logger.Error("Worker %d: Failed to update post like counts in replies: %v", id, err)
+						// Don't set success=false - this is a secondary operation
+					}
+				}()
+				wg.Wait()
 			}
 		}
 
