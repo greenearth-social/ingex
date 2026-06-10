@@ -86,6 +86,12 @@ data:
                   "dims": 768,
                   "index": true,
                   "similarity": "cosine"
+                },
+                "ge_post_embedding": {
+                  "type": "dense_vector",
+                  "dims": 128,
+                  "index": true,
+                  "similarity": "cosine"
                 }
               }
             },

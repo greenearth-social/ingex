@@ -243,6 +243,18 @@ deploy_megastream_service() {
         aws_secret_key_secret="aws-s3-secret-key-prod"
     fi
 
+    # Inference service for post-tower embeddings (secrets managed by the
+    # inference-service repo). NOTE: the ge_post_embedding dense_vector mapping
+    # must be deployed to the posts index (index/deploy.sh <env> --ctypes schema)
+    # before this service writes the field, or ES will dynamically map it as a
+    # plain float field that cannot serve kNN queries.
+    local inference_api_key_secret="inference-api-key-$GE_ENVIRONMENT"
+    local inference_base_url="https://inference-stage.greenearth.social"
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        inference_base_url="https://inference.greenearth.social"
+    fi
+    inference_base_url="${GE_INFERENCE_BASE_URL:-$inference_base_url}"
+
     # Set max-rewind based on environment
     # Stage: 15 minutes (prevent disk overflow on restart)
     # Prod: 0 (unlimited rewind for data integrity)
@@ -274,7 +286,8 @@ deploy_megastream_service() {
         --set-env-vars="GE_AWS_S3_BUCKET=$GE_AWS_S3_BUCKET" \
         --set-env-vars="GE_AWS_S3_PREFIX=$GE_AWS_S3_PREFIX" \
         --set-env-vars="GE_INDEX_PERIOD=$GE_INDEX_PERIOD" \
-        --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest,GE_AWS_S3_ACCESS_KEY=$aws_access_key_secret:latest,GE_AWS_S3_SECRET_KEY=$aws_secret_key_secret:latest" \
+        --set-env-vars="GE_INFERENCE_BASE_URL=$inference_base_url" \
+        --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest,GE_AWS_S3_ACCESS_KEY=$aws_access_key_secret:latest,GE_AWS_S3_SECRET_KEY=$aws_secret_key_secret:latest,GE_INFERENCE_API_KEY=$inference_api_key_secret:latest" \
         --scaling="$GE_MEGASTREAM_INSTANCES" \
         --cpu=1 \
         --memory=1Gi \

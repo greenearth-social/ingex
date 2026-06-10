@@ -60,6 +60,29 @@ Configuration is done through environment variables and command line flags.
 - `GE_SPOOL_INTERVAL_SEC` - Polling interval in seconds for spool mode (default: `60`)
 - `GE_MEGASTREAM_STATE_FILE` - Path to state file for cursor tracking (default: `.megastream_state.json`)
 
+**Post-Tower Embeddings (optional):**
+
+When `GE_INFERENCE_BASE_URL` is set, the service calls the inference service's
+post tower for each new non-reply post (inputs: the post's
+`all_MiniLM_L12_v2` content embedding and author DID) and stores the resulting
+128-dim post embedding on the posts index as `embeddings.ge_post_embedding`.
+Failures are fail-open: posts are still indexed without the field. Disabled in
+`--dry-run` mode.
+
+- `GE_INFERENCE_BASE_URL` - Inference service base URL (e.g. `https://inference-stage.greenearth.social`); unset disables post embeddings
+- `GE_INFERENCE_API_KEY` - Inference service API key (GSM secret `inference-api-key-{env}`)
+- `GE_INFERENCE_TIMEOUT` - Per-request HTTP timeout (default: `10s`)
+- `GE_INFERENCE_CHUNK_SIZE` - Posts per inference request; must not exceed the server's `GE_INFERENCE_MAX_BATCH` (default: `1024`)
+- `GE_INFERENCE_MAX_CONCURRENCY` - Concurrent inference requests (default: `8`)
+- `GE_INFERENCE_RETRY_MAX` - Retries beyond the first attempt for transient failures (default: `3`)
+
+> **Rollout ordering:** the `ge_post_embedding` dense_vector mapping must be
+> deployed to the posts index template (`index/deploy.sh <env> --ctypes schema`,
+> then wait for the next index rollover or PUT the mapping onto the current
+> write index) *before* deploying this service with `GE_INFERENCE_BASE_URL`
+> set. Otherwise Elasticsearch dynamically maps the field as `float`, which
+> cannot serve kNN queries and requires a reindex to fix.
+
 ## Usage
 
 ### Basic Usage
