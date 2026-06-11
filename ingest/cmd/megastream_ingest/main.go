@@ -294,7 +294,8 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	var tombstoneBatch []common.PostTombstoneDoc
 	var deleteBatch []common.DeleteDoc
 	var hashtagUpdates []common.HashtagUpdate
-	const batchSize = 100
+	const batchSize = 512
+	var pendingFlush *pendingPostFlush
 	processedCount := 0
 	deletedCount := 0
 	skippedCount := 0
@@ -332,6 +333,17 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Flush all pending batches before account deletion
 				// This prevents post creation/deletion events from being processed
 				// after the account deletion (which would be out of order)
+
+				// Drain any in-flight async post flush before proceeding
+				if pendingFlush != nil {
+					flushCount, _, flushErr := drainPendingFlush(pendingFlush)
+					pendingFlush = nil
+					if flushErr != nil {
+						logger.Error("Failed to bulk index batch before account deletion: %v", flushErr)
+					} else {
+						processedCount += flushCount
+					}
+				}
 
 				// Flush post creation batch
 				if len(msgs) > 0 {
@@ -456,36 +468,47 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				hashtagUpdates = append(hashtagUpdates, hashtags...)
 
 				if len(msgs) >= batchSize {
-					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count, err := indexPosts(batchCtx, msgs, esClient, embedder, dryRun, logger)
-					if err != nil {
-						logger.Error("Failed to bulk index batch: %v", err)
-					} else {
-						processedCount += count
-						if lastMsg := msgs[len(msgs)-1]; lastMsg.GetTimeUs() > 0 {
-							logger.Metric("freshness_sec", float64(common.CalculateFreshness(lastMsg.GetTimeUs())))
-						}
-						// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
-						if processedCount%1000 == 0 {
-							if stateManager.CheckForNewerInstance(myStartTime) {
-								logger.Info("Newer instance detected, exiting")
-								cancelBatchCtx()
-								goto cleanup
+					// Drain the previous async post flush and process its result before
+					// dispatching the next batch. By the time a new batch has filled
+					// (batchSize rows), the previous inference + ES write has had the
+					// entire fill window to complete concurrently.
+					if pendingFlush != nil {
+						flushCount, flushLastMsg, flushErr := drainPendingFlush(pendingFlush)
+						pendingFlush = nil
+						if flushErr != nil {
+							logger.Error("Failed to bulk index batch: %v", flushErr)
+						} else {
+							processedCount += flushCount
+							if flushLastMsg != nil && flushLastMsg.GetTimeUs() > 0 {
+								logger.Metric("freshness_sec", float64(common.CalculateFreshness(flushLastMsg.GetTimeUs())))
+							}
+							if processedCount%1000 == 0 {
+								if stateManager.CheckForNewerInstance(myStartTime) {
+									logger.Info("Newer instance detected, exiting")
+									goto cleanup
+								}
+							}
+							if dryRun {
+								logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", flushCount, processedCount, deletedCount, skippedCount)
+							} else {
+								logger.Debug("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", flushCount, processedCount, deletedCount, skippedCount)
+							}
+							if flushCount > 0 && (processedCount/flushCount%100) == 0 {
+								logger.Info("Progress: %d documents processed (deleted: %d, skipped: %d)", processedCount, deletedCount, skippedCount)
 							}
 						}
-						if dryRun {
-							logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", count, processedCount, deletedCount, skippedCount)
-						} else {
-							logger.Debug("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", count, processedCount, deletedCount, skippedCount)
-						}
-						// Log info every 100 batches (~10k documents)
-						if (processedCount / count % 100) == 0 {
-							logger.Info("Progress: %d documents processed (deleted: %d, skipped: %d)", processedCount, deletedCount, skippedCount)
-						}
 					}
-					msgs = msgs[:0]
 
-					// Flush inferences batch when posts batch is flushed
+					// Transfer slice ownership to the goroutine; give the main loop a
+					// fresh backing array so appends don't race with the goroutine.
+					batchMsgs := msgs
+					msgs = make([]common.MegaStreamMessage, 0, batchSize)
+					pendingFlush = dispatchIndexPosts(batchMsgs, esClient, embedder, dryRun, logger)
+
+					// Flush inferences and hashtags synchronously — they are fast
+					// (no inference service call) and should stay ordered with posts.
+					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+
 					if len(inferencesBatch) > 0 {
 						if err := common.BulkIndexInferences(batchCtx, esClient, "inferences", inferencesBatch, dryRun, logger); err != nil {
 							logger.Error("Failed to bulk index inferences: %v", err)
@@ -497,7 +520,6 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						inferencesBatch = inferencesBatch[:0]
 					}
 
-					// Flush hashtag updates when posts batch is flushed
 					if len(hashtagUpdates) > 0 {
 						if err := common.BulkUpdateHashtagCounts(batchCtx, esClient, "hashtags", hashtagUpdates, dryRun, logger); err != nil {
 							logger.Error("Failed to bulk update hashtag counts: %v", err)
@@ -522,6 +544,16 @@ cleanup:
 	// Create a separate context for cleanup operations with a 30-second timeout
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cleanupCancel()
+
+	// Drain any in-flight async post flush before writing the final batch
+	if pendingFlush != nil {
+		flushCount, _, flushErr := drainPendingFlush(pendingFlush)
+		if flushErr != nil {
+			logger.Error("Failed to bulk index in-flight batch during cleanup: %v", flushErr)
+		} else {
+			processedCount += flushCount
+		}
+	}
 
 	// Index remaining documents in batch
 	if len(msgs) > 0 {
@@ -589,6 +621,37 @@ cleanup:
 
 	logger.Info("Spooler ingestion complete. Processed: %d, Deleted: %d, Skipped: %d, Hashtag updates: %d", processedCount, deletedCount, skippedCount, hashtagCount)
 	return nil
+}
+
+type postFlushResult struct {
+	count   int
+	err     error
+	lastMsg common.MegaStreamMessage
+}
+
+type pendingPostFlush struct {
+	ch        <-chan postFlushResult
+	cancelCtx context.CancelFunc
+}
+
+func drainPendingFlush(pending *pendingPostFlush) (int, common.MegaStreamMessage, error) {
+	r := <-pending.ch
+	pending.cancelCtx()
+	return r.count, r.lastMsg, r.err
+}
+
+func dispatchIndexPosts(msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, embedder *inference.BatchEmbedder, dryRun bool, logger *common.IngestLogger) *pendingPostFlush {
+	batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+	ch := make(chan postFlushResult, 1)
+	var lastMsg common.MegaStreamMessage
+	if len(msgs) > 0 {
+		lastMsg = msgs[len(msgs)-1]
+	}
+	go func() {
+		count, err := indexPosts(batchCtx, msgs, esClient, embedder, dryRun, logger)
+		ch <- postFlushResult{count: count, err: err, lastMsg: lastMsg}
+	}()
+	return &pendingPostFlush{ch: ch, cancelCtx: cancelBatchCtx}
 }
 
 // indexPosts creates Elasticsearch documents from messages and indexes them

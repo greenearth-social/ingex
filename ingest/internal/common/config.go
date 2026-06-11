@@ -111,7 +111,7 @@ func LoadConfig() *Config {
 		InferenceBaseURL:           getEnv("GE_INFERENCE_BASE_URL", ""),
 		InferenceAPIKey:            getEnv("GE_INFERENCE_API_KEY", ""),
 		InferenceTimeout:           getEnvDuration("GE_INFERENCE_TIMEOUT", 10*time.Second),
-		InferenceChunkSize:         getEnvInt("GE_INFERENCE_CHUNK_SIZE", 1024),
+		InferenceChunkSize:         getEnvInt("GE_INFERENCE_CHUNK_SIZE", 64),
 		InferenceMaxConcurrency:    getEnvInt("GE_INFERENCE_MAX_CONCURRENCY", 8),
 		InferenceRetryMax:          getEnvInt("GE_INFERENCE_RETRY_MAX", 3),
 	}

@@ -190,8 +190,8 @@ func TestLoadConfig_InferenceDefaults(t *testing.T) {
 	if config.InferenceTimeout != 10*time.Second {
 		t.Errorf("Expected default InferenceTimeout to be 10s, got %v", config.InferenceTimeout)
 	}
-	if config.InferenceChunkSize != 1024 {
-		t.Errorf("Expected default InferenceChunkSize to be 1024, got %d", config.InferenceChunkSize)
+	if config.InferenceChunkSize != 64 {
+		t.Errorf("Expected default InferenceChunkSize to be 64, got %d", config.InferenceChunkSize)
 	}
 	if config.InferenceMaxConcurrency != 8 {
 		t.Errorf("Expected default InferenceMaxConcurrency to be 8, got %d", config.InferenceMaxConcurrency)
