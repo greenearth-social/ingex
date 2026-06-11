@@ -214,10 +214,11 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		return err
 	}
 
-	// Initialize post-tower embedder when the inference service is configured.
-	// A nil embedder disables post embedding generation (AttachPostTowerEmbeddings is a no-op).
+	if config.InferenceBaseURL == "" && !dryRun {
+		return fmt.Errorf("GE_INFERENCE_BASE_URL is required (use --dry-run to skip inference)")
+	}
 	var embedder *inference.BatchEmbedder
-	if config.InferenceBaseURL != "" && !dryRun {
+	if !dryRun {
 		inferenceClient := inference.NewClient(inference.ClientConfig{
 			BaseURL:    config.InferenceBaseURL,
 			APIKey:     config.InferenceAPIKey,
@@ -227,7 +228,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		embedder = inference.NewBatchEmbedder(inferenceClient, config.InferenceChunkSize, config.InferenceMaxConcurrency, logger)
 		logger.Info("Post-tower embeddings enabled (inference service: %s)", config.InferenceBaseURL)
 	} else {
-		logger.Info("Post-tower embeddings disabled (GE_INFERENCE_BASE_URL not set or dry-run)")
+		logger.Info("Post-tower embeddings disabled (dry-run)")
 	}
 
 	// Ensure period-based indices exist and are the write target for posts and
