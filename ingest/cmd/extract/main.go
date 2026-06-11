@@ -206,6 +206,9 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 					logger.Metric("extract.inference_error_count", 1)
 				}
 			}
+		case IndexTypeReplies:
+			// Replies have the same schema as posts; no inferences export.
+			_, exportErr = runExportForPosts(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
 		case IndexTypeLikes:
 			exportErr = runExportForLikes(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
 		case IndexTypeHashtags:
@@ -490,6 +493,8 @@ func generateFilename(indexName, lastPostTimestamp string, logger *common.Ingest
 		typeStr = "likes"
 	case IndexTypeHashtags:
 		typeStr = "hashtags"
+	case IndexTypeReplies:
+		typeStr = "replies"
 	case IndexTypeUnknown:
 		typeStr = "unknown"
 	default:
@@ -506,6 +511,7 @@ const (
 	IndexTypePosts    IndexType = "posts"
 	IndexTypeLikes    IndexType = "likes"
 	IndexTypeHashtags IndexType = "hashtags"
+	IndexTypeReplies  IndexType = "replies"
 	IndexTypeUnknown  IndexType = ""
 )
 
@@ -531,6 +537,10 @@ func parseIndices(indicesStr string) []string {
 func ParseIndexType(indexName string) (IndexType, error) {
 	lowerName := strings.ToLower(indexName)
 
+	if strings.Contains(lowerName, "replies") {
+		return IndexTypeReplies, nil
+	}
+
 	if strings.Contains(lowerName, "post") {
 		return IndexTypePosts, nil
 	}
@@ -543,7 +553,7 @@ func ParseIndexType(indexName string) (IndexType, error) {
 		return IndexTypeHashtags, nil
 	}
 
-	return IndexTypeUnknown, fmt.Errorf("index name '%s' does not contain 'posts', 'likes', or 'hashtags'", indexName)
+	return IndexTypeUnknown, fmt.Errorf("index name '%s' does not contain 'replies', 'posts', 'likes', or 'hashtags'", indexName)
 }
 
 func getIndexType(indexName string, logger *common.IngestLogger) IndexType {

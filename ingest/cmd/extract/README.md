@@ -26,7 +26,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `GE_PARQUET_DESTINATION`: Output destination - supports local paths (./output) or GCS paths (gs://bucket/path)
 - `GE_PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
 - `GE_EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
-- `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts"). Supported values: `posts`, `likes`, `hashtags`
+- `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts"). Supported values: `posts`, `replies`, `likes`, `hashtags`
 - `GE_LOGGING_ENABLED`: Enable logging (default: true)
 
 ## Examples
@@ -57,7 +57,7 @@ export GE_PARQUET_DESTINATION="gs://my-bucket/exports/"
 ### Export multiple indices with rolling time window
 
 ```bash
-GE_EXTRACT_INDICES="posts,likes" ./extract --window-size-min 240
+GE_EXTRACT_INDICES="posts,likes,replies" ./extract --window-size-min 240
 ```
 
 ### Export with fixed time window

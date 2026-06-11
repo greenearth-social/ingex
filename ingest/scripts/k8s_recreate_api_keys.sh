@@ -67,6 +67,8 @@ INGEST_KEY_RESPONSE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" "${ES_POD}" -- curl 
             "names": ["posts*", "likes*",
               "post_tombstones", "post_tombstones_*", "post-tombstones-*",
               "like_tombstones", "like_tombstones_*", "like-tombstones-*",
+              "replies", "replies-*",
+              "reply_tombstones", "reply_tombstones_*", "reply-tombstones-*",
               "hashtags", "hashtags*", "inferences", "inferences-*"],
             "privileges": ["all", "maintenance", "create_index", "auto_configure"]
           }
