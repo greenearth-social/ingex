@@ -54,7 +54,7 @@ func TestPostTowerPredictSuccess(t *testing.T) {
 	inputs := [][]float32{{0.1, 0.2}, {0.3, 0.4}}
 	dids := []string{"did:plc:aaa", "did:plc:bbb"}
 
-	outputs, err := client.PostTowerPredict(context.Background(), inputs, dids)
+	outputs, _, err := client.PostTowerPredict(context.Background(), inputs, dids)
 	if err != nil {
 		t.Fatalf("PostTowerPredict() error = %v, expected nil", err)
 	}
@@ -82,6 +82,27 @@ func TestPostTowerPredictSuccess(t *testing.T) {
 	}
 }
 
+func TestPostTowerPredictReturnsModelUUID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"outputs":    [][]float32{{1.0}},
+			"model_type": "post-tower",
+			"model_uuid": "test-uuid-abc",
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(server.URL, 0)
+	_, uuid, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a"})
+	if err != nil {
+		t.Fatalf("PostTowerPredict() error = %v, expected nil", err)
+	}
+	if uuid != "test-uuid-abc" {
+		t.Errorf("model_uuid = %q, want %q", uuid, "test-uuid-abc")
+	}
+}
+
 func TestPostTowerPredictBadRequestNoRetry(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +112,7 @@ func TestPostTowerPredictBadRequestNoRetry(t *testing.T) {
 	defer server.Close()
 
 	client := testClient(server.URL, 3)
-	_, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a"})
+	_, _, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a"})
 	if err == nil {
 		t.Fatal("PostTowerPredict() error = nil, expected error")
 	}
@@ -116,7 +137,7 @@ func TestPostTowerPredictRetriesServerError(t *testing.T) {
 	defer server.Close()
 
 	client := testClient(server.URL, 3)
-	outputs, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a"})
+	outputs, _, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a"})
 	if err != nil {
 		t.Fatalf("PostTowerPredict() error = %v, expected nil after retry", err)
 	}
@@ -137,7 +158,7 @@ func TestPostTowerPredictRetriesExhausted(t *testing.T) {
 	defer server.Close()
 
 	client := testClient(server.URL, 2)
-	_, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a"})
+	_, _, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a"})
 	if err == nil {
 		t.Fatal("PostTowerPredict() error = nil, expected error after exhausted retries")
 	}
@@ -162,7 +183,7 @@ func TestPostTowerPredictRetriesTooManyRequests(t *testing.T) {
 	defer server.Close()
 
 	client := testClient(server.URL, 3)
-	_, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a"})
+	_, _, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a"})
 	if err != nil {
 		t.Fatalf("PostTowerPredict() error = %v, expected nil after 429 retry", err)
 	}
@@ -182,7 +203,7 @@ func TestPostTowerPredictOutputCountMismatch(t *testing.T) {
 	defer server.Close()
 
 	client := testClient(server.URL, 0)
-	_, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}, {0.2}}, []string{"did:plc:a", "did:plc:b"})
+	_, _, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}, {0.2}}, []string{"did:plc:a", "did:plc:b"})
 	if err == nil {
 		t.Fatal("PostTowerPredict() error = nil, expected output count mismatch error")
 	}
@@ -196,7 +217,7 @@ func TestPostTowerPredictInputLengthMismatch(t *testing.T) {
 	defer server.Close()
 
 	client := testClient(server.URL, 0)
-	_, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a", "did:plc:b"})
+	_, _, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a", "did:plc:b"})
 	if err == nil {
 		t.Fatal("PostTowerPredict() error = nil, expected input length mismatch error")
 	}
@@ -213,7 +234,7 @@ func TestPostTowerPredictEmptyInput(t *testing.T) {
 	defer server.Close()
 
 	client := testClient(server.URL, 0)
-	outputs, err := client.PostTowerPredict(context.Background(), [][]float32{}, []string{})
+	outputs, _, err := client.PostTowerPredict(context.Background(), [][]float32{}, []string{})
 	if err != nil {
 		t.Fatalf("PostTowerPredict() error = %v, expected nil for empty input", err)
 	}
@@ -239,7 +260,7 @@ func TestPostTowerPredictTimeout(t *testing.T) {
 		RetryBaseDelay: time.Millisecond,
 	}, common.NewLogger(false))
 
-	_, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a"})
+	_, _, err := client.PostTowerPredict(context.Background(), [][]float32{{0.1}}, []string{"did:plc:a"})
 	if err == nil {
 		t.Fatal("PostTowerPredict() error = nil, expected timeout error")
 	}
@@ -255,7 +276,7 @@ func TestPostTowerPredictContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := client.PostTowerPredict(ctx, [][]float32{{0.1}}, []string{"did:plc:a"})
+	_, _, err := client.PostTowerPredict(ctx, [][]float32{{0.1}}, []string{"did:plc:a"})
 	if err == nil {
 		t.Fatal("PostTowerPredict() error = nil, expected context cancellation error")
 	}

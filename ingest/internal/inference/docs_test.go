@@ -62,6 +62,20 @@ func TestAttachPostTowerEmbeddings(t *testing.T) {
 	if got := docs[0].Embeddings[contentEmbeddingKey]; len(got) != 2 || got[0] != 1.0 {
 		t.Errorf("doc 0 content embedding was clobbered: %v", got)
 	}
+
+	// Model UUID must be set on eligible docs and empty on skipped ones
+	if docs[0].PostEmbeddingModelUUID != "test-uuid-echo" {
+		t.Errorf("doc 0 PostEmbeddingModelUUID = %q, want %q", docs[0].PostEmbeddingModelUUID, "test-uuid-echo")
+	}
+	if docs[1].PostEmbeddingModelUUID != "" {
+		t.Errorf("doc 1 (reply) PostEmbeddingModelUUID = %q, want empty", docs[1].PostEmbeddingModelUUID)
+	}
+	if docs[2].PostEmbeddingModelUUID != "" {
+		t.Errorf("doc 2 (no content embedding) PostEmbeddingModelUUID = %q, want empty", docs[2].PostEmbeddingModelUUID)
+	}
+	if docs[3].PostEmbeddingModelUUID != "test-uuid-echo" {
+		t.Errorf("doc 3 PostEmbeddingModelUUID = %q, want %q", docs[3].PostEmbeddingModelUUID, "test-uuid-echo")
+	}
 }
 
 func TestAttachPostTowerEmbeddingsNilEmbedder(t *testing.T) {
@@ -118,5 +132,8 @@ func TestAttachPostTowerEmbeddingsFailOpen(t *testing.T) {
 	// Doc must still be marshalable/indexable without the post embedding
 	if _, err := json.Marshal(docs[0]); err != nil {
 		t.Errorf("doc 0 not marshalable after failure: %v", err)
+	}
+	if docs[0].PostEmbeddingModelUUID != "" {
+		t.Errorf("failed doc PostEmbeddingModelUUID = %q, want empty", docs[0].PostEmbeddingModelUUID)
 	}
 }

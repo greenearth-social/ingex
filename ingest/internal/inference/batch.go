@@ -16,10 +16,11 @@ type PostEmbeddingInput struct {
 }
 
 // PostEmbeddingResult is the outcome for a single input. Embedding is nil and
-// Err is set when the input's chunk failed.
+// Err is set when the input's chunk failed. ModelUUID is empty on failure.
 type PostEmbeddingResult struct {
 	AtURI     string
 	Embedding []float32
+	ModelUUID string
 	Err       error
 }
 
@@ -76,13 +77,14 @@ func (b *BatchEmbedder) ComputePostEmbeddings(ctx context.Context, inputs []Post
 				authorDIDs[i] = input.AuthorDID
 			}
 
-			outputs, err := b.client.PostTowerPredict(ctx, embeddings, authorDIDs)
+			outputs, modelUUID, err := b.client.PostTowerPredict(ctx, embeddings, authorDIDs)
 			for i, input := range chunk {
 				chunkResults[i].AtURI = input.AtURI
 				if err != nil {
 					chunkResults[i].Err = err
 				} else {
 					chunkResults[i].Embedding = outputs[i]
+					chunkResults[i].ModelUUID = modelUUID
 				}
 			}
 			if err != nil {

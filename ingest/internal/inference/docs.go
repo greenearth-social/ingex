@@ -46,6 +46,7 @@ func AttachPostTowerEmbeddings(ctx context.Context, b *BatchEmbedder, docs []com
 			continue
 		}
 		docs[eligible[j]].Embeddings[postEmbeddingKey] = result.Embedding
+		docs[eligible[j]].PostEmbeddingModelUUID = result.ModelUUID
 		embedded++
 	}
 

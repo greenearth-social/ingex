@@ -95,6 +95,9 @@ data:
                 }
               }
             },
+            "ge_post_embedding_model_uuid": {
+              "type": "keyword"
+            },
             "indexed_at": {
               "type": "date",
               "format": "iso8601"

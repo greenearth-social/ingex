@@ -57,19 +57,21 @@ type postTowerRequest struct {
 type postTowerResponse struct {
 	Outputs   [][]float32 `json:"outputs"`
 	ModelType string      `json:"model_type"`
+	ModelUUID string      `json:"model_uuid"`
 }
 
 // PostTowerPredict computes post-tower embeddings for a batch of content
 // embeddings and their author DIDs. Outputs are returned in input order.
+// The second return value is the model UUID from the inference service response.
 // Retries transport errors, 429s and 5xx responses with exponential backoff;
 // other 4xx responses fail immediately. The batch must not exceed the
 // server's GE_INFERENCE_MAX_BATCH.
-func (c *Client) PostTowerPredict(ctx context.Context, postEmbeddings [][]float32, authorDIDs []string) ([][]float32, error) {
+func (c *Client) PostTowerPredict(ctx context.Context, postEmbeddings [][]float32, authorDIDs []string) ([][]float32, string, error) {
 	if len(postEmbeddings) != len(authorDIDs) {
-		return nil, fmt.Errorf("input length mismatch: %d embeddings vs %d author DIDs", len(postEmbeddings), len(authorDIDs))
+		return nil, "", fmt.Errorf("input length mismatch: %d embeddings vs %d author DIDs", len(postEmbeddings), len(authorDIDs))
 	}
 	if len(postEmbeddings) == 0 {
-		return [][]float32{}, nil
+		return [][]float32{}, "", nil
 	}
 
 	body, err := json.Marshal(postTowerRequest{
@@ -77,30 +79,30 @@ func (c *Client) PostTowerPredict(ctx context.Context, postEmbeddings [][]float3
 		TargetAuthorDIDs: authorDIDs,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	start := time.Now()
 	c.logger.Metric("inference.request.count", 1)
 
-	outputs, err := c.doWithRetries(ctx, body)
+	outputs, modelUUID, err := c.doWithRetries(ctx, body)
 	c.logger.Metric("inference.request.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		c.logger.Metric("inference.request.errors", 1)
-		return nil, err
+		return nil, "", err
 	}
 
 	if len(outputs) != len(postEmbeddings) {
 		c.logger.Metric("inference.request.errors", 1)
-		return nil, fmt.Errorf("output count mismatch: got %d outputs for %d inputs", len(outputs), len(postEmbeddings))
+		return nil, "", fmt.Errorf("output count mismatch: got %d outputs for %d inputs", len(outputs), len(postEmbeddings))
 	}
 
-	return outputs, nil
+	return outputs, modelUUID, nil
 }
 
 // doWithRetries performs the HTTP request, retrying retryable failures with
 // exponential backoff and jitter
-func (c *Client) doWithRetries(ctx context.Context, body []byte) ([][]float32, error) {
+func (c *Client) doWithRetries(ctx context.Context, body []byte) ([][]float32, string, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -108,37 +110,37 @@ func (c *Client) doWithRetries(ctx context.Context, body []byte) ([][]float32, e
 			jitter := time.Duration(rand.Int63n(int64(delay) + 1)) //nolint:gosec // G404: jitter does not need crypto randomness
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, "", ctx.Err()
 			case <-time.After(delay + jitter):
 			}
 		}
 
-		outputs, retryable, err := c.doOnce(ctx, body)
+		outputs, modelUUID, retryable, err := c.doOnce(ctx, body)
 		if err == nil {
-			return outputs, nil
+			return outputs, modelUUID, nil
 		}
 		lastErr = err
 		if !retryable {
-			return nil, err
+			return nil, "", err
 		}
 		c.logger.Debug("Inference request attempt %d failed (retryable): %v", attempt+1, err)
 	}
-	return nil, fmt.Errorf("inference request failed after %d attempts: %w", c.config.MaxRetries+1, lastErr)
+	return nil, "", fmt.Errorf("inference request failed after %d attempts: %w", c.config.MaxRetries+1, lastErr)
 }
 
-// doOnce performs a single HTTP request. The second return value indicates
+// doOnce performs a single HTTP request. The third return value indicates
 // whether the failure is retryable.
-func (c *Client) doOnce(ctx context.Context, body []byte) ([][]float32, bool, error) {
+func (c *Client) doOnce(ctx context.Context, body []byte) ([][]float32, string, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.BaseURL+postTowerPredictPath, bytes.NewReader(body))
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to create request: %w", err)
+		return nil, "", false, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", c.config.APIKey)
 
 	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: BaseURL comes from service configuration, not user input
 	if err != nil {
-		return nil, ctx.Err() == nil, fmt.Errorf("inference request failed: %w", err)
+		return nil, "", ctx.Err() == nil, fmt.Errorf("inference request failed: %w", err)
 	}
 	defer func() {
 		_ = resp.Body.Close() // Ignore error in cleanup
@@ -147,13 +149,13 @@ func (c *Client) doOnce(ctx context.Context, body []byte) ([][]float32, bool, er
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		return nil, retryable, fmt.Errorf("inference service returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, "", retryable, fmt.Errorf("inference service returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var parsed postTowerResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, false, fmt.Errorf("failed to decode response: %w", err)
+		return nil, "", false, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return parsed.Outputs, false, nil
+	return parsed.Outputs, parsed.ModelUUID, false, nil
 }

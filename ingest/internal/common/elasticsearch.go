@@ -63,7 +63,8 @@ type ElasticsearchDoc struct {
 	ThreadRootPost   string                  `json:"thread_root_post,omitempty"`
 	ThreadParentPost string                  `json:"thread_parent_post,omitempty"`
 	QuotePost        string                  `json:"quote_post,omitempty"`
-	Embeddings       map[string]Float32Array `json:"embeddings,omitempty"`
+	Embeddings              map[string]Float32Array `json:"embeddings,omitempty"`
+	PostEmbeddingModelUUID  string                  `json:"ge_post_embedding_model_uuid,omitempty"`
 	IndexedAt        string                  `json:"indexed_at"`
 	LikeCount        int                     `json:"like_count"`
 	Media                   []MediaItem             `json:"media,omitempty"`

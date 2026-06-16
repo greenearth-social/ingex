@@ -43,6 +43,7 @@ func echoTowerServer(t *testing.T, requests, maxInFlight *atomic.Int32) *httptes
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"outputs":    outputs,
 			"model_type": "post-tower",
+			"model_uuid": "test-uuid-echo",
 		})
 	}))
 }
@@ -162,6 +163,46 @@ func TestComputePostEmbeddingsFailedChunkIsIsolated(t *testing.T) {
 			if len(res.Embedding) != 2 {
 				t.Errorf("result %d embedding = %v, want 2 values", i, res.Embedding)
 			}
+		}
+	}
+}
+
+func TestComputePostEmbeddingsModelUUID(t *testing.T) {
+	var requests, maxInFlight atomic.Int32
+	server := echoTowerServer(t, &requests, &maxInFlight)
+	defer server.Close()
+
+	embedder := NewBatchEmbedder(testClient(server.URL, 0), 10, 4, common.NewLogger(false))
+	results := embedder.ComputePostEmbeddings(context.Background(), makeInputs(10))
+
+	if len(results) != 10 {
+		t.Fatalf("results length = %d, want 10", len(results))
+	}
+	for i, res := range results {
+		if res.Err != nil {
+			t.Fatalf("result %d unexpected error: %v", i, res.Err)
+		}
+		if res.ModelUUID != "test-uuid-echo" {
+			t.Errorf("result %d ModelUUID = %q, want %q", i, res.ModelUUID, "test-uuid-echo")
+		}
+	}
+}
+
+func TestComputePostEmbeddingsModelUUIDEmptyOnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	embedder := NewBatchEmbedder(testClient(server.URL, 0), 10, 1, common.NewLogger(false))
+	results := embedder.ComputePostEmbeddings(context.Background(), makeInputs(5))
+
+	for i, res := range results {
+		if res.Err == nil {
+			t.Errorf("result %d Err = nil, want error", i)
+		}
+		if res.ModelUUID != "" {
+			t.Errorf("result %d ModelUUID = %q, want empty on error", i, res.ModelUUID)
 		}
 	}
 }
