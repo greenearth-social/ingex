@@ -336,13 +336,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 				// Drain any in-flight async post flush before proceeding
 				if pendingFlush != nil {
-					flushCount, _, flushErr := drainPendingFlush(pendingFlush)
+					flushCount, _ := drainPendingFlush(pendingFlush)
 					pendingFlush = nil
-					if flushErr != nil {
-						logger.Error("Failed to bulk index batch before account deletion: %v", flushErr)
-					} else {
-						processedCount += flushCount
-					}
+					processedCount += flushCount
 				}
 
 				// Flush post creation batch
@@ -450,29 +446,25 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					// (batchSize rows), the previous inference + ES write has had the
 					// entire fill window to complete concurrently.
 					if pendingFlush != nil {
-						flushCount, flushLastMsg, flushErr := drainPendingFlush(pendingFlush)
+						flushCount, flushLastMsg := drainPendingFlush(pendingFlush)
 						pendingFlush = nil
-						if flushErr != nil {
-							logger.Error("Failed to bulk index batch: %v", flushErr)
+						processedCount += flushCount
+						if flushLastMsg != nil && flushLastMsg.GetTimeUs() > 0 {
+							logger.Metric("freshness_sec", float64(common.CalculateFreshness(flushLastMsg.GetTimeUs())))
+						}
+						if processedCount%1000 == 0 {
+							if stateManager.CheckForNewerInstance(myStartTime) {
+								logger.Info("Newer instance detected, exiting")
+								goto cleanup
+							}
+						}
+						if dryRun {
+							logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", flushCount, processedCount, deletedCount, skippedCount)
 						} else {
-							processedCount += flushCount
-							if flushLastMsg != nil && flushLastMsg.GetTimeUs() > 0 {
-								logger.Metric("freshness_sec", float64(common.CalculateFreshness(flushLastMsg.GetTimeUs())))
-							}
-							if processedCount%1000 == 0 {
-								if stateManager.CheckForNewerInstance(myStartTime) {
-									logger.Info("Newer instance detected, exiting")
-									goto cleanup
-								}
-							}
-							if dryRun {
-								logger.Debug("Dry-run: Would index batch: %d documents (total: %d, deleted: %d, skipped: %d)", flushCount, processedCount, deletedCount, skippedCount)
-							} else {
-								logger.Debug("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", flushCount, processedCount, deletedCount, skippedCount)
-							}
-							if flushCount > 0 && (processedCount/flushCount%100) == 0 {
-								logger.Info("Progress: %d documents processed (deleted: %d, skipped: %d)", processedCount, deletedCount, skippedCount)
-							}
+							logger.Debug("Indexed batch: %d documents (total: %d, deleted: %d, skipped: %d)", flushCount, processedCount, deletedCount, skippedCount)
+						}
+						if flushCount > 0 && (processedCount/flushCount%100) == 0 {
+							logger.Info("Progress: %d documents processed (deleted: %d, skipped: %d)", processedCount, deletedCount, skippedCount)
 						}
 					}
 
@@ -524,12 +516,8 @@ cleanup:
 
 	// Drain any in-flight async post flush before writing the final batch
 	if pendingFlush != nil {
-		flushCount, _, flushErr := drainPendingFlush(pendingFlush)
-		if flushErr != nil {
-			logger.Error("Failed to bulk index in-flight batch during cleanup: %v", flushErr)
-		} else {
-			processedCount += flushCount
-		}
+		flushCount, _ := drainPendingFlush(pendingFlush)
+		processedCount += flushCount
 	}
 
 	// Index remaining documents in batch
@@ -588,7 +576,6 @@ cleanup:
 
 type postFlushResult struct {
 	count   int
-	err     error
 	lastMsg common.MegaStreamMessage
 }
 
@@ -597,10 +584,10 @@ type pendingPostFlush struct {
 	cancelCtx context.CancelFunc
 }
 
-func drainPendingFlush(pending *pendingPostFlush) (int, common.MegaStreamMessage, error) {
+func drainPendingFlush(pending *pendingPostFlush) (int, common.MegaStreamMessage) {
 	r := <-pending.ch
 	pending.cancelCtx()
-	return r.count, r.lastMsg, r.err
+	return r.count, r.lastMsg
 }
 
 func dispatchIndexPosts(msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, embedder *inference.BatchEmbedder, dryRun bool, logger *common.IngestLogger) *pendingPostFlush {
