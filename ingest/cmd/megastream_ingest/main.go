@@ -216,6 +216,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	if config.InferenceBaseURL == "" && !dryRun {
 		return fmt.Errorf("GE_INFERENCE_BASE_URL is required (use --dry-run to skip inference)")
 	}
+	if config.InferenceAPIKey == "" && !dryRun {
+		return fmt.Errorf("GE_INFERENCE_API_KEY is required (use --dry-run to skip inference)")
+	}
 	var embedder *inference.BatchEmbedder
 	if !dryRun {
 		inferenceClient := inference.NewClient(inference.ClientConfig{
