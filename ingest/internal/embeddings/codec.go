@@ -1,18 +1,7 @@
-package common
-
-import (
-	"bytes"
-	"compress/zlib"
-	"encoding/binary"
-	"fmt"
-	"io"
-	"math"
-	"strings"
-)
-
-// Embedding encoding/decoding utilities for converting between float32 arrays
-// and base85-encoded, zlib-compressed strings. This matches the Python
-// implementation using base64.b85encode/decode and zlib compression.
+// Package embeddings provides encoding/decoding utilities for converting
+// between float32 arrays and base85-encoded, zlib-compressed strings. This
+// matches the Python implementation using base64.b85encode/decode and zlib
+// compression.
 //
 // The encoding process:
 // 1. Pack float32 values as little-endian binary data
@@ -23,6 +12,17 @@ import (
 // 1. Decode base85 using RFC 1924 alphabet
 // 2. Decompress with zlib
 // 3. Unpack little-endian binary to float32 values
+package embeddings
+
+import (
+	"bytes"
+	"compress/zlib"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"math"
+	"strings"
+)
 
 const base85Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~"
 
@@ -128,8 +128,8 @@ func encodeBase85RFC1924(data []byte) (string, error) {
 	return output, nil
 }
 
-// decodeEmbedding decodes a base85-encoded, zlib-compressed embedding string to float32 array
-func decodeEmbedding(encoded string) ([]float32, error) {
+// Decode decodes a base85-encoded, zlib-compressed embedding string to a float32 array
+func Decode(encoded string) ([]float32, error) {
 	decoded, err := decodeBase85RFC1924(encoded)
 	if err != nil {
 		return nil, fmt.Errorf("base85 decode failed: %w", err)
@@ -159,10 +159,10 @@ func decodeEmbedding(encoded string) ([]float32, error) {
 	return floats, nil
 }
 
-// encodeEmbedding encodes a float32 array to a base85-encoded, zlib-compressed string
-// This is the reverse of decodeEmbedding
+// Encode encodes a float32 array to a base85-encoded, zlib-compressed string
+// This is the reverse of Decode
 // Process: pack little-endian float32s → zlib compress → base85 encode
-func encodeEmbedding(floats []float32) (string, error) {
+func Encode(floats []float32) (string, error) {
 	if len(floats) == 0 {
 		return "", nil
 	}

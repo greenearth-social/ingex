@@ -1,5 +1,7 @@
 package common
 
+import "github.com/greenearth/ingest/internal/embeddings"
+
 // ExtractPost represents the Post document structure for Parquet serialization
 // Field names match the expected parquet output format
 type ExtractPost struct {
@@ -31,7 +33,7 @@ func HitToExtractPost(hit Hit) ExtractPost {
 	if len(hit.Source.Embeddings) > 0 {
 		extractPost.Embeddings = make(map[string]string, len(hit.Source.Embeddings))
 		for modelName, floatArray := range hit.Source.Embeddings {
-			if encoded, err := encodeEmbedding(floatArray); err == nil {
+			if encoded, err := embeddings.Encode(floatArray); err == nil {
 				extractPost.Embeddings[modelName] = encoded
 			}
 			// Silently skip embeddings that fail to encode

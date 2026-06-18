@@ -86,8 +86,17 @@ data:
                   "dims": 768,
                   "index": true,
                   "similarity": "cosine"
+                },
+                "ge_post_embedding": {
+                  "type": "dense_vector",
+                  "dims": 128,
+                  "index": true,
+                  "similarity": "cosine"
                 }
               }
+            },
+            "ge_post_embedding_model_uuid": {
+              "type": "keyword"
             },
             "indexed_at": {
               "type": "date",

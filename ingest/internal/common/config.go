@@ -65,6 +65,14 @@ type Config struct {
 
 	// Index period configuration
 	IndexPeriod string // GE_INDEX_PERIOD: "week", "hour", or "10min"
+
+	// Inference service configuration
+	InferenceBaseURL        string        // GE_INFERENCE_BASE_URL; empty disables post-tower embeddings
+	InferenceAPIKey         string        // GE_INFERENCE_API_KEY
+	InferenceTimeout        time.Duration // GE_INFERENCE_TIMEOUT, per-request HTTP timeout
+	InferenceChunkSize      int           // GE_INFERENCE_CHUNK_SIZE, must be <= server GE_INFERENCE_MAX_BATCH
+	InferenceMaxConcurrency int           // GE_INFERENCE_MAX_CONCURRENCY, concurrent inference requests
+	InferenceRetryMax       int           // GE_INFERENCE_RETRY_MAX, retries beyond the first attempt
 }
 
 // LoadConfig loads configuration from environment variables with defaults
@@ -100,6 +108,12 @@ func LoadConfig() *Config {
 		LikeRateLimitWindowMinutes: getEnvInt("GE_LIKE_RATE_LIMIT_WINDOW_MIN", 5),
 		LikeBlockDurationMinutes:   getEnvInt("GE_LIKE_BLOCK_DURATION_MIN", 60),
 		IndexPeriod:                getEnv("GE_INDEX_PERIOD", IndexPeriod10Min),
+		InferenceBaseURL:           getEnv("GE_INFERENCE_BASE_URL", ""),
+		InferenceAPIKey:            getEnv("GE_INFERENCE_API_KEY", ""),
+		InferenceTimeout:           getEnvDuration("GE_INFERENCE_TIMEOUT", 10*time.Second),
+		InferenceChunkSize:         getEnvInt("GE_INFERENCE_CHUNK_SIZE", 64),
+		InferenceMaxConcurrency:    getEnvInt("GE_INFERENCE_MAX_CONCURRENCY", 8),
+		InferenceRetryMax:          getEnvInt("GE_INFERENCE_RETRY_MAX", 3),
 	}
 }
 
