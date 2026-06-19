@@ -608,9 +608,10 @@ func dispatchIndexPosts(msgs []common.MegaStreamMessage, esClient *elasticsearch
 }
 
 // postAliasFromDoc returns the ES alias for a document.
-// Posts with a non-empty thread_parent_post are replies and go to the replies alias.
+// Posts with a non-empty thread_parent_post or thread_root_post are replies
+// and go to the replies alias.
 func postAliasFromDoc(doc common.ElasticsearchDoc) string {
-	if doc.ThreadParentPost != "" {
+	if doc.ThreadParentPost != "" || doc.ThreadRootPost != "" {
 		return "replies"
 	}
 	return "posts"
