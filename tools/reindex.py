@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from elasticsearch import AsyncElasticsearch, NotFoundError
+from elasticsearch import AsyncElasticsearch, AuthorizationException, NotFoundError
 from rich.console import Console
 
 console = Console()
@@ -193,6 +193,12 @@ async def _active_index_for(es: AsyncElasticsearch, alias: str) -> str | None:
         return indices[0] if indices else None
     except NotFoundError:
         return None
+    except AuthorizationException:
+        _die(
+            f"API key lacks 'view_index_metadata' privilege needed to read alias '{alias}'. "
+            f"Grant this privilege on the relevant index pattern, or use --include-active "
+            f"to skip the active-index check (only safe after the write period rolls over)."
+        )
 
 
 async def _list_indices(es: AsyncElasticsearch, pattern: str) -> list[str]:
@@ -357,11 +363,17 @@ async def _do_swap(
 
 async def _process_index(
     es: AsyncElasticsearch,
-    state: RunState,
+    state: RunState | None,
     src: str,
+    commit: str,
     dry_run: bool,
 ) -> None:
     """Drive one index through its full migration state machine."""
+    if dry_run:
+        _info(f"[dim][dry-run][/dim] Would reindex {src} → {src}-{commit}, swap aliases, delete src.")
+        return
+
+    assert state is not None
     idx = state.indices[src]
 
     if idx.status in (DONE, SKIPPED):
@@ -370,10 +382,6 @@ async def _process_index(
 
     _info(f"Migrating [bold]{src}[/bold] → [bold]{idx.dst}[/bold]"
           + (f" [dim](resuming from {idx.status})[/dim]" if idx.status != PENDING else ""))
-
-    if dry_run:
-        _info(f"[dim][dry-run][/dim] Would reindex {src} → {idx.dst}, swap aliases, delete src.")
-        return
 
     # ── Step 1: ensure reindex is running ───────────────────────────────────
     if idx.status in (PENDING, FAILED):
@@ -525,7 +533,7 @@ async def _run(args: argparse.Namespace) -> int:
                         continue
 
                 try:
-                    await _process_index(es, state, idx, dry_run=args.dry_run)
+                    await _process_index(es, state, idx, commit, dry_run=args.dry_run)
                     if state is not None and state.indices[idx].status == FAILED:
                         errors += 1
                 except Exception as exc:
