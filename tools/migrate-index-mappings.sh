@@ -77,13 +77,67 @@ get_aliases() {
   es GET "$1/_alias" | jq -c ".\"$1\".aliases // {}"
 }
 
+# ── Async reindex + poll loop ─────────────────────────────────────────────────
+# Kicks off a sliced reindex (wait_for_completion=false), then polls
+# _tasks/{task_id} every POLL_INTERVAL seconds until ES reports completed.
+# Prints running progress and returns 1 on failure.
+POLL_INTERVAL=10
+
+reindex_and_wait() {
+  local src="$1" dst="$2"
+
+  info "  Starting async reindex (slices=auto, 2000 req/s) ..."
+  local resp task_id
+  resp=$(es POST "_reindex?wait_for_completion=false&slices=auto&requests_per_second=2000" -d \
+    "{\"source\":{\"index\":\"$src\"},\"dest\":{\"index\":\"$dst\",\"op_type\":\"create\"}}")
+  task_id=$(echo "$resp" | jq -r '.task // empty')
+
+  if [[ -z "$task_id" ]]; then
+    error "Failed to start reindex — response: $resp"
+    return 1
+  fi
+  info "  Task: $task_id"
+
+  # Poll until ES reports the task as completed.
+  local status completed total created conflicts pct
+  while true; do
+    sleep "$POLL_INTERVAL"
+    status=$(es GET "_tasks/$task_id?detailed=true")
+    completed=$(echo "$status" | jq -r '.completed')
+
+    total=$(    echo "$status" | jq -r '.task.status.total             // 0')
+    created=$(  echo "$status" | jq -r '.task.status.created           // 0')
+    conflicts=$(echo "$status" | jq -r '.task.status.version_conflicts // 0')
+    local processed=$(( created + conflicts ))
+    if [[ "$total" -gt 0 ]]; then
+      pct=$(awk "BEGIN {printf \"%.1f\", $processed * 100 / $total}")
+      info "  ${src}: ${processed} / ${total} docs (${pct}%)"
+    fi
+
+    [[ "$completed" == "true" ]] && break
+  done
+
+  # Inspect the completed task result for failures.
+  local failures
+  failures=$(echo "$status" | jq -r '(.response.failures // []) | length')
+  local took
+  took=$(echo "$status" | jq -r '.response.took // 0')
+  info "  Done: ${created} created, ${conflicts} version_conflicts, ${failures} failures (${took}ms)"
+
+  if [[ "$failures" -gt 0 ]]; then
+    error "Reindex of $src had failures:"
+    echo "$status" | jq '.response.failures'
+    return 1
+  fi
+}
+
 # ── Core migration for a single index ────────────────────────────────────────
 migrate_index() {
   local src="$1"
   local dst="${src}-${COMMIT}"
 
   if $DRY_RUN; then
-    info "[dry-run] $src → $dst  (move aliases, delete $src)"
+    info "[dry-run] $src → $dst  (async reindex, move aliases, delete $src)"
     return 0
   fi
 
@@ -93,22 +147,8 @@ migrate_index() {
     return 0
   fi
 
-  info "Reindexing $src → $dst ..."
-  local result
-  result=$(es POST "_reindex?wait_for_completion=true" -d \
-    "{\"source\":{\"index\":\"$src\"},\"dest\":{\"index\":\"$dst\"}}")
-
-  local total failures took
-  total=$(   echo "$result" | jq -r '.total')
-  failures=$(echo "$result" | jq -r '.failures | length')
-  took=$(    echo "$result" | jq -r '.took')
-  info "  reindexed ${total} docs in ${took}ms, ${failures} failures"
-
-  if [[ "$failures" -gt 0 ]]; then
-    error "Reindex of $src reported failures — skipping alias swap and deletion."
-    echo "$result" | jq '.failures'
-    return 1
-  fi
+  info "Migrating $src → $dst"
+  reindex_and_wait "$src" "$dst" || return 1
 
   # Build an atomic alias-swap: remove each alias from src, add to dst.
   local aliases
@@ -116,10 +156,8 @@ migrate_index() {
 
   local actions='[]'
   while IFS= read -r alias_name; do
-    local alias_cfg
+    local alias_cfg write_flag='{}'
     alias_cfg=$(echo "$aliases" | jq -c --arg a "$alias_name" '.[$a]')
-    # Preserve is_write_index flag if present.
-    local write_flag='{}'
     if echo "$alias_cfg" | jq -e '.is_write_index == true' &>/dev/null; then
       write_flag='{"is_write_index": true}'
     fi
@@ -140,7 +178,6 @@ migrate_index() {
       | jq -r '"  acknowledged: " + (.acknowledged | tostring)'
   fi
 
-  # Remove the original index.
   es DELETE "$src" | jq -r '"  deleted: " + (.acknowledged | tostring)'
   info "✓ $src migrated to $dst"
 }
@@ -198,7 +235,7 @@ while IFS= read -r idx; do
     warn "Skipping active index: $idx"
     continue
   fi
-  if [[ "$idx" == *-migrated ]]; then
+  if [[ "$idx" =~ -[0-9a-f]{7}$ ]]; then
     info "Skipping already-migrated index: $idx"
     continue
   fi
