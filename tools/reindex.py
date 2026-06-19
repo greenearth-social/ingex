@@ -585,6 +585,13 @@ async def _run(args: argparse.Namespace) -> int:
         await _print_alias_summary(es)
         console.print()
         _info("Migration complete.")
+        console.print()
+        console.print(
+            "[yellow][WARN][/yellow]  ILM note: migrated indices have a new creation date, so their "
+            "ILM deletion timer resets to zero. If storage capacity is a concern, manually delete "
+            "migrated indices for periods that have already expired under your retention policy:\n"
+            "  DELETE /<index-name>  (e.g. via Kibana Dev Tools or curl)"
+        )
         return 0
 
     finally:
