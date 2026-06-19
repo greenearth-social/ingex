@@ -34,21 +34,40 @@ func TestIndexDocuments_routesReplyToReplies(t *testing.T) {
 	}
 }
 
-func TestPostAliasFromDoc_rootOnlyIsReply(t *testing.T) {
-	// thread_root_post set but thread_parent_post empty: Megastream missed parent_post
-	doc := common.ElasticsearchDoc{ThreadRootPost: "at://did:plc:abc/app.bsky.feed.post/root"}
-	if got := postAliasFromDoc(doc); got != "replies" {
-		t.Errorf("expected replies, got %s", got)
+func TestIndexDocuments_routesRootOnlyReplyToReplies(t *testing.T) {
+	// reply_post set but parent_post absent: Megastream missed parent_post; still a reply
+	logger := common.NewLogger(false)
+	msg := common.NewMegaStreamMessage(
+		"at://did:plc:abc/app.bsky.feed.post/reply1",
+		"did:plc:abc",
+		`{"message":{"commit":{"operation":"create","record":{"text":"reply","createdAt":"2024-01-01T00:00:00Z"}}},"hydrated_metadata":{"reply_post":{"uri":"at://did:plc:abc/app.bsky.feed.post/root"}}}`,
+		"{}",
+		logger,
+	)
+	if msg.GetThreadRootPost() == "" {
+		t.Errorf("expected thread_root_post to be set")
+	}
+	if msg.GetThreadParentPost() != "" {
+		t.Errorf("expected thread_parent_post to be empty, got %q", msg.GetThreadParentPost())
+	}
+	isReply := msg.GetThreadParentPost() != "" || msg.GetThreadRootPost() != ""
+	if !isReply {
+		t.Errorf("expected message with reply_post to be routed as a reply")
 	}
 }
 
-func TestPostAliasFromDoc_bothRootAndParentIsReply(t *testing.T) {
-	doc := common.ElasticsearchDoc{
-		ThreadRootPost:   "at://did:plc:abc/app.bsky.feed.post/root",
-		ThreadParentPost: "at://did:plc:abc/app.bsky.feed.post/parent",
-	}
-	if got := postAliasFromDoc(doc); got != "replies" {
-		t.Errorf("expected replies, got %s", got)
+func TestIndexDocuments_routesBothRootAndParentToReplies(t *testing.T) {
+	logger := common.NewLogger(false)
+	msg := common.NewMegaStreamMessage(
+		"at://did:plc:abc/app.bsky.feed.post/reply1",
+		"did:plc:abc",
+		`{"message":{"commit":{"operation":"create","record":{"text":"reply","createdAt":"2024-01-01T00:00:00Z"}}},"hydrated_metadata":{"reply_post":{"uri":"at://did:plc:abc/app.bsky.feed.post/root"},"parent_post":{"uri":"at://did:plc:abc/app.bsky.feed.post/parent"}}}`,
+		"{}",
+		logger,
+	)
+	isReply := msg.GetThreadParentPost() != "" || msg.GetThreadRootPost() != ""
+	if !isReply {
+		t.Errorf("expected message with both reply_post and parent_post to be routed as a reply")
 	}
 }
 

@@ -621,7 +621,7 @@ func indexDocuments(ctx context.Context, msgs []common.MegaStreamMessage, esClie
 	repliesBatch := make([]common.ReplyDoc, 0)
 
 	for _, m := range msgs {
-		if m.GetThreadParentPost() != "" {
+		if m.GetThreadParentPost() != "" || m.GetThreadRootPost() != "" {
 			repliesBatch = append(repliesBatch, common.CreateReplyDoc(m, 0))
 		} else {
 			postsBatch = append(postsBatch, common.CreatePostDoc(m, 0))
