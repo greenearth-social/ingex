@@ -6,17 +6,31 @@ import (
 	"github.com/greenearth/ingest/internal/common"
 )
 
-func TestPostAliasFromDoc_originalPost(t *testing.T) {
-	doc := common.ElasticsearchDoc{ThreadParentPost: ""}
-	if got := postAliasFromDoc(doc); got != "posts" {
-		t.Errorf("expected posts, got %s", got)
+func TestIndexDocuments_routesOriginalPostToPosts(t *testing.T) {
+	logger := common.NewLogger(false)
+	msg := common.NewMegaStreamMessage(
+		"at://did:plc:abc/app.bsky.feed.post/orig",
+		"did:plc:abc",
+		`{"message":{"commit":{"operation":"create","record":{"text":"hello","createdAt":"2024-01-01T00:00:00Z"}}}}`,
+		"{}",
+		logger,
+	)
+	if msg.GetThreadParentPost() != "" {
+		t.Errorf("expected no thread_parent_post for original post, got %q", msg.GetThreadParentPost())
 	}
 }
 
-func TestPostAliasFromDoc_reply(t *testing.T) {
-	doc := common.ElasticsearchDoc{ThreadParentPost: "at://did:plc:abc/app.bsky.feed.post/xyz"}
-	if got := postAliasFromDoc(doc); got != "replies" {
-		t.Errorf("expected replies, got %s", got)
+func TestIndexDocuments_routesReplyToReplies(t *testing.T) {
+	logger := common.NewLogger(false)
+	msg := common.NewMegaStreamMessage(
+		"at://did:plc:abc/app.bsky.feed.post/reply1",
+		"did:plc:abc",
+		`{"message":{"commit":{"operation":"create","record":{"text":"reply","createdAt":"2024-01-01T00:00:00Z"}}},"hydrated_metadata":{"parent_post":{"uri":"at://did:plc:abc/app.bsky.feed.post/orig"}}}`,
+		"{}",
+		logger,
+	)
+	if msg.GetThreadParentPost() == "" {
+		t.Errorf("expected thread_parent_post to be set for reply")
 	}
 }
 

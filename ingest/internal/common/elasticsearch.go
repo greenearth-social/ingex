@@ -54,29 +54,64 @@ type ExternalEmbed struct {
 	Description string `json:"description,omitempty"`
 }
 
-// ElasticsearchDoc represents the document structure for indexing
-type ElasticsearchDoc struct {
-	AtURI            string                  `json:"at_uri"`
-	AuthorDID        string                  `json:"author_did"`
-	Content          string                  `json:"content"`
-	CreatedAt        string                  `json:"created_at"`
-	ThreadRootPost   string                  `json:"thread_root_post,omitempty"`
-	ThreadParentPost string                  `json:"thread_parent_post,omitempty"`
-	QuotePost        string                  `json:"quote_post,omitempty"`
+// ESDoc is the constraint for document types that can be bulk-indexed.
+type ESDoc interface {
+	esAtURI() string
+	esAuthorDID() string
+}
+
+// PostDoc is the document structure for indexing original posts.
+// Reply-specific fields (ThreadParentPost, ThreadRootPost) are intentionally absent.
+type PostDoc struct {
+	AtURI                   string                  `json:"at_uri"`
+	AuthorDID               string                  `json:"author_did"`
+	Content                 string                  `json:"content"`
+	CreatedAt               string                  `json:"created_at"`
+	QuotePost               string                  `json:"quote_post"`
 	Embeddings              map[string]Float32Array `json:"embeddings,omitempty"`
-	PostEmbeddingModelUUID  string                  `json:"ge_post_embedding_model_uuid,omitempty"`
-	IndexedAt        string                  `json:"indexed_at"`
-	LikeCount        int                     `json:"like_count"`
-	Media                   []MediaItem             `json:"media,omitempty"`
+	PostEmbeddingModelUUID  string                  `json:"ge_post_embedding_model_uuid"`
+	IndexedAt               string                  `json:"indexed_at"`
+	LikeCount               int                     `json:"like_count"`
+	Media                   []MediaItem             `json:"media"`
 	ContainsImages          bool                    `json:"contains_images"`
 	ContainsVideo           bool                    `json:"contains_video"`
 	ImageCount              int                     `json:"image_count"`
 	VideoCount              int                     `json:"video_count"`
 	MediaCount              int                     `json:"media_count"`
-	ExternalEmbed           *ExternalEmbed          `json:"external_embed,omitempty"`
-	VideoTranscript         string                  `json:"video_transcript,omitempty"`
-	VideoTranscriptLanguage string                  `json:"video_transcript_language,omitempty"`
+	ExternalEmbed           *ExternalEmbed          `json:"external_embed"`
+	VideoTranscript         string                  `json:"video_transcript"`
+	VideoTranscriptLanguage string                  `json:"video_transcript_language"`
 }
+
+func (d PostDoc) esAtURI() string     { return d.AtURI }
+func (d PostDoc) esAuthorDID() string { return d.AuthorDID }
+
+// ReplyDoc is the document structure for indexing replies.
+// Includes thread join fields; omits PostEmbeddingModelUUID (replies don't receive post-tower embeddings).
+type ReplyDoc struct {
+	AtURI                   string                  `json:"at_uri"`
+	AuthorDID               string                  `json:"author_did"`
+	Content                 string                  `json:"content"`
+	CreatedAt               string                  `json:"created_at"`
+	ThreadRootPost          string                  `json:"thread_root_post"`
+	ThreadParentPost        string                  `json:"thread_parent_post"`
+	QuotePost               string                  `json:"quote_post"`
+	Embeddings              map[string]Float32Array `json:"embeddings,omitempty"`
+	IndexedAt               string                  `json:"indexed_at"`
+	LikeCount               int                     `json:"like_count"`
+	Media                   []MediaItem             `json:"media"`
+	ContainsImages          bool                    `json:"contains_images"`
+	ContainsVideo           bool                    `json:"contains_video"`
+	ImageCount              int                     `json:"image_count"`
+	VideoCount              int                     `json:"video_count"`
+	MediaCount              int                     `json:"media_count"`
+	ExternalEmbed           *ExternalEmbed          `json:"external_embed"`
+	VideoTranscript         string                  `json:"video_transcript"`
+	VideoTranscriptLanguage string                  `json:"video_transcript_language"`
+}
+
+func (d ReplyDoc) esAtURI() string     { return d.AtURI }
+func (d ReplyDoc) esAuthorDID() string { return d.AuthorDID }
 
 // PostTombstoneDoc represents the document structure for post deletion tombstones
 type PostTombstoneDoc struct {
@@ -163,8 +198,8 @@ func NewElasticsearchClient(config ElasticsearchConfig, logger *IngestLogger) (*
 	return client, nil
 }
 
-// BulkIndex indexes a batch of documents to Elasticsearch
-func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, docs []ElasticsearchDoc, dryRun bool, logger *IngestLogger) error {
+// BulkIndex indexes a batch of PostDoc or ReplyDoc documents to Elasticsearch.
+func BulkIndex[T ESDoc](ctx context.Context, client *elasticsearch.Client, index string, docs []T, dryRun bool, logger *IngestLogger) error {
 	if len(docs) == 0 {
 		return nil
 	}
@@ -178,16 +213,16 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 	validDocCount := 0
 
 	for _, doc := range docs {
-		if doc.AtURI == "" {
-			logger.Error("Skipping document with empty at_uri (author_did: %s)", doc.AuthorDID)
+		if doc.esAtURI() == "" {
+			logger.Error("Skipping document with empty at_uri (author_did: %s)", doc.esAuthorDID())
 			continue
 		}
 
 		meta := map[string]interface{}{
 			"index": map[string]interface{}{
 				"_index":  index,
-				"_id":     doc.AtURI,
-				"routing": doc.AuthorDID,
+				"_id":     doc.esAtURI(),
+				"routing": doc.esAuthorDID(),
 			},
 		}
 
@@ -459,21 +494,20 @@ func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string,
 	return nil
 }
 
-// CreateElasticsearchDoc creates an ElasticsearchDoc from a MegaStreamMessage
-func CreateElasticsearchDoc(msg MegaStreamMessage, likeCount int) ElasticsearchDoc {
-	// Convert embeddings to Float32Array type for proper JSON marshaling
-	var embeddings map[string]Float32Array
-	rawEmbeddings := msg.GetEmbeddings()
-	if rawEmbeddings != nil {
-		embeddings = make(map[string]Float32Array, len(rawEmbeddings))
-		for key, value := range rawEmbeddings {
-			embeddings[key] = Float32Array(value)
-		}
+func msgEmbeddings(msg MegaStreamMessage) map[string]Float32Array {
+	raw := msg.GetEmbeddings()
+	if raw == nil {
+		return nil
 	}
+	out := make(map[string]Float32Array, len(raw))
+	for k, v := range raw {
+		out[k] = Float32Array(v)
+	}
+	return out
+}
 
-	// Extract media and compute summary fields
-	media := msg.GetMedia()
-	var imageCount, videoCount int
+func msgMediaCounts(msg MegaStreamMessage) (media []MediaItem, imageCount, videoCount, mediaCount int, containsImages, containsVideo bool) {
+	media = msg.GetMedia()
 	for _, item := range media {
 		switch item.MediaType {
 		case "image":
@@ -482,11 +516,40 @@ func CreateElasticsearchDoc(msg MegaStreamMessage, likeCount int) ElasticsearchD
 			videoCount++
 		}
 	}
-	mediaCount := len(media)
-	containsImages := imageCount > 0
-	containsVideo := videoCount > 0
+	mediaCount = len(media)
+	containsImages = imageCount > 0
+	containsVideo = videoCount > 0
+	return
+}
 
-	return ElasticsearchDoc{
+// CreatePostDoc creates a PostDoc from a MegaStreamMessage for indexing into posts-*.
+func CreatePostDoc(msg MegaStreamMessage, likeCount int) PostDoc {
+	media, imageCount, videoCount, mediaCount, containsImages, containsVideo := msgMediaCounts(msg)
+	return PostDoc{
+		AtURI:                   msg.GetAtURI(),
+		AuthorDID:               msg.GetAuthorDID(),
+		Content:                 msg.GetContent(),
+		CreatedAt:               msg.GetCreatedAt(),
+		QuotePost:               msg.GetQuotePost(),
+		Embeddings:              msgEmbeddings(msg),
+		IndexedAt:               time.Now().UTC().Format(time.RFC3339),
+		LikeCount:               likeCount,
+		Media:                   media,
+		ContainsImages:          containsImages,
+		ContainsVideo:           containsVideo,
+		ImageCount:              imageCount,
+		VideoCount:              videoCount,
+		MediaCount:              mediaCount,
+		ExternalEmbed:           msg.GetExternalEmbed(),
+		VideoTranscript:         msg.GetVideoTranscript(),
+		VideoTranscriptLanguage: msg.GetVideoTranscriptLanguage(),
+	}
+}
+
+// CreateReplyDoc creates a ReplyDoc from a MegaStreamMessage for indexing into replies-*.
+func CreateReplyDoc(msg MegaStreamMessage, likeCount int) ReplyDoc {
+	media, imageCount, videoCount, mediaCount, containsImages, containsVideo := msgMediaCounts(msg)
+	return ReplyDoc{
 		AtURI:                   msg.GetAtURI(),
 		AuthorDID:               msg.GetAuthorDID(),
 		Content:                 msg.GetContent(),
@@ -494,7 +557,7 @@ func CreateElasticsearchDoc(msg MegaStreamMessage, likeCount int) ElasticsearchD
 		ThreadRootPost:          msg.GetThreadRootPost(),
 		ThreadParentPost:        msg.GetThreadParentPost(),
 		QuotePost:               msg.GetQuotePost(),
-		Embeddings:              embeddings,
+		Embeddings:              msgEmbeddings(msg),
 		IndexedAt:               time.Now().UTC().Format(time.RFC3339),
 		LikeCount:               likeCount,
 		Media:                   media,

@@ -593,7 +593,7 @@ func TestMegaStreamMessage_ImageAltTextParsing(t *testing.T) {
 		}
 	})
 
-	t.Run("alt text in CreateElasticsearchDoc", func(t *testing.T) {
+	t.Run("alt text in CreatePostDoc", func(t *testing.T) {
 		rawPostJSON := `{
 			"message": {
 				"commit": {
@@ -621,7 +621,7 @@ func TestMegaStreamMessage_ImageAltTextParsing(t *testing.T) {
 		}`
 
 		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
-		doc := CreateElasticsearchDoc(msg, 0)
+		doc := CreatePostDoc(msg, 0)
 
 		if len(doc.Media) != 1 {
 			t.Fatalf("Expected 1 media item in doc, got %d", len(doc.Media))
@@ -694,7 +694,7 @@ func TestMegaStreamMessage_ExternalEmbedParsing(t *testing.T) {
 		}
 	})
 
-	t.Run("external embed in CreateElasticsearchDoc", func(t *testing.T) {
+	t.Run("external embed in CreatePostDoc", func(t *testing.T) {
 		rawPostJSON := `{
 			"message": {
 				"commit": {
@@ -716,7 +716,7 @@ func TestMegaStreamMessage_ExternalEmbedParsing(t *testing.T) {
 		}`
 
 		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
-		doc := CreateElasticsearchDoc(msg, 0)
+		doc := CreatePostDoc(msg, 0)
 
 		if doc.ExternalEmbed == nil {
 			t.Fatal("Expected non-nil ExternalEmbed in doc")
@@ -846,7 +846,7 @@ func TestMegaStreamMessage_VideoTranscriptParsing(t *testing.T) {
 		}
 	})
 
-	t.Run("video transcript in CreateElasticsearchDoc", func(t *testing.T) {
+	t.Run("video transcript in CreatePostDoc", func(t *testing.T) {
 		rawPostJSON := `{
 			"message": {
 				"commit": {
@@ -878,7 +878,7 @@ func TestMegaStreamMessage_VideoTranscriptParsing(t *testing.T) {
 		}`
 
 		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, inferencesJSON, logger)
-		doc := CreateElasticsearchDoc(msg, 0)
+		doc := CreatePostDoc(msg, 0)
 
 		if doc.VideoTranscript != "Transcript text here" {
 			t.Errorf("Expected VideoTranscript 'Transcript text here', got %q", doc.VideoTranscript)
