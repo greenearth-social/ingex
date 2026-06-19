@@ -44,3 +44,6 @@ ingest/extract
 ingest/elasticsearch_expiry
 ingest/megastream_ingest
 ingest/jetstream_ingest
+
+# Migration script state
+tools/state/
