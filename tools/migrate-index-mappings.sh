@@ -99,19 +99,22 @@ reindex_and_wait() {
   info "  Task: $task_id"
 
   # Poll until ES reports the task as completed.
-  local status completed total created conflicts pct
+  local status completed total created conflicts processed pct
   while true; do
     sleep "$POLL_INTERVAL"
     status=$(es GET "_tasks/$task_id?detailed=true")
-    completed=$(echo "$status" | jq -r '.completed')
+    completed=$(echo "$status" | jq -r '.completed // "false"')
 
     total=$(    echo "$status" | jq -r '.task.status.total             // 0')
     created=$(  echo "$status" | jq -r '.task.status.created           // 0')
     conflicts=$(echo "$status" | jq -r '.task.status.version_conflicts // 0')
-    local processed=$(( created + conflicts ))
-    if [[ "$total" -gt 0 ]]; then
+    processed=$(( ${created:-0} + ${conflicts:-0} ))
+
+    if [[ "${total:-0}" -gt 0 ]]; then
       pct=$(awk "BEGIN {printf \"%.1f\", $processed * 100 / $total}")
       info "  ${src}: ${processed} / ${total} docs (${pct}%)"
+    else
+      info "  ${src}: task running, waiting for count... (completed=${completed})"
     fi
 
     [[ "$completed" == "true" ]] && break
