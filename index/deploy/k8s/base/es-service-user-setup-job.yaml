@@ -48,7 +48,7 @@ spec:
               "cluster": ["manage_index_templates", "monitor", "manage_ilm", "create_snapshot", "manage_slm", "manage"],
               "indices": [
                 {
-                  "names": ["posts*", "post_tombstones*", "post-tombstones*", "likes*", "like_tombstones*", "like-tombstones*", "hashtags*", "inferences*"],
+                  "names": ["posts*", "post_tombstones*", "post-tombstones*", "replies*", "reply_tombstones*", "reply-tombstones*", "likes*", "like_tombstones*", "like-tombstones*", "hashtags*", "inferences*"],
                   "privileges": ["create_index", "manage", "write", "read"]
                 }
               ]
