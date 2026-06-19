@@ -34,6 +34,24 @@ func TestIndexDocuments_routesReplyToReplies(t *testing.T) {
 	}
 }
 
+func TestPostAliasFromDoc_rootOnlyIsReply(t *testing.T) {
+	// thread_root_post set but thread_parent_post empty: Megastream missed parent_post
+	doc := common.ElasticsearchDoc{ThreadRootPost: "at://did:plc:abc/app.bsky.feed.post/root"}
+	if got := postAliasFromDoc(doc); got != "replies" {
+		t.Errorf("expected replies, got %s", got)
+	}
+}
+
+func TestPostAliasFromDoc_bothRootAndParentIsReply(t *testing.T) {
+	doc := common.ElasticsearchDoc{
+		ThreadRootPost:   "at://did:plc:abc/app.bsky.feed.post/root",
+		ThreadParentPost: "at://did:plc:abc/app.bsky.feed.post/parent",
+	}
+	if got := postAliasFromDoc(doc); got != "replies" {
+		t.Errorf("expected replies, got %s", got)
+	}
+}
+
 // TestIndexDocuments_errorHandlingContract documents the intended behavior of indexDocuments:
 // - posts and replies are indexed concurrently via goroutines.
 // - If either batch fails, the error is logged internally with batchContext; no error is returned.
