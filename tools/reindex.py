@@ -6,9 +6,11 @@ their old mappings and must be reindexed to pick up changes. Each source
 index is copied into ``<name>-<commit>`` where ``<commit>`` is the short HEAD
 commit hash, all aliases are moved atomically, and the source index is deleted.
 
-The index currently pointed to by the ``<type>_recent`` alias is still
-receiving live writes and is skipped by default. Re-run with --include-active
-after the period rolls over and the new period's index is live.
+The index currently pointed to by the write alias (``posts``, ``replies``, or
+``likes``) is still receiving live writes and is skipped by default. Re-run
+with --include-active after the period rolls over and the new period's index
+is live. After migration the ingest service continues writing without changes
+because the alias ``is_write_index`` flag is preserved during the swap.
 
 State is written to tools/state/reindex-state.json after every transition so
 the script can be cancelled and resumed. If a run is interrupted, simply
@@ -24,9 +26,10 @@ Prerequisites:
   - Updated ILM templates have been deployed (bootstrap job or manual PUT).
   - The new ingest service version has been deployed.
 
-Reads Elasticsearch connection from env vars (same as the ingest service):
+Reads Elasticsearch connection from env vars:
     GE_ELASTICSEARCH_URL              Elasticsearch endpoint URL
-    GE_ELASTICSEARCH_API_KEY          API key for authentication
+    GE_ELASTICSEARCH_USERNAME         Username (default: elastic)
+    GE_ELASTICSEARCH_PASSWORD         Password for the above user
     GE_ELASTICSEARCH_TLS_SKIP_VERIFY  Set to "true" to skip TLS verification
 """
 
@@ -68,15 +71,15 @@ FAILED       = "failed"
 INDEX_TYPES: dict[str, dict[str, str]] = {
     "posts": {
         "pattern": "posts-*",
-        "active_alias": "posts_recent",
+        "active_alias": "posts",   # write alias used by megastream/jetstream ingest
     },
     "replies": {
         "pattern": "replies-*",
-        "active_alias": "replies_recent",
+        "active_alias": "replies", # write alias used by megastream ingest
     },
     "likes": {
         "pattern": "likes-*",
-        "active_alias": "likes_recent",
+        "active_alias": "likes",   # write alias used by jetstream ingest
     },
 }
 
@@ -187,17 +190,22 @@ def _git_short_hash() -> str:
 
 
 async def _active_index_for(es: AsyncElasticsearch, alias: str) -> str | None:
+    """Return the index with is_write_index:true for alias, or None if alias doesn't exist."""
     try:
         resp = await es.indices.get_alias(name=alias)
+        # Prefer the explicit write index; fall back to the sole member if unambiguous.
+        for index_name, info in resp.items():
+            if info.get("aliases", {}).get(alias, {}).get("is_write_index"):
+                return index_name
         indices = list(resp.keys())
-        return indices[0] if indices else None
+        return indices[0] if len(indices) == 1 else None
     except NotFoundError:
         return None
     except AuthorizationException:
         _die(
-            f"API key lacks 'view_index_metadata' privilege needed to read alias '{alias}'. "
-            f"Grant this privilege on the relevant index pattern, or use --include-active "
-            f"to skip the active-index check (only safe after the write period rolls over)."
+            f"User lacks 'view_index_metadata' privilege needed to read alias '{alias}'. "
+            f"Use --include-active to skip the active-index check "
+            f"(only safe after the write period rolls over)."
         )
 
 
@@ -413,19 +421,38 @@ async def _process_index(
 # Main
 # ---------------------------------------------------------------------------
 
+async def _print_alias_summary(es: AsyncElasticsearch) -> None:
+    """Print which index each key alias currently points to."""
+    aliases_to_show = ["posts", "replies", "likes", "posts_recent", "replies_recent"]
+    console.print()
+    console.print("[bold]Alias summary:[/bold]")
+    for alias in aliases_to_show:
+        try:
+            resp = await es.indices.get_alias(name=alias)
+            for index_name, info in resp.items():
+                is_write = info.get("aliases", {}).get(alias, {}).get("is_write_index", False)
+                write_tag = " [dim](write)[/dim]" if is_write else ""
+                console.print(f"  [cyan]{alias}[/cyan] → {index_name}{write_tag}")
+        except NotFoundError:
+            console.print(f"  [cyan]{alias}[/cyan] → [dim](no index)[/dim]")
+        except AuthorizationException:
+            console.print(f"  [cyan]{alias}[/cyan] → [dim](insufficient privileges)[/dim]")
+
+
 async def _run(args: argparse.Namespace) -> int:
     url = os.environ.get("GE_ELASTICSEARCH_URL", "https://localhost:9200")
-    api_key = os.environ.get("GE_ELASTICSEARCH_API_KEY")
+    username = os.environ.get("GE_ELASTICSEARCH_USERNAME", "elastic")
+    password = os.environ.get("GE_ELASTICSEARCH_PASSWORD")
     skip_tls = os.environ.get("GE_ELASTICSEARCH_TLS_SKIP_VERIFY", "false").lower() in (
         "1", "true", "yes",
     )
 
-    if not api_key:
-        _die("GE_ELASTICSEARCH_API_KEY is not set")
+    if not password:
+        _die("GE_ELASTICSEARCH_PASSWORD is not set")
 
     es = AsyncElasticsearch(
         hosts=[url],
-        api_key=api_key,
+        basic_auth=(username, password),
         verify_certs=not skip_tls,
     )
 
@@ -555,6 +582,8 @@ async def _run(args: argparse.Namespace) -> int:
             STATE_FILE.unlink(missing_ok=True)
             _info(f"State file removed (migration complete).")
 
+        await _print_alias_summary(es)
+        console.print()
         _info("Migration complete.")
         return 0
 
@@ -594,7 +623,8 @@ examples:
         "--include-active",
         action="store_true",
         help=(
-            "Also migrate the index currently aliased by <type>_recent. "
+            "Also migrate the index currently receiving live writes "
+            "(the is_write_index member of the posts/replies/likes alias). "
             "Only safe once the current write period has rolled over."
         ),
     )

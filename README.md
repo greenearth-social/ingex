@@ -66,9 +66,12 @@ Export ES credentials (or set them in your shell environment):
 
 ```bash
 export GE_ELASTICSEARCH_URL=https://<host>:9200
-export GE_ELASTICSEARCH_API_KEY=<key>
-export GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true   # stage only
+export GE_ELASTICSEARCH_USERNAME=elastic          # default: elastic
+export GE_ELASTICSEARCH_PASSWORD=<elastic-password>
+export GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true      # stage only (self-signed cert)
 ```
+
+The `elastic` superuser has full cluster privileges and can read all aliases, which is required for the active-index safety check.
 
 Dry-run first to preview what will happen:
 
