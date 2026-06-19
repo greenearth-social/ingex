@@ -103,7 +103,7 @@ reindex_and_wait() {
   while true; do
     sleep "$POLL_INTERVAL"
     status=$(es GET "_tasks/$task_id?detailed=true")
-    completed=$(echo "$status" | jq -r '.completed // "false"')
+    completed=$(echo "$status" | jq -r 'if .completed == true then "true" else "false" end')
 
     total=$(    echo "$status" | jq -r '.task.status.total             // 0')
     created=$(  echo "$status" | jq -r '.task.status.created           // 0')
