@@ -86,7 +86,7 @@ data:
             "indexed_at": {
               "type": "date",
               "format": "iso8601",
-              "index": false
+              "index": true
             },
             "like_count": {
               "type": "integer",
@@ -124,7 +124,7 @@ data:
             },
             "video_transcript_language": {
               "type": "keyword",
-              "index": false
+              "index": true
             }
           }
         }
