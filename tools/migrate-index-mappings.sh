@@ -7,9 +7,10 @@
 # ILM templates only apply to newly created indices.  Existing indices retain
 # their old mappings and must be reindexed to benefit from the changes.
 #
-# Each source index is reindexed into <name>-migrated (which picks up the
-# updated template mapping automatically), all aliases are moved atomically,
-# and the source index is deleted.
+# Each source index is reindexed into <name>-<commit> where <commit> is the
+# short hash of the HEAD commit at run time (picks up the updated template
+# mapping automatically), all aliases are moved atomically, and the source
+# index is deleted.
 #
 # The index currently pointed to by posts_recent is still receiving live
 # writes, so it is skipped by default.  Re-run with --include-active after
@@ -79,7 +80,7 @@ get_aliases() {
 # ── Core migration for a single index ────────────────────────────────────────
 migrate_index() {
   local src="$1"
-  local dst="${src}-migrated"
+  local dst="${src}-${COMMIT}"
 
   if $DRY_RUN; then
     info "[dry-run] $src → $dst  (move aliases, delete $src)"
@@ -166,6 +167,10 @@ fi
 
 $DRY_RUN && warn "Dry-run mode — no changes will be made." && echo ""
 
+COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+info "Commit hash for destination suffix: $COMMIT"
+echo ""
+
 errors=0
 
 # ── posts-* ──────────────────────────────────────────────────────────────────
@@ -175,8 +180,9 @@ while IFS= read -r idx; do
     warn "Skipping active index: $idx"
     continue
   fi
-  # Skip indices that were already renamed by a previous run of this script.
-  if [[ "$idx" == *-migrated ]]; then
+  # Skip indices that were already renamed by a previous run of this script
+  # (suffix is a 7-char hex commit hash appended with a hyphen).
+  if [[ "$idx" =~ -[0-9a-f]{7}$ ]]; then
     info "Skipping already-migrated index: $idx"
     continue
   fi
