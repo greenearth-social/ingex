@@ -86,11 +86,9 @@ Run the migration (the active write index is skipped by default):
 pipenv run python reindex.py --types posts replies
 ```
 
-To also migrate the index currently receiving live writes (only safe after the write period has rolled over to a new index):
+**After a period rollover:** the formerly-active index is no longer receiving writes and is included automatically in a normal run — no flags needed. The same command above handles it.
 
-```bash
-pipenv run python reindex.py --types posts replies --include-active
-```
+**`--include-active` should only be used when you specifically need to migrate the index that is currently receiving live writes** (e.g. in a dev environment or a maintenance window). It carries a data loss risk: documents written to the source after reindex starts but before the alias swap completes are permanently lost when the source is deleted.
 
 Migrate all supported types at once:
 
