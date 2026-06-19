@@ -423,7 +423,7 @@ async def _process_index(
 
 async def _print_alias_summary(es: AsyncElasticsearch) -> None:
     """Print which index each key alias currently points to."""
-    aliases_to_show = ["posts", "replies", "likes", "posts_recent", "replies_recent"]
+    aliases_to_show = ["posts", "replies", "likes", "posts_recent"]
     console.print()
     console.print("[bold]Alias summary:[/bold]")
     for alias in aliases_to_show:
