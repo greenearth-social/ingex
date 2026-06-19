@@ -52,7 +52,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # Thin wrapper around curl; exits non-zero on HTTP error.
 es() {
   local method="$1" path="$2"; shift 2
-  curl -sf -X "$method" \
+  curl -skf -X "$method" \
     -H "Authorization: ApiKey $ES_API_KEY" \
     -H "Content-Type: application/json" \
     "$ES_URL/$path" "$@"
