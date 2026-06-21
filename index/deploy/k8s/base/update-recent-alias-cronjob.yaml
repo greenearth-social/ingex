@@ -34,66 +34,112 @@ spec:
             - |
               set -e
 
-              # Compute the current period suffix using the same logic as the bootstrap job
-              # and the ingest service, so all three agree on the expected index name.
-              current_period_suffix() {
-                case "$INDEX_PERIOD" in
-                  week)
-                    date -u +%G-w%V ;;
-                  hour)
-                    date -u +%Y-%m-%d-%H ;;
-                  10min)
-                    HH=$(date -u +%H)
-                    MM=$(date -u +%M)
-                    MM10=$(( (MM / 10) * 10 ))
-                    printf "%s-%02d" "$(date -u +%Y-%m-%d)-$HH" "$MM10" ;;
-                  *)
-                    date -u +%G-w%V ;;
-                esac
-              }
-
-              EXPECTED="posts-$(current_period_suffix)"
               ES="https://greenearth-es-http:9200"
               AUTH="es-service-user:$ES_SERVICE_PASSWORD"
 
-              echo "Expected posts_recent target: $EXPECTED"
+              # Compute the period suffix for an epoch timestamp.
+              # Uses the same logic as the bootstrap job and ingest service.
+              suffix_for_epoch() {
+                local ts="$1"
+                case "$INDEX_PERIOD" in
+                  week)
+                    date -u -d "@$ts" +%G-w%V ;;
+                  hour)
+                    date -u -d "@$ts" +%Y-%m-%d-%H ;;
+                  10min)
+                    local hh mm mm10
+                    hh=$(date -u -d "@$ts" +%H)
+                    mm=$(date -u -d "@$ts" +%M)
+                    mm10=$(( (mm / 10) * 10 ))
+                    printf "%s-%s-%02d" "$(date -u -d "@$ts" +%Y-%m-%d)" "$hh" "$mm10" ;;
+                  *)
+                    date -u -d "@$ts" +%G-w%V ;;
+                esac
+              }
 
-              # Fetch current posts_recent alias state
-              ALIAS_JSON=$(curl -k -s -u "$AUTH" "$ES/posts_recent/_alias" 2>/dev/null || echo "{}")
+              period_seconds() {
+                case "$INDEX_PERIOD" in
+                  week)  echo 604800 ;;
+                  hour)  echo 3600 ;;
+                  10min) echo 600 ;;
+                  *)     echo 604800 ;;
+                esac
+              }
 
-              # Check if posts_recent already points to the expected index
-              if echo "$ALIAS_JSON" | grep -q "\"$EXPECTED\""; then
-                echo "posts_recent already points to $EXPECTED — no update needed"
+              # Find the physical index that backs a given period prefix, tolerating a
+              # migration SHA suffix (e.g. posts-2026-w24-7030fc2).  Returns the most
+              # recently created match, or empty string if none exist.
+              find_index() {
+                local prefix="$1"
+                curl -k -s -u "$AUTH" \
+                  "$ES/_cat/indices/${prefix}*?h=index&s=creation.date:desc&format=json" \
+                  2>/dev/null \
+                  | grep -o '"[^"]*"' | tr -d '"' | grep "^${prefix}" | head -1 || true
+              }
+
+              NOW=$(date -u +%s)
+              PERIOD_SECS=$(period_seconds)
+
+              CURRENT_SUFFIX=$(suffix_for_epoch "$NOW")
+              PRIOR_SUFFIX=$(suffix_for_epoch "$(( NOW - PERIOD_SECS ))")
+
+              echo "Current period: posts-$CURRENT_SUFFIX"
+              echo "Prior period:   posts-$PRIOR_SUFFIX"
+
+              CURRENT_INDEX=$(find_index "posts-$CURRENT_SUFFIX")
+              PRIOR_INDEX=$(find_index "posts-$PRIOR_SUFFIX")
+
+              if [ -z "$CURRENT_INDEX" ]; then
+                echo "Current period index not found — skipping update"
                 exit 0
               fi
 
-              # Verify the expected index exists before switching (the ingest service
-              # creates it before writing, so this should always be true in steady state)
-              STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" \
-                -u "$AUTH" "$ES/$EXPECTED")
-              if [ "$STATUS" != "200" ]; then
-                echo "Expected index $EXPECTED does not yet exist (status $STATUS) — skipping update"
+              echo "Resolved current index: $CURRENT_INDEX"
+              if [ -n "$PRIOR_INDEX" ]; then
+                echo "Resolved prior index:   $PRIOR_INDEX"
+              else
+                echo "Prior index not yet created — will add when it exists"
+              fi
+
+              # Fetch the current members of posts_recent.
+              ALIAS_JSON=$(curl -k -s -u "$AUTH" "$ES/*/_alias/posts_recent" 2>/dev/null || echo "{}")
+
+              # Check whether posts_recent already contains all expected members.
+              CURRENT_PRESENT=$(echo "$ALIAS_JSON" | grep -c "\"$CURRENT_INDEX\"" || true)
+              if [ -n "$PRIOR_INDEX" ]; then
+                PRIOR_PRESENT=$(echo "$ALIAS_JSON" | grep -c "\"$PRIOR_INDEX\"" || true)
+              else
+                PRIOR_PRESENT=1
+              fi
+
+              if [ "${CURRENT_PRESENT:-0}" -gt 0 ] && [ "${PRIOR_PRESENT:-0}" -gt 0 ]; then
+                echo "posts_recent already covers both periods — no update needed"
                 exit 0
               fi
 
-              echo "Updating posts_recent to point to $EXPECTED..."
-
-              # Collect all current members of posts_recent to remove them atomically
+              # Build atomic alias update: remove any index outside the 2-period window,
+              # add the current and prior indices.
               REMOVE_ACTIONS=""
-              CURRENT_MEMBERS=$(curl -k -s -u "$AUTH" "$ES/*/_alias/posts_recent" 2>/dev/null | \
-                grep -o '"[^"]*":{"aliases":{"posts_recent"' | grep -o '^"[^"]*"' | tr -d '"' || true)
+              CURRENT_MEMBERS=$(echo "$ALIAS_JSON" | \
+                grep -o '"[^"]*":{"aliases":{"posts_recent"' | \
+                grep -o '^"[^"]*"' | tr -d '"' || true)
 
               for idx in $CURRENT_MEMBERS; do
-                if [ "$idx" != "$EXPECTED" ]; then
+                if [ "$idx" != "$CURRENT_INDEX" ] && [ "$idx" != "$PRIOR_INDEX" ]; then
                   REMOVE_ACTIONS="${REMOVE_ACTIONS}{\"remove\":{\"index\":\"$idx\",\"alias\":\"posts_recent\"}},"
                 fi
               done
 
-              UPDATE_BODY="{\"actions\":[${REMOVE_ACTIONS}{\"add\":{\"index\":\"$EXPECTED\",\"alias\":\"posts_recent\"}}]}"
+              ADD_ACTIONS="{\"add\":{\"index\":\"$CURRENT_INDEX\",\"alias\":\"posts_recent\"}}"
+              if [ -n "$PRIOR_INDEX" ]; then
+                ADD_ACTIONS="${ADD_ACTIONS},{\"add\":{\"index\":\"$PRIOR_INDEX\",\"alias\":\"posts_recent\"}}"
+              fi
 
+              echo "Updating posts_recent..."
               curl -k --fail-with-body -X POST "$ES/_aliases" \
                 -u "$AUTH" \
                 -H "Content-Type: application/json" \
-                -d "$UPDATE_BODY"
+                -d "{\"actions\":[${REMOVE_ACTIONS}${ADD_ACTIONS}]}"
 
-              echo "posts_recent updated to $EXPECTED"
+              echo ""
+              echo "posts_recent updated."

@@ -15,10 +15,9 @@ const (
 
 // AttachPostTowerEmbeddings computes post-tower embeddings for eligible docs
 // and sets doc.Embeddings["ge_post_embedding"] in place. A doc is eligible
-// when it is not a reply (ThreadParentPost is empty) and has a content
-// embedding. Fail-open: docs whose inference chunk failed are left without
-// the field so they still index. No-op when b is nil (disabled / dry-run).
-func AttachPostTowerEmbeddings(ctx context.Context, b *BatchEmbedder, docs []common.ElasticsearchDoc) (embedded, skipped, failed int) {
+// when it has a content embedding. Fail-open: docs whose inference chunk
+// failed are left without the field so they still index. No-op when b is nil.
+func AttachPostTowerEmbeddings(ctx context.Context, b *BatchEmbedder, docs []common.PostDoc) (embedded, skipped, failed int) {
 	if b == nil || len(docs) == 0 {
 		return 0, 0, 0
 	}
@@ -27,7 +26,7 @@ func AttachPostTowerEmbeddings(ctx context.Context, b *BatchEmbedder, docs []com
 	eligible := make([]int, 0, len(docs))
 	for i, doc := range docs {
 		contentEmbedding, ok := doc.Embeddings[contentEmbeddingKey]
-		if doc.ThreadParentPost != "" || !ok {
+		if !ok {
 			skipped++
 			continue
 		}

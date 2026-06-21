@@ -11,11 +11,10 @@ import (
 	"github.com/greenearth/ingest/internal/common"
 )
 
-func makeDoc(atURI, authorDID, threadParentPost string, contentEmbedding []float32) common.ElasticsearchDoc {
-	doc := common.ElasticsearchDoc{
-		AtURI:            atURI,
-		AuthorDID:        authorDID,
-		ThreadParentPost: threadParentPost,
+func makeDoc(atURI, authorDID string, contentEmbedding []float32) common.PostDoc {
+	doc := common.PostDoc{
+		AtURI:     atURI,
+		AuthorDID: authorDID,
 	}
 	if contentEmbedding != nil {
 		doc.Embeddings = map[string]common.Float32Array{
@@ -32,11 +31,11 @@ func TestAttachPostTowerEmbeddings(t *testing.T) {
 
 	embedder := NewBatchEmbedder(testClient(server.URL, 0), 32, 4, common.NewLogger(false))
 
-	docs := []common.ElasticsearchDoc{
-		makeDoc("at://a/post/1", "did:plc:a", "", []float32{1.0, 0.5}),
-		makeDoc("at://a/post/2", "did:plc:a", "at://parent/post/0", []float32{2.0, 0.5}), // reply: skipped
-		makeDoc("at://a/post/3", "did:plc:b", "", nil),                                   // no content embedding: skipped
-		makeDoc("at://a/post/4", "did:plc:b", "", []float32{4.0, 0.5}),
+	docs := []common.PostDoc{
+		makeDoc("at://a/post/1", "did:plc:a", []float32{1.0, 0.5}),
+		makeDoc("at://a/post/2", "did:plc:a", nil),               // no content embedding: skipped
+		makeDoc("at://a/post/3", "did:plc:b", nil),               // no content embedding: skipped
+		makeDoc("at://a/post/4", "did:plc:b", []float32{4.0, 0.5}),
 	}
 
 	embedded, skipped, failed := AttachPostTowerEmbeddings(context.Background(), embedder, docs)
@@ -49,7 +48,7 @@ func TestAttachPostTowerEmbeddings(t *testing.T) {
 		t.Errorf("doc 0 %s = %v, want [1.0, 1.0]", postEmbeddingKey, got)
 	}
 	if _, ok := docs[1].Embeddings[postEmbeddingKey]; ok {
-		t.Errorf("doc 1 is a reply, must not have %s", postEmbeddingKey)
+		t.Errorf("doc 1 has no content embedding, must not have %s", postEmbeddingKey)
 	}
 	if _, ok := docs[2].Embeddings[postEmbeddingKey]; ok {
 		t.Errorf("doc 2 has no content embedding, must not have %s", postEmbeddingKey)
@@ -68,7 +67,7 @@ func TestAttachPostTowerEmbeddings(t *testing.T) {
 		t.Errorf("doc 0 PostEmbeddingModelUUID = %q, want %q", docs[0].PostEmbeddingModelUUID, "test-uuid-echo")
 	}
 	if docs[1].PostEmbeddingModelUUID != "" {
-		t.Errorf("doc 1 (reply) PostEmbeddingModelUUID = %q, want empty", docs[1].PostEmbeddingModelUUID)
+		t.Errorf("doc 1 (no content embedding) PostEmbeddingModelUUID = %q, want empty", docs[1].PostEmbeddingModelUUID)
 	}
 	if docs[2].PostEmbeddingModelUUID != "" {
 		t.Errorf("doc 2 (no content embedding) PostEmbeddingModelUUID = %q, want empty", docs[2].PostEmbeddingModelUUID)
@@ -79,8 +78,8 @@ func TestAttachPostTowerEmbeddings(t *testing.T) {
 }
 
 func TestAttachPostTowerEmbeddingsNilEmbedder(t *testing.T) {
-	docs := []common.ElasticsearchDoc{
-		makeDoc("at://a/post/1", "did:plc:a", "", []float32{1.0, 0.5}),
+	docs := []common.PostDoc{
+		makeDoc("at://a/post/1", "did:plc:a", []float32{1.0, 0.5}),
 	}
 
 	embedded, skipped, failed := AttachPostTowerEmbeddings(context.Background(), nil, docs)
@@ -116,9 +115,9 @@ func TestAttachPostTowerEmbeddingsFailOpen(t *testing.T) {
 	defer server.Close()
 
 	embedder := NewBatchEmbedder(testClient(server.URL, 0), 32, 4, common.NewLogger(false))
-	docs := []common.ElasticsearchDoc{
-		makeDoc("at://a/post/1", "did:plc:a", "", []float32{1.0, 0.5}),
-		makeDoc("at://a/post/2", "did:plc:a", "at://parent/post/0", []float32{2.0, 0.5}),
+	docs := []common.PostDoc{
+		makeDoc("at://a/post/1", "did:plc:a", []float32{1.0, 0.5}),
+		makeDoc("at://a/post/2", "did:plc:a", nil), // no content embedding: skipped
 	}
 
 	embedded, skipped, failed := AttachPostTowerEmbeddings(context.Background(), embedder, docs)

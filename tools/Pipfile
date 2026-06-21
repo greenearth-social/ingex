@@ -1,0 +1,14 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+elasticsearch = "==9.4.1"
+aiohttp = "*"
+rich = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.13"

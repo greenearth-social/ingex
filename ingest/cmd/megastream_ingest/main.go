@@ -607,16 +607,6 @@ func dispatchIndexPosts(msgs []common.MegaStreamMessage, esClient *elasticsearch
 	return &pendingPostFlush{ch: ch, cancelCtx: cancelBatchCtx}
 }
 
-// postAliasFromDoc returns the ES alias for a document.
-// Posts with a non-empty thread_parent_post or thread_root_post are replies
-// and go to the replies alias.
-func postAliasFromDoc(doc common.ElasticsearchDoc) string {
-	if doc.ThreadParentPost != "" || doc.ThreadRootPost != "" {
-		return "replies"
-	}
-	return "posts"
-}
-
 // indexDocuments creates Elasticsearch documents from messages and indexes them
 // concurrently — posts and replies are routed to their respective indices in parallel goroutines.
 // Post-tower embeddings are attached to posts before indexing.
@@ -627,15 +617,14 @@ func indexDocuments(ctx context.Context, msgs []common.MegaStreamMessage, esClie
 		return 0
 	}
 
-	postsBatch := make([]common.ElasticsearchDoc, 0, len(msgs))
-	repliesBatch := make([]common.ElasticsearchDoc, 0)
+	postsBatch := make([]common.PostDoc, 0, len(msgs))
+	repliesBatch := make([]common.ReplyDoc, 0)
 
 	for _, m := range msgs {
-		doc := common.CreateElasticsearchDoc(m, 0)
-		if postAliasFromDoc(doc) == "replies" {
-			repliesBatch = append(repliesBatch, doc)
+		if m.GetThreadParentPost() != "" || m.GetThreadRootPost() != "" {
+			repliesBatch = append(repliesBatch, common.CreateReplyDoc(m, 0))
 		} else {
-			postsBatch = append(postsBatch, doc)
+			postsBatch = append(postsBatch, common.CreatePostDoc(m, 0))
 		}
 	}
 
