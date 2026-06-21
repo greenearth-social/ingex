@@ -9,6 +9,7 @@
 *.dylib
 ingest/ingest
 bin/
+__pycache__/
 
 # Log files
 logs/
