@@ -238,6 +238,49 @@ async def _index_exists(es: AsyncElasticsearch, index: str) -> bool:
         return False
 
 
+async def _doc_count(es: AsyncElasticsearch, index: str) -> int | None:
+    """Return the document count for index, or None if it does not exist."""
+    try:
+        resp = await es.count(index=index)
+        return int(resp["count"])
+    except NotFoundError:
+        return None
+
+
+async def _task_running(es: AsyncElasticsearch, task_id: str) -> bool:
+    """Return True if the task exists and has not yet completed."""
+    try:
+        task = await es.tasks.get(task_id=task_id)
+        return task.get("completed") is not True
+    except NotFoundError:
+        return False
+
+
+async def _find_running_reindex_to(es: AsyncElasticsearch, dst: str) -> str | None:
+    """Return the id of a running reindex task writing into dst, if any.
+
+    Adopting an orphaned reindex (e.g. one whose driving script was Ctrl-C'd)
+    lets us re-attach to it instead of starting a competing reindex into the
+    same destination — which would collide on op_type=create version conflicts.
+    """
+    try:
+        resp = await es.tasks.list(
+            actions="indices:data/write/reindex", detailed=True,
+        )
+    except Exception:
+        return None
+
+    suffix = f"to [{dst}]"
+    for node in (resp.get("nodes") or {}).values():
+        for task_id, task in (node.get("tasks") or {}).items():
+            desc = task.get("description") or ""
+            # Only the parent reindex task carries the "from [..] to [..]"
+            # description; sliced child tasks are just "reindex" and are skipped.
+            if desc.startswith("reindex from") and desc.endswith(suffix):
+                return task_id
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Migration steps
 # ---------------------------------------------------------------------------
@@ -252,7 +295,12 @@ async def _poll_task(
     Returns the final task status: SWAP_PENDING on success, FAILED on failure.
     """
     task_id = state.indices[src].task_id
+    dst = state.indices[src].dst
     _info(f"  Polling task [cyan]{task_id}[/cyan] ...")
+
+    # Source is no longer receiving writes (active indices are skipped), so its
+    # count is a stable denominator for progress.
+    src_count = await _doc_count(es, src)
 
     while True:
         await asyncio.sleep(POLL_INTERVAL_SECS)
@@ -260,35 +308,35 @@ async def _poll_task(
         try:
             task = await es.tasks.get(task_id=task_id)
         except NotFoundError:
-            # Task completed and was evicted from the task store; treat as done.
-            _info(f"  Task {task_id} evicted from task store — checking destination index ...")
-            dst = state.indices[src].dst
-            if await _index_exists(es, dst):
-                _info(f"  Destination {dst} exists — proceeding to alias swap.")
+            # Task evicted from the task store. Only treat as done if the
+            # destination is actually complete — otherwise the reindex was
+            # interrupted and must be restarted.
+            _info(f"  Task {task_id} evicted from task store — checking destination count ...")
+            dst_count = await _doc_count(es, dst)
+            if dst_count is not None and src_count is not None and dst_count >= src_count:
+                _info(f"  Destination {dst} complete ({dst_count:,}/{src_count:,}) — proceeding to alias swap.")
                 return SWAP_PENDING
-            else:
-                _warn(f"  Destination {dst} not found after task eviction — will restart reindex.")
-                return FAILED
+            _warn(f"  Destination {dst} incomplete after eviction ({dst_count}/{src_count}) — will restart reindex.")
+            return FAILED
 
         completed: bool = task.get("completed") is True
-        status = (task.get("task") or {}).get("status") or {}
-        total     = int(status.get("total", 0))
-        created   = int(status.get("created", 0))
-        conflicts = int(status.get("version_conflicts", 0))
-        processed = created + conflicts
 
-        if total > 0:
-            pct = processed * 100 / total
-            _info(f"  {src}: {processed:,} / {total:,} docs ({pct:.1f}%)")
+        # Report progress from document counts. The sliced-reindex parent task
+        # reports total=0 with null slices until every slice finishes its first
+        # scroll, so the task status is unreliable for progress.
+        dst_count = await _doc_count(es, dst)
+        if src_count and dst_count is not None:
+            pct = dst_count * 100 / src_count
+            _info(f"  {src}: {dst_count:,} / {src_count:,} docs ({pct:.1f}%)")
         else:
-            _info(f"  {src}: task running, waiting for doc count...")
+            _info(f"  {src}: reindexing (dst={dst_count}, src={src_count}) ...")
 
         if not completed:
             continue
 
         result = task.get("response") or {}
-        final_created   = result.get("created", created)
-        final_conflicts = result.get("version_conflicts", conflicts)
+        final_created   = result.get("created", 0)
+        final_conflicts = result.get("version_conflicts", 0)
         final_failures  = result.get("failures") or []
         took_ms         = result.get("took", 0)
 
@@ -369,6 +417,58 @@ async def _do_swap(
     return DONE
 
 
+async def _ensure_reindex(
+    es: AsyncElasticsearch,
+    state: RunState,
+    src: str,
+) -> str:
+    """Decide how to (re)start work for src and return the next status.
+
+    Returns REINDEXING (a task is running — poll it), SWAP_PENDING (destination
+    already complete), DONE (destination already live behind an alias), or
+    FAILED (could not start a fresh reindex).
+    """
+    idx = state.indices[src]
+    dst = idx.dst
+
+    # 1. A reindex we already know about is still running — re-attach to it.
+    if idx.task_id and await _task_running(es, idx.task_id):
+        _info(f"  Reattaching to running task [cyan]{idx.task_id}[/cyan]")
+        return REINDEXING
+
+    # 2. An untracked reindex is already writing to dst (e.g. orphaned by an
+    #    earlier Ctrl-C) — adopt it rather than competing with it.
+    orphan = await _find_running_reindex_to(es, dst)
+    if orphan:
+        _info(f"  Adopting running reindex into {dst}: [cyan]{orphan}[/cyan]")
+        state.update(src, task_id=orphan, status=REINDEXING)
+        return REINDEXING
+
+    # 3. No reindex running — inspect the destination.
+    if await _index_exists(es, dst):
+        dst_aliases = await _get_aliases(es, dst)
+        if dst_aliases:
+            # Destination already serves an alias — never delete a live index.
+            _info(f"  Destination {dst} already live (aliases: {', '.join(dst_aliases)}).")
+            return DONE
+
+        src_count = await _doc_count(es, src)
+        dst_count = await _doc_count(es, dst)
+        if dst_count is not None and src_count is not None and dst_count >= src_count:
+            _info(f"  Destination {dst} already complete ({dst_count:,}/{src_count:,}) — skipping reindex.")
+            return SWAP_PENDING
+
+        # Alias-less, incomplete leftover — safe to delete and restart fresh.
+        _warn(f"  Removing partial destination {dst} ({dst_count}/{src_count}) and restarting.")
+        try:
+            await es.indices.delete(index=dst)
+        except NotFoundError:
+            pass
+
+    # 4. Start a fresh reindex.
+    return await _start_reindex(es, state, src)
+
+
 async def _process_index(
     es: AsyncElasticsearch,
     state: RunState | None,
@@ -391,11 +491,17 @@ async def _process_index(
     _info(f"Migrating [bold]{src}[/bold] → [bold]{idx.dst}[/bold]"
           + (f" [dim](resuming from {idx.status})[/dim]" if idx.status != PENDING else ""))
 
-    # ── Step 1: ensure reindex is running ───────────────────────────────────
-    if idx.status in (PENDING, FAILED):
-        new_status = await _start_reindex(es, state, src)
+    # ── Step 1: ensure a reindex is running, complete, or already live ──────
+    if idx.status in (PENDING, FAILED, REINDEXING):
+        new_status = await _ensure_reindex(es, state, src)
         if new_status == FAILED:
             state.update(src, status=FAILED, error="Failed to start reindex")
+            return
+        # Clear any stale error from a previous failed attempt.
+        state.update(src, status=new_status, error=None)
+        if new_status == DONE:
+            state.update(src, completed_at=_now())
+            _info(f"  [green]✓[/green] {src} → {idx.dst} (already migrated)")
             return
 
     # ── Step 2: poll until reindex finishes ─────────────────────────────────
@@ -646,7 +752,17 @@ examples:
         help="Discard any saved state and start the migration from scratch.",
     )
     args = parser.parse_args()
-    sys.exit(asyncio.run(_run(args)))
+    try:
+        exit_code = asyncio.run(_run(args))
+    except KeyboardInterrupt:
+        console.print()
+        _warn(
+            "Interrupted — any in-flight Elasticsearch reindex task keeps running "
+            "server-side. Re-run with the same --types to resume; the script will "
+            "re-attach to the running task."
+        )
+        sys.exit(130)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
