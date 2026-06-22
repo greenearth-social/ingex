@@ -9,6 +9,8 @@ aiohttp = "*"
 rich = "*"
 
 [dev-packages]
+pytest = "*"
+pytest-asyncio = "*"
 
 [requires]
 python_version = "3.13"
