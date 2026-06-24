@@ -21,6 +21,7 @@ Run from the tools/ directory:
     pipenv run python reindex.py --types posts replies --dry-run
     pipenv run python reindex.py --types posts replies --include-active
     pipenv run python reindex.py --types posts replies likes
+    pipenv run python reindex.py --types posts replies --force-merge
 
 Prerequisites:
   - Updated ILM templates have been deployed (bootstrap job or manual PUT).
@@ -381,6 +382,16 @@ async def _start_reindex(
     return REINDEXING
 
 
+async def _force_merge_index(es: AsyncElasticsearch, index: str) -> None:
+    """Force-merge index to a single segment. Blocks until complete; non-fatal on error."""
+    _info(f"  Force-merging {index} to 1 segment (this may take a while) ...")
+    try:
+        await es.indices.forcemerge(index=index, max_num_segments=1, wait_for_completion=True)
+        _info(f"  Force-merge complete.")
+    except Exception as exc:
+        _warn(f"  Force-merge failed (non-fatal, alias swap will still proceed): {exc}")
+
+
 async def _do_swap(
     es: AsyncElasticsearch,
     state: RunState,
@@ -475,10 +486,12 @@ async def _process_index(
     src: str,
     commit: str,
     dry_run: bool,
+    force_merge: bool = False,
 ) -> None:
     """Drive one index through its full migration state machine."""
     if dry_run:
-        _info(f"[dim][dry-run][/dim] Would reindex {src} → {src}-{commit}, swap aliases, delete src.")
+        fm_note = ", force-merge to 1 segment" if force_merge else ""
+        _info(f"[dim][dry-run][/dim] Would reindex {src} → {src}-{commit}{fm_note}, swap aliases, delete src.")
         return
 
     assert state is not None
@@ -511,6 +524,10 @@ async def _process_index(
         if new_status == FAILED:
             state.update(src, error="Reindex task failed or destination missing after eviction")
             return
+
+    # ── Step 2.5: optional force-merge before swap ───────────────────────────
+    if state.indices[src].status == SWAP_PENDING and force_merge:
+        await _force_merge_index(es, state.indices[src].dst)
 
     # ── Step 3: atomic alias swap + delete ──────────────────────────────────
     if state.indices[src].status == SWAP_PENDING:
@@ -666,7 +683,7 @@ async def _run(args: argparse.Namespace) -> int:
                         continue
 
                 try:
-                    await _process_index(es, state, idx, commit, dry_run=args.dry_run)
+                    await _process_index(es, state, idx, commit, dry_run=args.dry_run, force_merge=args.force_merge)
                     if state is not None and state.indices[idx].status == FAILED:
                         errors += 1
                 except Exception as exc:
@@ -713,6 +730,7 @@ examples:
   pipenv run python reindex.py --types posts replies --dry-run
   pipenv run python reindex.py --types posts replies --include-active
   pipenv run python reindex.py --types posts replies likes
+  pipenv run python reindex.py --types posts replies --force-merge
   pipenv run python reindex.py --types posts --reset
 """,
     )
@@ -745,6 +763,15 @@ examples:
         "--commit",
         metavar="HASH",
         help="Override the git commit hash used as the destination index suffix.",
+    )
+    parser.add_argument(
+        "--force-merge",
+        action="store_true",
+        help=(
+            "After each reindex completes, force-merge the destination index to 1 segment "
+            "before swapping aliases. Reduces per-shard term-seek cost immediately rather "
+            "than waiting for the ILM warm phase. Heavy I/O — run off-peak."
+        ),
     )
     parser.add_argument(
         "--reset",

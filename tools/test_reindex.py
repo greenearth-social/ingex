@@ -264,3 +264,51 @@ async def test_poll_task_eviction_partial_returns_failed(monkeypatch):
     es.tasks.get.side_effect = _nf()
 
     assert await reindex._poll_task(es, st, "s") == FAILED
+
+
+# ---------------------------------------------------------------------------
+# _force_merge_index
+# ---------------------------------------------------------------------------
+
+async def test_force_merge_index_calls_forcemerge():
+    es = _es()
+    es.indices.forcemerge.return_value = {"_shards": {"successful": 3}}
+    await reindex._force_merge_index(es, "posts-2026-w25-abc1234")
+    es.indices.forcemerge.assert_awaited_once_with(
+        index="posts-2026-w25-abc1234", max_num_segments=1, wait_for_completion=True
+    )
+
+
+async def test_force_merge_index_swallows_errors():
+    es = _es()
+    es.indices.forcemerge.side_effect = Exception("timeout")
+    # Should not raise
+    await reindex._force_merge_index(es, "posts-2026-w25-abc1234")
+
+
+# ---------------------------------------------------------------------------
+# _process_index — force_merge flag
+# ---------------------------------------------------------------------------
+
+async def test_process_index_calls_force_merge_when_flagged(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=SWAP_PENDING)
+    monkeypatch.setattr(reindex, "_ensure_reindex", AsyncMock(return_value=SWAP_PENDING))
+    fm = AsyncMock()
+    monkeypatch.setattr(reindex, "_force_merge_index", fm)
+    monkeypatch.setattr(reindex, "_do_swap", AsyncMock(return_value=DONE))
+
+    await reindex._process_index(es, st, "s", "abc1234", dry_run=False, force_merge=True)
+    fm.assert_awaited_once_with(es, "d")
+
+
+async def test_process_index_skips_force_merge_when_not_flagged(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=SWAP_PENDING)
+    monkeypatch.setattr(reindex, "_ensure_reindex", AsyncMock(return_value=SWAP_PENDING))
+    fm = AsyncMock()
+    monkeypatch.setattr(reindex, "_force_merge_index", fm)
+    monkeypatch.setattr(reindex, "_do_swap", AsyncMock(return_value=DONE))
+
+    await reindex._process_index(es, st, "s", "abc1234", dry_run=False, force_merge=False)
+    fm.assert_not_awaited()
