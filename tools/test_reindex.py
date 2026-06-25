@@ -23,6 +23,7 @@ from reindex import (  # noqa: E402
     SWAP_PENDING,
     IndexState,
     RunState,
+    _confirm_include_active,
 )
 
 
@@ -312,3 +313,44 @@ async def test_process_index_skips_force_merge_when_not_flagged(monkeypatch):
 
     await reindex._process_index(es, st, "s", "abc1234", dry_run=False, force_merge=False)
     fm.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _confirm_include_active
+# ---------------------------------------------------------------------------
+
+def test_confirm_include_active_yes(monkeypatch):
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", lambda _: "y")
+    assert _confirm_include_active("posts-2026-w26", "posts") is True
+
+
+def test_confirm_include_active_no(monkeypatch):
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", lambda _: "n")
+    assert _confirm_include_active("posts-2026-w26", "posts") is False
+
+
+def test_confirm_include_active_empty_defaults_no(monkeypatch):
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", lambda _: "")
+    assert _confirm_include_active("posts-2026-w26", "posts") is False
+
+
+def test_confirm_include_active_eof_returns_false(monkeypatch):
+    def _raise(_):
+        raise EOFError
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", _raise)
+    assert _confirm_include_active("posts-2026-w26", "posts") is False
+
+
+# ---------------------------------------------------------------------------
+# RunState — explicit_indices field
+# ---------------------------------------------------------------------------
+
+def test_runstate_create_stores_explicit_indices():
+    st = RunState.create("abc1234", [], explicit_indices=["posts-2026-w25", "replies-2026-w25"])
+    assert sorted(st.explicit_indices) == ["posts-2026-w25", "replies-2026-w25"]
+    assert st.types == []
+
+
+def test_runstate_create_without_explicit_indices():
+    st = RunState.create("abc1234", ["posts", "replies"])
+    assert st.explicit_indices == []

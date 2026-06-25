@@ -19,9 +19,9 @@ the script will skip completed indices and pick up where it left off.
 
 Run from the tools/ directory:
     pipenv run python reindex.py --types posts replies --dry-run
-    pipenv run python reindex.py --types posts replies --include-active
-    pipenv run python reindex.py --types posts replies likes
     pipenv run python reindex.py --types posts replies --force-merge
+    pipenv run python reindex.py --indices posts-2026-w26 replies-2026-w26
+    pipenv run python reindex.py --types posts replies --include-active
 
 Prerequisites:
   - Updated ILM templates have been deployed (bootstrap job or manual PUT).
@@ -113,6 +113,7 @@ class RunState:
     types: list[str]
     created_at: str
     indices: dict[str, IndexState] = field(default_factory=dict)
+    explicit_indices: list[str] = field(default_factory=list)
 
     # ---- Persistence -------------------------------------------------------
 
@@ -121,6 +122,7 @@ class RunState:
         data = {
             "commit": self.commit,
             "types": self.types,
+            "explicit_indices": self.explicit_indices,
             "created_at": self.created_at,
             "indices": {
                 src: dataclasses.asdict(s)
@@ -144,6 +146,7 @@ class RunState:
             return cls(
                 commit=data["commit"],
                 types=data["types"],
+                explicit_indices=data.get("explicit_indices", []),
                 created_at=data["created_at"],
                 indices={
                     src: IndexState(**vals)
@@ -154,8 +157,18 @@ class RunState:
             return None
 
     @classmethod
-    def create(cls, commit: str, types: list[str]) -> RunState:
-        return cls(commit=commit, types=sorted(types), created_at=_now())
+    def create(
+        cls,
+        commit: str,
+        types: list[str],
+        explicit_indices: list[str] | None = None,
+    ) -> RunState:
+        return cls(
+            commit=commit,
+            types=sorted(types),
+            explicit_indices=sorted(explicit_indices or []),
+            created_at=_now(),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +186,30 @@ def _warn(msg: str) -> None:
 def _die(msg: str) -> None:
     console.print(f"[red][ERROR][/red] {msg}")
     sys.exit(1)
+
+
+def _confirm_include_active(active_index: str, type_name: str) -> bool:
+    """Warn about data loss and prompt for confirmation before reindexing the active write index."""
+    console.print()
+    console.print(
+        f"[bold red][WARNING][/bold red]  --include-active will reindex [bold]{active_index}[/bold] "
+        f"(active write index for '{type_name}')."
+    )
+    console.print()
+    console.print(
+        "  [yellow]Data-loss risk:[/yellow] While reindexing, the write alias continues pointing to the\n"
+        "  source index. Documents written after reindexing starts will NOT be present in\n"
+        "  the destination and will be [bold]permanently lost[/bold] when the alias is swapped."
+    )
+    console.print()
+    console.print("  [bold]Only proceed when all ingest services have been stopped.[/bold]")
+    console.print()
+    try:
+        answer = input("  Proceed with reindexing the active index? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return False
+    return answer == "y"
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +629,8 @@ async def _run(args: argparse.Namespace) -> int:
         console.print()
 
         # ── State init ───────────────────────────────────────────────────────
-        sorted_types = sorted(args.types)
+        sorted_types = sorted(args.types or [])
+        sorted_explicit = sorted(args.indices or [])
         state: RunState | None = None
 
         if not args.dry_run:
@@ -602,7 +640,20 @@ async def _run(args: argparse.Namespace) -> int:
             else:
                 state = RunState.load()
                 if state is not None:
-                    if state.commit == commit and sorted(state.types) == sorted_types:
+                    if sorted_explicit:
+                        state_matches = (
+                            state.commit == commit
+                            and sorted(state.explicit_indices) == sorted_explicit
+                        )
+                        state_desc = f"commit={state.commit}, indices={state.explicit_indices}"
+                    else:
+                        state_matches = (
+                            state.commit == commit
+                            and sorted(state.types) == sorted_types
+                        )
+                        state_desc = f"commit={state.commit}, types={state.types}"
+
+                    if state_matches:
                         done = sum(1 for s in state.indices.values() if s.status == DONE)
                         total_tracked = len(state.indices)
                         _info(
@@ -611,56 +662,27 @@ async def _run(args: argparse.Namespace) -> int:
                         )
                     else:
                         _warn(
-                            f"State file is for a different run "
-                            f"(commit={state.commit}, types={state.types}). "
+                            f"State file is for a different run ({state_desc}). "
                             f"Use --reset to start fresh."
                         )
                         return 1
 
             if state is None:
-                state = RunState.create(commit, sorted_types)
+                state = RunState.create(commit, sorted_types, explicit_indices=sorted_explicit or None)
                 state.save()
                 _info(f"State file: {STATE_FILE}")
 
             console.print()
 
-        # ── Discover indices ─────────────────────────────────────────────────
+        # ── Discover and process indices ─────────────────────────────────────
         errors = 0
 
-        for type_name in sorted_types:
-            cfg = INDEX_TYPES[type_name]
-            pattern = cfg["pattern"]
-            active_alias = cfg["active_alias"]
+        if sorted_explicit:
+            # ── Explicit-index mode: process only the named indices ──────────
+            _info(f"=== Explicit indices (active-index guard bypassed) ===")
 
-            active_index: str | None = None
-            if not args.include_active:
-                active_index = await _active_index_for(es, active_alias)
-                if active_index:
-                    _warn(f"Skipping active {type_name} index: {active_index}")
-                    console.print(
-                        "  (Re-run with --include-active after the period rolls over.)"
-                    )
-                    console.print()
-
-            _info(f"=== {pattern} (newest first) ===")
-            indices = await _list_indices(es, pattern)
-
-            if not indices:
-                _info(f"No indices found matching {pattern}")
-                console.print()
-                continue
-
-            for idx in indices:
-                # Register indices in state on first encounter (non-dry-run).
+            for idx in sorted_explicit:
                 if state is not None and idx not in state.indices:
-                    if idx == active_index:
-                        state.indices[idx] = IndexState(
-                            status=SKIPPED, src=idx, dst=f"{idx}-{commit}",
-                            error="active write index",
-                        )
-                        state.save()
-                        _warn(f"Skipping active index: {idx}")
-                        continue
                     if _MIGRATED_RE.search(idx):
                         state.indices[idx] = IndexState(
                             status=SKIPPED, src=idx, dst=idx,
@@ -674,10 +696,6 @@ async def _run(args: argparse.Namespace) -> int:
                     )
                     state.save()
                 else:
-                    # Dry-run or already in state: apply simple guards.
-                    if idx == active_index:
-                        _warn(f"Skipping active index: {idx}")
-                        continue
                     if _MIGRATED_RE.search(idx) and (state is None or idx not in state.indices):
                         _info(f"Skipping already-migrated index: {idx}")
                         continue
@@ -693,6 +711,82 @@ async def _run(args: argparse.Namespace) -> int:
                     errors += 1
 
             console.print()
+
+        else:
+            # ── Type-discovery mode: pattern-scan per type ───────────────────
+            for type_name in sorted_types:
+                cfg = INDEX_TYPES[type_name]
+                pattern = cfg["pattern"]
+                active_alias = cfg["active_alias"]
+
+                active_index: str | None = None
+                if args.include_active:
+                    active_index = await _active_index_for(es, active_alias)
+                    if active_index and not _confirm_include_active(active_index, type_name):
+                        _warn(f"Skipping {type_name} — confirmation declined.")
+                        console.print()
+                        active_index = None  # treat as if --include-active not set for this type
+                        # fall through: pattern discovery will still skip it via active_index guard below
+                else:
+                    active_index = await _active_index_for(es, active_alias)
+                    if active_index:
+                        _warn(f"Skipping active {type_name} index: {active_index}")
+                        console.print(
+                            "  (Use --indices to target it by name after the period rolls over.)"
+                        )
+                        console.print()
+
+                _info(f"=== {pattern} (newest first) ===")
+                indices = await _list_indices(es, pattern)
+
+                if not indices:
+                    _info(f"No indices found matching {pattern}")
+                    console.print()
+                    continue
+
+                for idx in indices:
+                    # Register indices in state on first encounter (non-dry-run).
+                    if state is not None and idx not in state.indices:
+                        if idx == active_index:
+                            state.indices[idx] = IndexState(
+                                status=SKIPPED, src=idx, dst=f"{idx}-{commit}",
+                                error="active write index",
+                            )
+                            state.save()
+                            _warn(f"Skipping active index: {idx}")
+                            continue
+                        if _MIGRATED_RE.search(idx):
+                            state.indices[idx] = IndexState(
+                                status=SKIPPED, src=idx, dst=idx,
+                                error="already migrated",
+                            )
+                            state.save()
+                            _info(f"Skipping already-migrated index: {idx}")
+                            continue
+                        state.indices[idx] = IndexState(
+                            status=PENDING, src=idx, dst=f"{idx}-{commit}",
+                        )
+                        state.save()
+                    else:
+                        # Dry-run or already in state: apply simple guards.
+                        if idx == active_index:
+                            _warn(f"Skipping active index: {idx}")
+                            continue
+                        if _MIGRATED_RE.search(idx) and (state is None or idx not in state.indices):
+                            _info(f"Skipping already-migrated index: {idx}")
+                            continue
+
+                    try:
+                        await _process_index(es, state, idx, commit, dry_run=args.dry_run, force_merge=args.force_merge)
+                        if state is not None and state.indices[idx].status == FAILED:
+                            errors += 1
+                    except Exception as exc:
+                        console.print(f"[red][ERROR][/red] {idx}: {exc}")
+                        if state is not None:
+                            state.update(idx, status=FAILED, error=str(exc))
+                        errors += 1
+
+                console.print()
 
         if errors:
             console.print(
@@ -727,22 +821,41 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
+  # Reindex all historical (non-active) posts and replies indices
   pipenv run python reindex.py --types posts replies --dry-run
-  pipenv run python reindex.py --types posts replies --include-active
-  pipenv run python reindex.py --types posts replies likes
   pipenv run python reindex.py --types posts replies --force-merge
+
+  # After rollover: reindex the formerly-active index by name (no confirmation prompt)
+  pipenv run python reindex.py --indices posts-2026-w26 replies-2026-w26
+
+  # Reindex the active write index (requires confirmation; stop ingest services first)
+  pipenv run python reindex.py --types posts replies --include-active
+
+  # Start fresh, discarding any saved resume state
   pipenv run python reindex.py --types posts --reset
 """,
     )
-    parser.add_argument(
+    index_group = parser.add_mutually_exclusive_group(required=True)
+    index_group.add_argument(
         "--types",
         nargs="+",
         choices=list(INDEX_TYPES),
-        required=True,
         metavar="TYPE",
         help=(
-            f"Index types to migrate (required). "
-            f"Choices: {', '.join(INDEX_TYPES)}."
+            f"Discover and migrate all indices of the given type(s). "
+            f"Choices: {', '.join(INDEX_TYPES)}. "
+            f"Mutually exclusive with --indices."
+        ),
+    )
+    index_group.add_argument(
+        "--indices",
+        nargs="+",
+        metavar="INDEX",
+        help=(
+            "Migrate specific named indices (e.g. posts-2026-w26) instead of "
+            "discovering by type. Bypasses the active-index guard, so you can "
+            "reindex a formerly-active index after the write period rolls over "
+            "without using --include-active. Mutually exclusive with --types."
         ),
     )
     parser.add_argument(
@@ -754,9 +867,9 @@ examples:
         "--include-active",
         action="store_true",
         help=(
-            "Also migrate the index currently receiving live writes "
-            "(the is_write_index member of the posts/replies/likes alias). "
-            "Only safe once the current write period has rolled over."
+            "Also migrate the index currently receiving live writes. "
+            "Prompts for confirmation before proceeding — only safe when all ingest "
+            "services are stopped. Prefer --indices after the write period rolls over."
         ),
     )
     parser.add_argument(
