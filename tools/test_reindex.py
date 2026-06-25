@@ -268,51 +268,80 @@ async def test_poll_task_eviction_partial_returns_failed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _force_merge_index
+# _start_force_merge_task
 # ---------------------------------------------------------------------------
 
-async def test_force_merge_index_calls_forcemerge():
+async def test_start_force_merge_task_returns_task_id():
     es = _es()
-    es.indices.forcemerge.return_value = {"_shards": {"successful": 3}}
-    await reindex._force_merge_index(es, "posts-2026-w25-abc1234")
+    es.indices.forcemerge.return_value = {"task": "node1:42"}
+    result = await reindex._start_force_merge_task(es, "posts-2026-w25-abc1234")
+    assert result == "node1:42"
     es.indices.forcemerge.assert_awaited_once_with(
-        index="posts-2026-w25-abc1234", max_num_segments=1, wait_for_completion=True
+        index="posts-2026-w25-abc1234", max_num_segments=1, wait_for_completion=False
     )
 
 
-async def test_force_merge_index_swallows_errors():
+async def test_start_force_merge_task_returns_none_on_error():
     es = _es()
     es.indices.forcemerge.side_effect = Exception("timeout")
-    # Should not raise
-    await reindex._force_merge_index(es, "posts-2026-w25-abc1234")
+    result = await reindex._start_force_merge_task(es, "posts-2026-w25-abc1234")
+    assert result is None
 
 
 # ---------------------------------------------------------------------------
-# _process_index — force_merge flag
+# _poll_all_force_merges
 # ---------------------------------------------------------------------------
 
-async def test_process_index_calls_force_merge_when_flagged(monkeypatch):
+async def test_poll_all_force_merges_completes_all(monkeypatch):
+    es = _es()
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    es.tasks.get.side_effect = [
+        # First poll: idx-a running, idx-b done
+        {"completed": False, "task": {"running_time_in_nanos": 1_000_000_000}},
+        {"completed": True, "task": {"running_time_in_nanos": 2_000_000_000},
+         "response": {"_shards": {"failures": []}}},
+        # Second poll: idx-a done
+        {"completed": True, "task": {"running_time_in_nanos": 3_000_000_000},
+         "response": {"_shards": {"failures": []}}},
+    ]
+    await reindex._poll_all_force_merges(es, {"idx-a": "t1", "idx-b": "t2"})
+    assert es.tasks.get.await_count == 3
+
+
+async def test_poll_all_force_merges_eviction_proceeds(monkeypatch):
+    es = _es()
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    es.tasks.get.side_effect = _nf()
+    # Should complete without error even if task is evicted
+    await reindex._poll_all_force_merges(es, {"idx-a": "t1"})
+
+
+async def test_poll_all_force_merges_shard_failures_nonfatal(monkeypatch):
+    es = _es()
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    es.tasks.get.return_value = {
+        "completed": True,
+        "task": {"running_time_in_nanos": 1_000_000_000},
+        "response": {"_shards": {"failures": [{"shard": 0, "reason": "disk full"}]}},
+    }
+    # Should not raise even with shard failures
+    await reindex._poll_all_force_merges(es, {"idx-a": "t1"})
+
+
+# ---------------------------------------------------------------------------
+# _process_index — no force_merge parameter (FM handled at caller level)
+# ---------------------------------------------------------------------------
+
+async def test_process_index_completes_reindex_and_swap(monkeypatch):
     es = _es()
     st = _state("s", "d", status=SWAP_PENDING)
     monkeypatch.setattr(reindex, "_ensure_reindex", AsyncMock(return_value=SWAP_PENDING))
-    fm = AsyncMock()
-    monkeypatch.setattr(reindex, "_force_merge_index", fm)
-    monkeypatch.setattr(reindex, "_do_swap", AsyncMock(return_value=DONE))
+    swap = AsyncMock(return_value=DONE)
+    monkeypatch.setattr(reindex, "_do_swap", swap)
 
-    await reindex._process_index(es, st, "s", "abc1234", dry_run=False, force_merge=True)
-    fm.assert_awaited_once_with(es, "d")
-
-
-async def test_process_index_skips_force_merge_when_not_flagged(monkeypatch):
-    es = _es()
-    st = _state("s", "d", status=SWAP_PENDING)
-    monkeypatch.setattr(reindex, "_ensure_reindex", AsyncMock(return_value=SWAP_PENDING))
-    fm = AsyncMock()
-    monkeypatch.setattr(reindex, "_force_merge_index", fm)
-    monkeypatch.setattr(reindex, "_do_swap", AsyncMock(return_value=DONE))
-
-    await reindex._process_index(es, st, "s", "abc1234", dry_run=False, force_merge=False)
-    fm.assert_not_awaited()
+    await reindex._process_index(es, st, "s", "abc1234", dry_run=False)
+    swap.assert_awaited_once()
+    assert st.indices["s"].status == DONE
 
 
 # ---------------------------------------------------------------------------

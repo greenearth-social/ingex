@@ -18,10 +18,11 @@ re-run with the same --types flags and the same commit in the working tree;
 the script will skip completed indices and pick up where it left off.
 
 Run from the tools/ directory:
-    pipenv run python reindex.py --types posts replies --dry-run
-    pipenv run python reindex.py --types posts replies --force-merge
-    pipenv run python reindex.py --indices posts-2026-w26 replies-2026-w26
-    pipenv run python reindex.py --types posts replies --include-active
+    pipenv run python reindex.py --migrate --types posts replies --dry-run
+    pipenv run python reindex.py --migrate --types posts replies
+    pipenv run python reindex.py --migrate --force-merge --types posts replies
+    pipenv run python reindex.py --force-merge --types posts replies
+    pipenv run python reindex.py --migrate --indices posts-2026-w26 replies-2026-w26
 
 Prerequisites:
   - Updated ILM templates have been deployed (bootstrap job or manual PUT).
@@ -419,14 +420,75 @@ async def _start_reindex(
     return REINDEXING
 
 
-async def _force_merge_index(es: AsyncElasticsearch, index: str) -> None:
-    """Force-merge index to a single segment. Blocks until complete; non-fatal on error."""
-    _info(f"  Force-merging {index} to 1 segment (this may take a while) ...")
+async def _start_force_merge_task(es: AsyncElasticsearch, index: str) -> str | None:
+    """Submit an async force-merge to 1 segment. Returns the task_id or None on failure."""
+    _info(f"  Submitting force-merge for [bold]{index}[/bold] ...")
     try:
-        await es.indices.forcemerge(index=index, max_num_segments=1, wait_for_completion=True)
-        _info(f"  Force-merge complete.")
+        resp = await es.indices.forcemerge(index=index, max_num_segments=1, wait_for_completion=False)
+        task_id: str = resp["task"]
+        _info(f"  Task: [cyan]{task_id}[/cyan]")
+        return task_id
     except Exception as exc:
-        _warn(f"  Force-merge failed (non-fatal, alias swap will still proceed): {exc}")
+        _warn(f"  Failed to submit force-merge for {index}: {exc}")
+        return None
+
+
+async def _poll_all_force_merges(
+    es: AsyncElasticsearch,
+    tasks: dict[str, str],
+) -> None:
+    """Poll a set of async force-merge tasks concurrently until all complete. Non-fatal on errors."""
+    pending = dict(tasks)  # index → task_id
+    while pending:
+        await asyncio.sleep(POLL_INTERVAL_SECS)
+        done: list[str] = []
+        for idx, task_id in pending.items():
+            try:
+                task = await es.tasks.get(task_id=task_id)
+            except NotFoundError:
+                _warn(f"  {idx}: task evicted — assuming complete.")
+                done.append(idx)
+                continue
+
+            completed: bool = task.get("completed") is True
+            running_nanos = task.get("task", {}).get("running_time_in_nanos", 0)
+            _info(f"  {idx}: running {running_nanos / 1e9:.0f}s ...")
+
+            if completed:
+                failures = (task.get("response") or {}).get("_shards", {}).get("failures") or []
+                if failures:
+                    _warn(f"  {idx}: complete with {len(failures)} shard failure(s) (non-fatal):")
+                    for f in failures:
+                        console.print(f"    {f}")
+                else:
+                    _info(f"  [green]✓[/green] {idx}: force-merge complete.")
+                done.append(idx)
+
+        for idx in done:
+            del pending[idx]
+
+
+async def _discover_for_force_merge(
+    es: AsyncElasticsearch,
+    sorted_types: list[str],
+) -> list[str]:
+    """Discover all non-active indices for the given types (newest first per type).
+
+    Force-merging the active write index is wasteful — new segments are created
+    continuously — so it is always skipped here. Use --indices to target a
+    specific index by name if needed.
+    """
+    result: list[str] = []
+    for type_name in sorted_types:
+        cfg = INDEX_TYPES[type_name]
+        active = await _active_index_for(es, cfg["active_alias"])
+        indices = await _list_indices(es, cfg["pattern"])
+        for idx in indices:
+            if idx == active:
+                _warn(f"Skipping active write index {idx} (force-merging it is wasteful).")
+                continue
+            result.append(idx)
+    return result
 
 
 async def _do_swap(
@@ -523,12 +585,10 @@ async def _process_index(
     src: str,
     commit: str,
     dry_run: bool,
-    force_merge: bool = False,
 ) -> None:
-    """Drive one index through its full migration state machine."""
+    """Drive one index through its full migration state machine (reindex → swap)."""
     if dry_run:
-        fm_note = ", force-merge to 1 segment" if force_merge else ""
-        _info(f"[dim][dry-run][/dim] Would reindex {src} → {src}-{commit}{fm_note}, swap aliases, delete src.")
+        _info(f"[dim][dry-run][/dim] Would reindex {src} → {src}-{commit}, swap aliases, delete src.")
         return
 
     assert state is not None
@@ -561,10 +621,6 @@ async def _process_index(
         if new_status == FAILED:
             state.update(src, error="Reindex task failed or destination missing after eviction")
             return
-
-    # ── Step 2.5: optional force-merge before swap ───────────────────────────
-    if state.indices[src].status == SWAP_PENDING and force_merge:
-        await _force_merge_index(es, state.indices[src].dst)
 
     # ── Step 3: atomic alias swap + delete ──────────────────────────────────
     if state.indices[src].status == SWAP_PENDING:
@@ -600,6 +656,9 @@ async def _print_alias_summary(es: AsyncElasticsearch) -> None:
 
 
 async def _run(args: argparse.Namespace) -> int:
+    if not args.migrate and not args.force_merge:
+        _die("Specify at least one operation: --migrate and/or --force-merge.")
+
     url = os.environ.get("GE_ELASTICSEARCH_URL", "https://localhost:9200")
     username = os.environ.get("GE_ELASTICSEARCH_USERNAME", "elastic")
     password = os.environ.get("GE_ELASTICSEARCH_PASSWORD")
@@ -621,144 +680,95 @@ async def _run(args: argparse.Namespace) -> int:
         _info(f"Connected to Elasticsearch {info['version']['number']} at {url}")
         console.print()
 
-        commit = args.commit or _git_short_hash()
-        _info(f"Destination suffix: [cyan]{commit}[/cyan]")
+        sorted_types = sorted(args.types or [])
+        sorted_explicit = sorted(args.indices or [])
 
         if args.dry_run:
             _warn("Dry-run mode — no changes will be made and state will not be saved.")
         console.print()
 
-        # ── State init ───────────────────────────────────────────────────────
-        sorted_types = sorted(args.types or [])
-        sorted_explicit = sorted(args.indices or [])
-        state: RunState | None = None
-
-        if not args.dry_run:
-            if args.reset:
-                _warn("--reset: discarding previous state.")
-                STATE_FILE.unlink(missing_ok=True)
-            else:
-                state = RunState.load()
-                if state is not None:
-                    if sorted_explicit:
-                        state_matches = (
-                            state.commit == commit
-                            and sorted(state.explicit_indices) == sorted_explicit
-                        )
-                        state_desc = f"commit={state.commit}, indices={state.explicit_indices}"
-                    else:
-                        state_matches = (
-                            state.commit == commit
-                            and sorted(state.types) == sorted_types
-                        )
-                        state_desc = f"commit={state.commit}, types={state.types}"
-
-                    if state_matches:
-                        done = sum(1 for s in state.indices.values() if s.status == DONE)
-                        total_tracked = len(state.indices)
-                        _info(
-                            f"Resuming previous run from {state.created_at} "
-                            f"({done}/{total_tracked} indices already done)."
-                        )
-                    else:
-                        _warn(
-                            f"State file is for a different run ({state_desc}). "
-                            f"Use --reset to start fresh."
-                        )
-                        return 1
-
-            if state is None:
-                state = RunState.create(commit, sorted_types, explicit_indices=sorted_explicit or None)
-                state.save()
-                _info(f"State file: {STATE_FILE}")
-
+        # ── Migration ────────────────────────────────────────────────────────
+        if args.migrate:
+            commit = args.commit or _git_short_hash()
+            _info(f"Destination suffix: [cyan]{commit}[/cyan]")
             console.print()
 
-        # ── Discover and process indices ─────────────────────────────────────
-        errors = 0
+            # ── State init ───────────────────────────────────────────────────
+            state: RunState | None = None
 
-        if sorted_explicit:
-            # ── Explicit-index mode: process only the named indices ──────────
-            _info(f"=== Explicit indices (active-index guard bypassed) ===")
-
-            for idx in sorted_explicit:
-                if state is not None and idx not in state.indices:
-                    if _MIGRATED_RE.search(idx):
-                        state.indices[idx] = IndexState(
-                            status=SKIPPED, src=idx, dst=idx,
-                            error="already migrated",
-                        )
-                        state.save()
-                        _info(f"Skipping already-migrated index: {idx}")
-                        continue
-                    state.indices[idx] = IndexState(
-                        status=PENDING, src=idx, dst=f"{idx}-{commit}",
-                    )
-                    state.save()
+            if not args.dry_run:
+                if args.reset:
+                    _warn("--reset: discarding previous state.")
+                    STATE_FILE.unlink(missing_ok=True)
                 else:
-                    if _MIGRATED_RE.search(idx) and (state is None or idx not in state.indices):
-                        _info(f"Skipping already-migrated index: {idx}")
-                        continue
+                    state = RunState.load()
+                    if state is not None:
+                        if sorted_explicit:
+                            state_matches = (
+                                state.commit == commit
+                                and sorted(state.explicit_indices) == sorted_explicit
+                            )
+                            state_desc = f"commit={state.commit}, indices={state.explicit_indices}"
+                        else:
+                            state_matches = (
+                                state.commit == commit
+                                and sorted(state.types) == sorted_types
+                            )
+                            state_desc = f"commit={state.commit}, types={state.types}"
 
+                        if state_matches:
+                            done = sum(1 for s in state.indices.values() if s.status == DONE)
+                            total_tracked = len(state.indices)
+                            _info(
+                                f"Resuming previous run from {state.created_at} "
+                                f"({done}/{total_tracked} indices already done)."
+                            )
+                        else:
+                            _warn(
+                                f"State file is for a different run ({state_desc}). "
+                                f"Use --reset to start fresh."
+                            )
+                            return 1
+
+                if state is None:
+                    state = RunState.create(commit, sorted_types, explicit_indices=sorted_explicit or None)
+                    state.save()
+                    _info(f"State file: {STATE_FILE}")
+
+                console.print()
+
+            errors = 0
+            # fm_tasks: destination index → task_id for fire-and-forget FMs (combined mode)
+            fm_tasks: dict[str, str] = {}
+
+            async def _migrate_one(idx: str) -> None:
+                """Register idx in state (if needed), migrate it, then fire FM if combined."""
+                nonlocal errors
                 try:
-                    await _process_index(es, state, idx, commit, dry_run=args.dry_run, force_merge=args.force_merge)
-                    if state is not None and state.indices[idx].status == FAILED:
+                    await _process_index(es, state, idx, commit, dry_run=args.dry_run)
+                    if state is not None and state.indices.get(idx, IndexState("", "", "")).status == FAILED:
                         errors += 1
+                        return
+                    if args.force_merge and not args.dry_run:
+                        dst = state.indices[idx].dst if state else f"{idx}-{commit}"
+                        if state is None or state.indices[idx].status == DONE:
+                            task_id = await _start_force_merge_task(es, dst)
+                            if task_id:
+                                fm_tasks[dst] = task_id
                 except Exception as exc:
                     console.print(f"[red][ERROR][/red] {idx}: {exc}")
                     if state is not None:
                         state.update(idx, status=FAILED, error=str(exc))
                     errors += 1
 
-            console.print()
-
-        else:
-            # ── Type-discovery mode: pattern-scan per type ───────────────────
-            for type_name in sorted_types:
-                cfg = INDEX_TYPES[type_name]
-                pattern = cfg["pattern"]
-                active_alias = cfg["active_alias"]
-
-                active_index: str | None = None
-                if args.include_active:
-                    active_index = await _active_index_for(es, active_alias)
-                    if active_index and not _confirm_include_active(active_index, type_name):
-                        _warn(f"Skipping {type_name} — confirmation declined.")
-                        console.print()
-                        active_index = None  # treat as if --include-active not set for this type
-                        # fall through: pattern discovery will still skip it via active_index guard below
-                else:
-                    active_index = await _active_index_for(es, active_alias)
-                    if active_index:
-                        _warn(f"Skipping active {type_name} index: {active_index}")
-                        console.print(
-                            "  (Use --indices to target it by name after the period rolls over.)"
-                        )
-                        console.print()
-
-                _info(f"=== {pattern} (newest first) ===")
-                indices = await _list_indices(es, pattern)
-
-                if not indices:
-                    _info(f"No indices found matching {pattern}")
-                    console.print()
-                    continue
-
-                for idx in indices:
-                    # Register indices in state on first encounter (non-dry-run).
+            if sorted_explicit:
+                # ── Explicit-index mode ──────────────────────────────────────
+                _info("=== Explicit indices (active-index guard bypassed) ===")
+                for idx in sorted_explicit:
                     if state is not None and idx not in state.indices:
-                        if idx == active_index:
-                            state.indices[idx] = IndexState(
-                                status=SKIPPED, src=idx, dst=f"{idx}-{commit}",
-                                error="active write index",
-                            )
-                            state.save()
-                            _warn(f"Skipping active index: {idx}")
-                            continue
                         if _MIGRATED_RE.search(idx):
                             state.indices[idx] = IndexState(
-                                status=SKIPPED, src=idx, dst=idx,
-                                error="already migrated",
+                                status=SKIPPED, src=idx, dst=idx, error="already migrated",
                             )
                             state.save()
                             _info(f"Skipping already-migrated index: {idx}")
@@ -768,47 +778,144 @@ async def _run(args: argparse.Namespace) -> int:
                         )
                         state.save()
                     else:
-                        # Dry-run or already in state: apply simple guards.
-                        if idx == active_index:
-                            _warn(f"Skipping active index: {idx}")
-                            continue
                         if _MIGRATED_RE.search(idx) and (state is None or idx not in state.indices):
                             _info(f"Skipping already-migrated index: {idx}")
                             continue
-
-                    try:
-                        await _process_index(es, state, idx, commit, dry_run=args.dry_run, force_merge=args.force_merge)
-                        if state is not None and state.indices[idx].status == FAILED:
-                            errors += 1
-                    except Exception as exc:
-                        console.print(f"[red][ERROR][/red] {idx}: {exc}")
-                        if state is not None:
-                            state.update(idx, status=FAILED, error=str(exc))
-                        errors += 1
-
+                    await _migrate_one(idx)
                 console.print()
 
-        if errors:
+            else:
+                # ── Type-discovery mode ──────────────────────────────────────
+                for type_name in sorted_types:
+                    cfg = INDEX_TYPES[type_name]
+                    pattern = cfg["pattern"]
+                    active_alias = cfg["active_alias"]
+
+                    active_index: str | None = None
+                    if args.include_active:
+                        active_index = await _active_index_for(es, active_alias)
+                        if active_index and not _confirm_include_active(active_index, type_name):
+                            _warn(f"Skipping {type_name} — confirmation declined.")
+                            console.print()
+                            active_index = None
+                    else:
+                        active_index = await _active_index_for(es, active_alias)
+                        if active_index:
+                            _warn(f"Skipping active {type_name} index: {active_index}")
+                            console.print(
+                                "  (Use --indices to target it by name after the period rolls over.)"
+                            )
+                            console.print()
+
+                    _info(f"=== {pattern} (newest first) ===")
+                    indices = await _list_indices(es, pattern)
+                    if not indices:
+                        _info(f"No indices found matching {pattern}")
+                        console.print()
+                        continue
+
+                    for idx in indices:
+                        if state is not None and idx not in state.indices:
+                            if idx == active_index:
+                                state.indices[idx] = IndexState(
+                                    status=SKIPPED, src=idx, dst=f"{idx}-{commit}",
+                                    error="active write index",
+                                )
+                                state.save()
+                                _warn(f"Skipping active index: {idx}")
+                                continue
+                            if _MIGRATED_RE.search(idx):
+                                state.indices[idx] = IndexState(
+                                    status=SKIPPED, src=idx, dst=idx, error="already migrated",
+                                )
+                                state.save()
+                                _info(f"Skipping already-migrated index: {idx}")
+                                continue
+                            state.indices[idx] = IndexState(
+                                status=PENDING, src=idx, dst=f"{idx}-{commit}",
+                            )
+                            state.save()
+                        else:
+                            if idx == active_index:
+                                _warn(f"Skipping active index: {idx}")
+                                continue
+                            if _MIGRATED_RE.search(idx) and (state is None or idx not in state.indices):
+                                _info(f"Skipping already-migrated index: {idx}")
+                                continue
+                        await _migrate_one(idx)
+
+                    console.print()
+
+            if errors:
+                console.print(
+                    f"[red][ERROR][/red] Migration finished with {errors} error(s). "
+                    f"Review output above, then re-run to retry failed indices."
+                )
+                return 1
+
+            if state is not None:
+                STATE_FILE.unlink(missing_ok=True)
+                _info("State file removed (migration complete).")
+
+            await _print_alias_summary(es)
+            console.print()
+            _info("Migration complete.")
+            console.print()
             console.print(
-                f"[red][ERROR][/red] Migration finished with {errors} error(s). "
-                f"Review output above, then re-run to retry failed indices."
+                "[yellow][WARN][/yellow]  ILM note: migrated indices have a new creation date, so their "
+                "ILM deletion timer resets to zero. If storage capacity is a concern, manually delete "
+                "migrated indices for periods that have already expired under your retention policy:\n"
+                "  DELETE /<index-name>  (e.g. via Kibana Dev Tools or curl)"
             )
-            return 1
 
-        if state is not None:
-            STATE_FILE.unlink(missing_ok=True)
-            _info(f"State file removed (migration complete).")
+            # In combined mode, report fire-and-forget FM tasks still running in background.
+            if fm_tasks:
+                console.print()
+                _warn(
+                    f"{len(fm_tasks)} force-merge task(s) are running in the background "
+                    f"(submitted after each alias swap, not waited on):"
+                )
+                for dst, tid in fm_tasks.items():
+                    console.print(f"  [bold]{dst}[/bold]: [cyan]{tid}[/cyan]")
+                console.print(
+                    "  Monitor progress: GET /_tasks/<task_id>\n"
+                    "  Or run --force-merge --indices <name> to poll with progress."
+                )
 
-        await _print_alias_summary(es)
-        console.print()
-        _info("Migration complete.")
-        console.print()
-        console.print(
-            "[yellow][WARN][/yellow]  ILM note: migrated indices have a new creation date, so their "
-            "ILM deletion timer resets to zero. If storage capacity is a concern, manually delete "
-            "migrated indices for periods that have already expired under your retention policy:\n"
-            "  DELETE /<index-name>  (e.g. via Kibana Dev Tools or curl)"
-        )
+        # ── Force-merge only ─────────────────────────────────────────────────
+        else:
+            _info("=== Force-merge ===")
+            console.print()
+
+            if sorted_explicit:
+                targets = sorted_explicit
+            else:
+                targets = await _discover_for_force_merge(es, sorted_types)
+
+            if not targets:
+                _info("No indices to force-merge.")
+                return 0
+
+            if args.dry_run:
+                for idx in targets:
+                    _info(f"[dim][dry-run][/dim] Would force-merge {idx} to 1 segment.")
+                return 0
+
+            fm_tasks = {}
+            for idx in targets:
+                task_id = await _start_force_merge_task(es, idx)
+                if task_id:
+                    fm_tasks[idx] = task_id
+            console.print()
+
+            if fm_tasks:
+                _info(f"Polling {len(fm_tasks)} force-merge task(s) ...")
+                console.print()
+                await _poll_all_force_merges(es, fm_tasks)
+                console.print()
+
+            _info("Force-merge complete.")
+
         return 0
 
     finally:
@@ -817,24 +924,55 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Reindex Elasticsearch indices to pick up updated mappings.",
+        description=(
+            "Reindex and/or force-merge Elasticsearch indices.\n"
+            "At least one of --migrate / --force-merge must be specified."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
-  # Reindex all historical (non-active) posts and replies indices
-  pipenv run python reindex.py --types posts replies --dry-run
-  pipenv run python reindex.py --types posts replies --force-merge
+  # Migration only — reindex historical indices and swap aliases
+  pipenv run python reindex.py --migrate --types posts replies --dry-run
+  pipenv run python reindex.py --migrate --types posts replies
+  pipenv run python reindex.py --migrate --indices posts-2026-w26 replies-2026-w26
 
-  # After rollover: reindex the formerly-active index by name (no confirmation prompt)
-  pipenv run python reindex.py --indices posts-2026-w26 replies-2026-w26
+  # Force-merge only — submit async, poll with progress (run off-peak)
+  pipenv run python reindex.py --force-merge --types posts replies
+  pipenv run python reindex.py --force-merge --indices posts-2026-w25-abc1234
+
+  # Combined — migrate then fire-and-forget force-merge (runs concurrently with next index)
+  pipenv run python reindex.py --migrate --force-merge --types posts replies
 
   # Reindex the active write index (requires confirmation; stop ingest services first)
-  pipenv run python reindex.py --types posts replies --include-active
+  pipenv run python reindex.py --migrate --types posts replies --include-active
 
-  # Start fresh, discarding any saved resume state
-  pipenv run python reindex.py --types posts --reset
+  # Discard resume state and start migration fresh
+  pipenv run python reindex.py --migrate --types posts --reset
 """,
     )
+
+    # ── Operations (at least one required) ───────────────────────────────────
+    parser.add_argument(
+        "--migrate",
+        action="store_true",
+        help=(
+            "Reindex each source index into a new destination with the updated shard count, "
+            "then atomically swap all aliases and delete the source."
+        ),
+    )
+    parser.add_argument(
+        "--force-merge",
+        action="store_true",
+        help=(
+            "Force-merge indices to 1 segment to reduce per-shard term-seek overhead. "
+            "When used alone: submits all force-merges async then polls with progress. "
+            "When combined with --migrate: fires force-merge after each alias swap "
+            "without waiting (runs concurrently with the next index migration). "
+            "Heavy I/O — run off-peak."
+        ),
+    )
+
+    # ── Index targeting (mutually exclusive, required) ────────────────────────
     index_group = parser.add_mutually_exclusive_group(required=True)
     index_group.add_argument(
         "--types",
@@ -842,7 +980,7 @@ examples:
         choices=list(INDEX_TYPES),
         metavar="TYPE",
         help=(
-            f"Discover and migrate all indices of the given type(s). "
+            f"Discover all indices of the given type(s). "
             f"Choices: {', '.join(INDEX_TYPES)}. "
             f"Mutually exclusive with --indices."
         ),
@@ -852,54 +990,50 @@ examples:
         nargs="+",
         metavar="INDEX",
         help=(
-            "Migrate specific named indices (e.g. posts-2026-w26) instead of "
-            "discovering by type. Bypasses the active-index guard, so you can "
-            "reindex a formerly-active index after the write period rolls over "
-            "without using --include-active. Mutually exclusive with --types."
+            "Target specific named indices (e.g. posts-2026-w26) instead of discovering "
+            "by type. For --migrate: bypasses the active-index guard so you can reindex "
+            "a formerly-active index after rollover without --include-active. "
+            "Mutually exclusive with --types."
         ),
     )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print what would happen without making any changes. State is not saved.",
-    )
+
+    # ── Migration options ─────────────────────────────────────────────────────
     parser.add_argument(
         "--include-active",
         action="store_true",
         help=(
-            "Also migrate the index currently receiving live writes. "
-            "Prompts for confirmation before proceeding — only safe when all ingest "
-            "services are stopped. Prefer --indices after the write period rolls over."
+            "(--migrate only) Also migrate the index currently receiving live writes. "
+            "Prompts for confirmation — only safe when all ingest services are stopped. "
+            "Prefer --indices after the write period rolls over."
         ),
     )
     parser.add_argument(
         "--commit",
         metavar="HASH",
-        help="Override the git commit hash used as the destination index suffix.",
-    )
-    parser.add_argument(
-        "--force-merge",
-        action="store_true",
-        help=(
-            "After each reindex completes, force-merge the destination index to 1 segment "
-            "before swapping aliases. Reduces per-shard term-seek cost immediately rather "
-            "than waiting for the ILM warm phase. Heavy I/O — run off-peak."
-        ),
+        help="(--migrate only) Override the git commit hash used as the destination index suffix.",
     )
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="Discard any saved state and start the migration from scratch.",
+        help="(--migrate only) Discard any saved resume state and start fresh.",
     )
+
+    # ── General ───────────────────────────────────────────────────────────────
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would happen without making any changes. State is not saved.",
+    )
+
     args = parser.parse_args()
     try:
         exit_code = asyncio.run(_run(args))
     except KeyboardInterrupt:
         console.print()
         _warn(
-            "Interrupted — any in-flight Elasticsearch reindex task keeps running "
-            "server-side. Re-run with the same --types to resume; the script will "
-            "re-attach to the running task."
+            "Interrupted — any in-flight Elasticsearch tasks keep running server-side. "
+            "Re-run with the same flags to resume migration; the script will re-attach "
+            "to running reindex tasks. Use GET /_tasks to monitor force-merge tasks."
         )
         sys.exit(130)
     sys.exit(exit_code)
