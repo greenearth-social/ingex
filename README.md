@@ -42,9 +42,12 @@ For detailed architecture information, see [VPC_ARCHITECTURE.md](VPC_ARCHITECTUR
 
 ## Index Schema Migrations
 
-When the Elasticsearch index mappings change (e.g. adding or removing fields, changing `index` flags, or dropping HNSW graphs), existing indices must be reindexed — ILM templates only apply to newly created indices.
+When the Elasticsearch index mappings change (e.g. adding or removing fields, changing `index` flags, changing shard counts, or dropping HNSW graphs), existing indices must be reindexed — ILM templates only apply to newly created indices.
 
-Use `tools/reindex.py` to migrate live indices. The script reindexes each source index into a new destination named `<index>-<commit>`, atomically swaps all aliases, and deletes the source.
+Use `tools/reindex.py` to migrate live indices. The script reindexes each source index into a new destination named `<index>-<commit>`, atomically swaps all aliases, and deletes the source. It supports two independent operations that can be run separately or together:
+
+- **`--migrate`** — reindex + alias swap
+- **`--force-merge`** — reduce each index to 1 Lucene segment (reduces per-shard term-seek cost ~30×; heavy I/O, run off-peak)
 
 ### Setup
 
@@ -60,7 +63,7 @@ Before running a migration:
 1. Deploy the updated ILM index templates (runs automatically via the deploy script's bootstrap job, or manually with `kubectl apply`).
 2. Deploy the new ingest service version so new documents are written in the updated format.
 
-### Running a migration
+### Credentials
 
 Export ES credentials (or set them in your shell environment):
 
@@ -73,37 +76,62 @@ export GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true      # stage only (self-signed cert
 
 The `elastic` superuser has full cluster privileges and can read all aliases, which is required for the active-index safety check.
 
-Dry-run first to preview what will happen:
+### Migration workflow
+
+The active write index is skipped by default. The typical workflow for a full migration is two passes:
+
+**Pass 1 — migrate all historical indices** (the active write index is skipped automatically):
 
 ```bash
 cd tools
-pipenv run python reindex.py --types posts replies --dry-run
+pipenv run python reindex.py --migrate --types posts replies --dry-run  # preview
+pipenv run python reindex.py --migrate --types posts replies
 ```
 
-Run the migration (the active write index is skipped by default):
+**Pass 2 — after the period rolls over**, the formerly-active index is now historical. Target it by name with `--indices` to complete the migration:
 
 ```bash
-pipenv run python reindex.py --types posts replies
+# Identify the formerly-active index (e.g. posts-2026-w26)
+pipenv run python reindex.py --migrate --indices posts-2026-w26 replies-2026-w26
 ```
 
-**After a period rollover:** the formerly-active index is no longer receiving writes and is included automatically in a normal run — no flags needed. The same command above handles it.
+`--indices` bypasses the active-index guard entirely, so no confirmation prompt is needed. This is the safe and recommended way to handle the formerly-active index after rollover.
 
-**`--include-active` should only be used when you specifically need to migrate the index that is currently receiving live writes** (e.g. in a dev environment or a maintenance window). It carries a data loss risk: documents written to the source after reindex starts but before the alias swap completes are permanently lost when the source is deleted.
+### Force-merge
 
-Migrate all supported types at once:
+Force-merging reduces each shard's Lucene segments to 1, which cuts per-shard term-seek overhead ~30× and improves query latency on historical (read-only) indices. Run it off-peak — it is I/O-intensive.
 
 ```bash
-pipenv run python reindex.py --types posts replies likes
+# Standalone: submit all force-merges async, then poll with progress
+pipenv run python reindex.py --force-merge --types posts replies
+
+# Target specific indices by name
+pipenv run python reindex.py --force-merge --indices posts-2026-w25-abc1234
+```
+
+Combined with `--migrate`, force-merge fires automatically after each alias swap (fire-and-forget — not waited on, runs concurrently with the next index migration):
+
+```bash
+pipenv run python reindex.py --migrate --force-merge --types posts replies
+```
+
+### `--include-active` (last resort)
+
+`--include-active` reindexes the index currently receiving live writes. **Only use this when all ingest services have been stopped** — documents written after reindexing starts but before the alias swap completes are permanently lost. Prefer the two-pass workflow with `--indices` after rollover instead.
+
+```bash
+# Prompts for explicit confirmation before proceeding
+pipenv run python reindex.py --migrate --types posts replies --include-active
 ```
 
 ### Resuming after interruption
 
-State is written to `tools/state/reindex-state.json` after every step. If the script is interrupted or fails, re-run with the same `--types` flags and the same git commit in the working tree — it will skip completed indices and resume from where it left off.
+State is written to `tools/state/reindex-state.json` after every step. If the script is interrupted or fails, re-run with the same flags and the same git commit in the working tree — it will skip completed indices and resume from where it left off. In-flight Elasticsearch reindex tasks continue running server-side and are re-attached automatically on resume.
 
 To discard saved state and start the migration from scratch:
 
 ```bash
-pipenv run python reindex.py --types posts replies --reset
+pipenv run python reindex.py --migrate --types posts replies --reset
 ```
 
 ### Adding new index types
@@ -115,7 +143,7 @@ INDEX_TYPES = {
     ...
     "likes": {
         "pattern": "likes-*",
-        "active_alias": "likes_recent",
+        "active_alias": "likes",
     },
 }
 ```

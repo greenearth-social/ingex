@@ -25,6 +25,11 @@ spec:
             configMapKeyRef:
               name: ilm-settings
               key: ilm_delete_age
+        - name: ILM_FORCEMERGE_AGE
+          valueFrom:
+            configMapKeyRef:
+              name: ilm-settings
+              key: ilm_forcemerge_age
         command:
         - /bin/sh
         - -c
@@ -46,16 +51,17 @@ spec:
             -d "{\"policy\":{\"phases\":{\"hot\":{\"min_age\":\"0ms\",\"actions\":{\"rollover\":{\"max_age\":\"$INFERENCE_MAX_AGE\"}}},\"delete\":{\"min_age\":\"0ms\",\"actions\":{\"delete\":{}}}}}}"
 
           ILM_DELETE_POLICY="{\"policy\":{\"phases\":{\"delete\":{\"min_age\":\"$ILM_DELETE_AGE\",\"actions\":{\"delete\":{}}}}}}"
+          ILM_FORCEMERGE_POLICY="{\"policy\":{\"phases\":{\"warm\":{\"min_age\":\"$ILM_FORCEMERGE_AGE\",\"actions\":{\"forcemerge\":{\"max_num_segments\":1}}},\"delete\":{\"min_age\":\"$ILM_DELETE_AGE\",\"actions\":{\"delete\":{}}}}}}"
 
           curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/posts_ilm_policy" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
-            -d "$ILM_DELETE_POLICY"
+            -d "$ILM_FORCEMERGE_POLICY"
 
           curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/replies_ilm_policy" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
-            -d "$ILM_DELETE_POLICY"
+            -d "$ILM_FORCEMERGE_POLICY"
 
           curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/likes_ilm_policy" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \

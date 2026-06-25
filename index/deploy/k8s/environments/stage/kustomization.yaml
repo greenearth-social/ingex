@@ -125,4 +125,5 @@ configMapGenerator:
       - replies_index_shards=2
       - replies_index_replicas=1
       - ilm_delete_age=4h
+      - ilm_forcemerge_age=30m
       - index_period=hour

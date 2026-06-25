@@ -122,13 +122,14 @@ configMapGenerator:
   - name: ilm-settings
     behavior: replace
     literals:
-      - posts_index_shards=7
+      - posts_index_shards=3
       - posts_index_replicas=1
       - likes_index_shards=7
       - likes_index_replicas=1
       - tombstones_index_shards=3
       - tombstones_index_replicas=1
-      - replies_index_shards=7
+      - replies_index_shards=3
       - replies_index_replicas=1
       - ilm_delete_age=60d
+      - ilm_forcemerge_age=8d
       - index_period=week

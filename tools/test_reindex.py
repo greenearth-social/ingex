@@ -23,6 +23,7 @@ from reindex import (  # noqa: E402
     SWAP_PENDING,
     IndexState,
     RunState,
+    _confirm_include_active,
 )
 
 
@@ -264,3 +265,121 @@ async def test_poll_task_eviction_partial_returns_failed(monkeypatch):
     es.tasks.get.side_effect = _nf()
 
     assert await reindex._poll_task(es, st, "s") == FAILED
+
+
+# ---------------------------------------------------------------------------
+# _start_force_merge_task
+# ---------------------------------------------------------------------------
+
+async def test_start_force_merge_task_returns_task_id():
+    es = _es()
+    es.indices.forcemerge.return_value = {"task": "node1:42"}
+    result = await reindex._start_force_merge_task(es, "posts-2026-w25-abc1234")
+    assert result == "node1:42"
+    es.indices.forcemerge.assert_awaited_once_with(
+        index="posts-2026-w25-abc1234", max_num_segments=1, wait_for_completion=False
+    )
+
+
+async def test_start_force_merge_task_returns_none_on_error():
+    es = _es()
+    es.indices.forcemerge.side_effect = Exception("timeout")
+    result = await reindex._start_force_merge_task(es, "posts-2026-w25-abc1234")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _poll_all_force_merges
+# ---------------------------------------------------------------------------
+
+async def test_poll_all_force_merges_completes_all(monkeypatch):
+    es = _es()
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    es.tasks.get.side_effect = [
+        # First poll: idx-a running, idx-b done
+        {"completed": False, "task": {"running_time_in_nanos": 1_000_000_000}},
+        {"completed": True, "task": {"running_time_in_nanos": 2_000_000_000},
+         "response": {"_shards": {"failures": []}}},
+        # Second poll: idx-a done
+        {"completed": True, "task": {"running_time_in_nanos": 3_000_000_000},
+         "response": {"_shards": {"failures": []}}},
+    ]
+    await reindex._poll_all_force_merges(es, {"idx-a": "t1", "idx-b": "t2"})
+    assert es.tasks.get.await_count == 3
+
+
+async def test_poll_all_force_merges_eviction_proceeds(monkeypatch):
+    es = _es()
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    es.tasks.get.side_effect = _nf()
+    # Should complete without error even if task is evicted
+    await reindex._poll_all_force_merges(es, {"idx-a": "t1"})
+
+
+async def test_poll_all_force_merges_shard_failures_nonfatal(monkeypatch):
+    es = _es()
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    es.tasks.get.return_value = {
+        "completed": True,
+        "task": {"running_time_in_nanos": 1_000_000_000},
+        "response": {"_shards": {"failures": [{"shard": 0, "reason": "disk full"}]}},
+    }
+    # Should not raise even with shard failures
+    await reindex._poll_all_force_merges(es, {"idx-a": "t1"})
+
+
+# ---------------------------------------------------------------------------
+# _process_index — no force_merge parameter (FM handled at caller level)
+# ---------------------------------------------------------------------------
+
+async def test_process_index_completes_reindex_and_swap(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=SWAP_PENDING)
+    monkeypatch.setattr(reindex, "_ensure_reindex", AsyncMock(return_value=SWAP_PENDING))
+    swap = AsyncMock(return_value=DONE)
+    monkeypatch.setattr(reindex, "_do_swap", swap)
+
+    await reindex._process_index(es, st, "s", "abc1234", dry_run=False)
+    swap.assert_awaited_once()
+    assert st.indices["s"].status == DONE
+
+
+# ---------------------------------------------------------------------------
+# _confirm_include_active
+# ---------------------------------------------------------------------------
+
+def test_confirm_include_active_yes(monkeypatch):
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", lambda _: "y")
+    assert _confirm_include_active("posts-2026-w26", "posts") is True
+
+
+def test_confirm_include_active_no(monkeypatch):
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", lambda _: "n")
+    assert _confirm_include_active("posts-2026-w26", "posts") is False
+
+
+def test_confirm_include_active_empty_defaults_no(monkeypatch):
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", lambda _: "")
+    assert _confirm_include_active("posts-2026-w26", "posts") is False
+
+
+def test_confirm_include_active_eof_returns_false(monkeypatch):
+    def _raise(_):
+        raise EOFError
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", _raise)
+    assert _confirm_include_active("posts-2026-w26", "posts") is False
+
+
+# ---------------------------------------------------------------------------
+# RunState — explicit_indices field
+# ---------------------------------------------------------------------------
+
+def test_runstate_create_stores_explicit_indices():
+    st = RunState.create("abc1234", [], explicit_indices=["posts-2026-w25", "replies-2026-w25"])
+    assert sorted(st.explicit_indices) == ["posts-2026-w25", "replies-2026-w25"]
+    assert st.types == []
+
+
+def test_runstate_create_without_explicit_indices():
+    st = RunState.create("abc1234", ["posts", "replies"])
+    assert st.explicit_indices == []
