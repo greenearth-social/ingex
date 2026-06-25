@@ -383,3 +383,54 @@ def test_runstate_create_stores_explicit_indices():
 def test_runstate_create_without_explicit_indices():
     st = RunState.create("abc1234", ["posts", "replies"])
     assert st.explicit_indices == []
+
+
+# ---------------------------------------------------------------------------
+# _compute_dst
+# ---------------------------------------------------------------------------
+
+def test_compute_dst_plain_index():
+    assert reindex._compute_dst("posts-2026-w18", "803b0a1") == "posts-2026-w18-803b0a1"
+
+
+def test_compute_dst_already_has_old_hash():
+    """An index migrated to a previous SHA gets its old suffix replaced."""
+    assert reindex._compute_dst("posts-2026-w18-35592b1", "803b0a1") == "posts-2026-w18-803b0a1"
+
+
+def test_compute_dst_already_at_current_hash():
+    """An index already at the current SHA is idempotent (replaces with same suffix)."""
+    assert reindex._compute_dst("posts-2026-w18-803b0a1", "803b0a1") == "posts-2026-w18-803b0a1"
+
+
+# ---------------------------------------------------------------------------
+# _classify_for_migration — already-migrated detection
+# ---------------------------------------------------------------------------
+
+def test_classify_skips_index_at_current_commit():
+    """Index already at target SHA is skipped."""
+    skipped = reindex._classify_for_migration("posts-2026-w18-803b0a1", None, None, "803b0a1")
+    assert skipped is True
+
+
+def test_classify_does_not_skip_index_at_old_commit():
+    """Index migrated to a different (old) SHA must be re-migrated."""
+    skipped = reindex._classify_for_migration("posts-2026-w18-35592b1", None, None, "803b0a1")
+    assert skipped is False
+
+
+def test_classify_old_sha_sets_correct_dst():
+    """Dst for an old-SHA index strips the old hash rather than appending."""
+    st = RunState.create("803b0a1", ["posts"])
+    st.save = lambda: None
+    reindex._classify_for_migration("posts-2026-w18-35592b1", None, st, "803b0a1")
+    assert st.indices["posts-2026-w18-35592b1"].dst == "posts-2026-w18-803b0a1"
+
+
+def test_classify_plain_index_pending_with_correct_dst():
+    """Plain (never-migrated) index is registered as PENDING with correct dst."""
+    st = RunState.create("803b0a1", ["posts"])
+    st.save = lambda: None
+    skipped = reindex._classify_for_migration("posts-2026-w18", None, st, "803b0a1")
+    assert skipped is False
+    assert st.indices["posts-2026-w18"].dst == "posts-2026-w18-803b0a1"
