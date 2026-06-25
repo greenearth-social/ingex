@@ -86,6 +86,18 @@ POLL_INTERVAL_SECS = 10
 _MIGRATED_RE = re.compile(r"-[0-9a-f]{7}$")
 
 
+def _compute_dst(idx: str, commit: str) -> str:
+    """Return the destination index name for idx at commit.
+
+    If idx already carries a 7-char hex suffix from a previous migration, that
+    suffix is replaced with commit rather than appended, keeping names flat.
+    """
+    if _MIGRATED_RE.search(idx):
+        base = idx[: idx.rfind("-")]
+        return f"{base}-{commit}"
+    return f"{idx}-{commit}"
+
+
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
@@ -431,7 +443,8 @@ async def _process_index(
 ) -> None:
     """Drive one index through its full migration state machine (reindex → swap)."""
     if dry_run:
-        _info(f"[dim][dry-run][/dim] Would reindex {src} → {src}-{commit}, swap aliases, delete src.")
+        dst = _compute_dst(src, commit)
+        _info(f"[dim][dry-run][/dim] Would reindex {src} → {dst}, swap aliases, delete src.")
         return
 
     assert state is not None
@@ -630,16 +643,19 @@ def _classify_for_migration(
         return True
 
     if _MIGRATED_RE.search(idx):
-        if state is not None:
-            state.indices[idx] = IndexState(
-                status=SKIPPED, src=idx, dst=idx, error="already migrated",
-            )
-            state.save()
-        _info(f"Skipping already-migrated index: {idx}")
-        return True
+        if idx.endswith(f"-{commit}"):
+            if state is not None:
+                state.indices[idx] = IndexState(
+                    status=SKIPPED, src=idx, dst=idx, error="already migrated",
+                )
+                state.save()
+            _info(f"Skipping already-migrated index: {idx}")
+            return True
+        # Migrated to a different (old) commit — fall through to re-migrate.
 
+    dst = _compute_dst(idx, commit)
     if state is not None:
-        state.indices[idx] = IndexState(status=PENDING, src=idx, dst=f"{idx}-{commit}")
+        state.indices[idx] = IndexState(status=PENDING, src=idx, dst=dst)
         state.save()
 
     return False
