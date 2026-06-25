@@ -7,15 +7,15 @@ index is copied into ``<name>-<commit>`` where ``<commit>`` is the short HEAD
 commit hash, all aliases are moved atomically, and the source index is deleted.
 
 The index currently pointed to by the write alias (``posts``, ``replies``, or
-``likes``) is still receiving live writes and is skipped by default. Re-run
-with --include-active after the period rolls over and the new period's index
-is live. After migration the ingest service continues writing without changes
+``likes``) is still receiving live writes and is skipped by default. After the
+period rolls over, use ``--indices`` to target the formerly-active index by
+name. After migration the ingest service continues writing without changes
 because the alias ``is_write_index`` flag is preserved during the swap.
 
 State is written to tools/state/reindex-state.json after every transition so
 the script can be cancelled and resumed. If a run is interrupted, simply
-re-run with the same --types flags and the same commit in the working tree;
-the script will skip completed indices and pick up where it left off.
+re-run with the same flags and the same commit in the working tree; the script
+will skip completed indices and pick up where it left off.
 
 Run from the tools/ directory:
     pipenv run python reindex.py --migrate --types posts replies --dry-run
@@ -39,32 +39,29 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import dataclasses
-import json
 import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from elasticsearch import AsyncElasticsearch, AuthorizationException, NotFoundError
 from rich.console import Console
 
+from reindex_state import (  # noqa: F401 — re-exported for tests
+    DONE,
+    FAILED,
+    IndexState,
+    PENDING,
+    REINDEXING,
+    RunState,
+    SKIPPED,
+    STATE_FILE,
+    SWAP_PENDING,
+    _now,
+)
+
 console = Console()
-
-STATE_DIR = Path(__file__).parent / "state"
-STATE_FILE = STATE_DIR / "reindex-state.json"
-
-# Per-index status values.
-PENDING      = "pending"
-REINDEXING   = "reindexing"
-SWAP_PENDING = "swap_pending"
-DONE         = "done"
-SKIPPED      = "skipped"
-FAILED       = "failed"
 
 # ---------------------------------------------------------------------------
 # Index type registry — add new types here as new data classes are introduced.
@@ -73,103 +70,20 @@ FAILED       = "failed"
 INDEX_TYPES: dict[str, dict[str, str]] = {
     "posts": {
         "pattern": "posts-*",
-        "active_alias": "posts",   # write alias used by megastream/jetstream ingest
+        "active_alias": "posts",    # write alias used by megastream/jetstream ingest
     },
     "replies": {
         "pattern": "replies-*",
-        "active_alias": "replies", # write alias used by megastream ingest
+        "active_alias": "replies",  # write alias used by megastream ingest
     },
     "likes": {
         "pattern": "likes-*",
-        "active_alias": "likes",   # write alias used by jetstream ingest
+        "active_alias": "likes",    # write alias used by jetstream ingest
     },
 }
 
 POLL_INTERVAL_SECS = 10
 _MIGRATED_RE = re.compile(r"-[0-9a-f]{7}$")
-
-
-# ---------------------------------------------------------------------------
-# State management
-# ---------------------------------------------------------------------------
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-@dataclass
-class IndexState:
-    status: str    # PENDING | REINDEXING | SWAP_PENDING | DONE | SKIPPED | FAILED
-    src: str
-    dst: str
-    task_id: str | None = None
-    error: str | None = None
-    started_at: str | None = None
-    completed_at: str | None = None
-
-
-@dataclass
-class RunState:
-    commit: str
-    types: list[str]
-    created_at: str
-    indices: dict[str, IndexState] = field(default_factory=dict)
-    explicit_indices: list[str] = field(default_factory=list)
-
-    # ---- Persistence -------------------------------------------------------
-
-    def save(self) -> None:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "commit": self.commit,
-            "types": self.types,
-            "explicit_indices": self.explicit_indices,
-            "created_at": self.created_at,
-            "indices": {
-                src: dataclasses.asdict(s)
-                for src, s in self.indices.items()
-            },
-        }
-        STATE_FILE.write_text(json.dumps(data, indent=2))
-
-    def update(self, src: str, **kwargs: Any) -> None:
-        """Update fields on an index state entry and persist to disk immediately."""
-        for k, v in kwargs.items():
-            setattr(self.indices[src], k, v)
-        self.save()
-
-    @classmethod
-    def load(cls) -> RunState | None:
-        if not STATE_FILE.exists():
-            return None
-        try:
-            data = json.loads(STATE_FILE.read_text())
-            return cls(
-                commit=data["commit"],
-                types=data["types"],
-                explicit_indices=data.get("explicit_indices", []),
-                created_at=data["created_at"],
-                indices={
-                    src: IndexState(**vals)
-                    for src, vals in data.get("indices", {}).items()
-                },
-            )
-        except Exception:
-            return None
-
-    @classmethod
-    def create(
-        cls,
-        commit: str,
-        types: list[str],
-        explicit_indices: list[str] | None = None,
-    ) -> RunState:
-        return cls(
-            commit=commit,
-            types=sorted(types),
-            explicit_indices=sorted(explicit_indices or []),
-            created_at=_now(),
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -321,8 +235,35 @@ async def _find_running_reindex_to(es: AsyncElasticsearch, dst: str) -> str | No
 
 
 # ---------------------------------------------------------------------------
-# Migration steps
+# Reindex state machine (per-index)
 # ---------------------------------------------------------------------------
+
+async def _start_reindex(
+    es: AsyncElasticsearch,
+    state: RunState,
+    src: str,
+) -> str:
+    """Kick off an async sliced reindex. Returns REINDEXING or FAILED."""
+    dst = state.indices[src].dst
+    _info(f"  Starting async reindex (slices=auto, 2000 req/s) ...")
+
+    try:
+        resp = await es.reindex(
+            source={"index": src},
+            dest={"index": dst, "op_type": "create"},
+            wait_for_completion=False,
+            slices="auto",
+            requests_per_second=2000,
+        )
+    except Exception as exc:
+        _warn(f"  Failed to start reindex: {exc}")
+        return FAILED
+
+    task_id: str = resp["task"]
+    _info(f"  Task: [cyan]{task_id}[/cyan]")
+    state.update(src, status=REINDEXING, task_id=task_id, started_at=_now())
+    return REINDEXING
+
 
 async def _poll_task(
     es: AsyncElasticsearch,
@@ -331,7 +272,7 @@ async def _poll_task(
 ) -> str:
     """Poll a running reindex task until it finishes.
 
-    Returns the final task status: SWAP_PENDING on success, FAILED on failure.
+    Returns SWAP_PENDING on success, FAILED on failure.
     """
     task_id = state.indices[src].task_id
     dst = state.indices[src].dst
@@ -393,32 +334,151 @@ async def _poll_task(
         return SWAP_PENDING
 
 
-async def _start_reindex(
+async def _ensure_reindex(
     es: AsyncElasticsearch,
     state: RunState,
     src: str,
 ) -> str:
-    """Kick off an async sliced reindex. Returns REINDEXING or FAILED."""
+    """Decide how to (re)start work for src and return the next status.
+
+    Returns REINDEXING (a task is running — poll it), SWAP_PENDING (destination
+    already complete), DONE (destination already live behind an alias), or
+    FAILED (could not start a fresh reindex).
+    """
+    idx = state.indices[src]
+    dst = idx.dst
+
+    # 1. A reindex we already know about is still running — re-attach to it.
+    if idx.task_id and await _task_running(es, idx.task_id):
+        _info(f"  Reattaching to running task [cyan]{idx.task_id}[/cyan]")
+        return REINDEXING
+
+    # 2. An untracked reindex is already writing to dst (e.g. orphaned by an
+    #    earlier Ctrl-C) — adopt it rather than competing with it.
+    orphan = await _find_running_reindex_to(es, dst)
+    if orphan:
+        _info(f"  Adopting running reindex into {dst}: [cyan]{orphan}[/cyan]")
+        state.update(src, task_id=orphan, status=REINDEXING)
+        return REINDEXING
+
+    # 3. No reindex running — inspect the destination.
+    if await _index_exists(es, dst):
+        dst_aliases = await _get_aliases(es, dst)
+        if dst_aliases:
+            # Destination already serves an alias — never delete a live index.
+            _info(f"  Destination {dst} already live (aliases: {', '.join(dst_aliases)}).")
+            return DONE
+
+        src_count = await _doc_count(es, src)
+        dst_count = await _doc_count(es, dst)
+        if dst_count is not None and src_count is not None and dst_count >= src_count:
+            _info(f"  Destination {dst} already complete ({dst_count:,}/{src_count:,}) — skipping reindex.")
+            return SWAP_PENDING
+
+        # Alias-less, incomplete leftover — safe to delete and restart fresh.
+        _warn(f"  Removing partial destination {dst} ({dst_count}/{src_count}) and restarting.")
+        try:
+            await es.indices.delete(index=dst)
+        except NotFoundError:
+            pass
+
+    # 4. Start a fresh reindex.
+    return await _start_reindex(es, state, src)
+
+
+async def _do_swap(
+    es: AsyncElasticsearch,
+    state: RunState,
+    src: str,
+) -> str:
+    """Atomically move aliases from src to dst, then delete src. Returns DONE or FAILED."""
     dst = state.indices[src].dst
-    _info(f"  Starting async reindex (slices=auto, 2000 req/s) ...")
+
+    aliases = await _get_aliases(es, src)
+    actions: list[dict[str, Any]] = []
+    for alias_name, alias_cfg in aliases.items():
+        add: dict[str, Any] = {"index": dst, "alias": alias_name}
+        if alias_cfg.get("is_write_index"):
+            add["is_write_index"] = True
+        actions.append({"remove": {"index": src, "alias": alias_name}})
+        actions.append({"add": add})
+
+    if actions:
+        _info(f"  Moving aliases: {', '.join(aliases)}")
+        try:
+            await es.indices.update_aliases(actions=actions)
+        except Exception as exc:
+            _warn(f"  Alias swap failed: {exc}")
+            return FAILED
 
     try:
-        resp = await es.reindex(
-            source={"index": src},
-            dest={"index": dst, "op_type": "create"},
-            wait_for_completion=False,
-            slices="auto",
-            requests_per_second=2000,
-        )
+        await es.indices.delete(index=src)
+    except NotFoundError:
+        pass  # Already deleted — idempotent.
     except Exception as exc:
-        _warn(f"  Failed to start reindex: {exc}")
+        _warn(f"  Delete of {src} failed: {exc}")
         return FAILED
 
-    task_id: str = resp["task"]
-    _info(f"  Task: [cyan]{task_id}[/cyan]")
-    state.update(src, status=REINDEXING, task_id=task_id, started_at=_now())
-    return REINDEXING
+    return DONE
 
+
+async def _process_index(
+    es: AsyncElasticsearch,
+    state: RunState | None,
+    src: str,
+    commit: str,
+    dry_run: bool,
+) -> None:
+    """Drive one index through its full migration state machine (reindex → swap)."""
+    if dry_run:
+        _info(f"[dim][dry-run][/dim] Would reindex {src} → {src}-{commit}, swap aliases, delete src.")
+        return
+
+    assert state is not None
+    idx = state.indices[src]
+
+    if idx.status in (DONE, SKIPPED):
+        _info(f"Skipping [{idx.status}]: {src}")
+        return
+
+    _info(f"Migrating [bold]{src}[/bold] → [bold]{idx.dst}[/bold]"
+          + (f" [dim](resuming from {idx.status})[/dim]" if idx.status != PENDING else ""))
+
+    # ── Step 1: ensure a reindex is running, complete, or already live ──────
+    if idx.status in (PENDING, FAILED, REINDEXING):
+        new_status = await _ensure_reindex(es, state, src)
+        if new_status == FAILED:
+            state.update(src, status=FAILED, error="Failed to start reindex")
+            return
+        # Clear any stale error from a previous failed attempt.
+        state.update(src, status=new_status, error=None)
+        if new_status == DONE:
+            state.update(src, completed_at=_now())
+            _info(f"  [green]✓[/green] {src} → {idx.dst} (already migrated)")
+            return
+
+    # ── Step 2: poll until reindex finishes ─────────────────────────────────
+    if state.indices[src].status == REINDEXING:
+        new_status = await _poll_task(es, state, src)
+        state.update(src, status=new_status)
+        if new_status == FAILED:
+            state.update(src, error="Reindex task failed or destination missing after eviction")
+            return
+
+    # ── Step 3: atomic alias swap + delete ──────────────────────────────────
+    if state.indices[src].status == SWAP_PENDING:
+        new_status = await _do_swap(es, state, src)
+        state.update(src, status=new_status, completed_at=_now() if new_status == DONE else None)
+        if new_status == FAILED:
+            state.update(src, error="Alias swap or source deletion failed")
+            return
+
+    _info(f"  [green]✓[/green] {src} → {idx.dst}")
+
+
+# ---------------------------------------------------------------------------
+# Force-merge operations
+# ---------------------------------------------------------------------------
 
 async def _start_force_merge_task(es: AsyncElasticsearch, index: str) -> str | None:
     """Submit an async force-merge to 1 segment. Returns the task_id or None on failure."""
@@ -491,151 +551,296 @@ async def _discover_for_force_merge(
     return result
 
 
-async def _do_swap(
-    es: AsyncElasticsearch,
-    state: RunState,
-    src: str,
-) -> str:
-    """Atomically move aliases from src to dst, then delete src. Returns DONE or FAILED."""
-    dst = state.indices[src].dst
+# ---------------------------------------------------------------------------
+# Migration orchestration helpers
+# ---------------------------------------------------------------------------
 
-    aliases = await _get_aliases(es, src)
-    actions: list[dict[str, Any]] = []
-    for alias_name, alias_cfg in aliases.items():
-        add: dict[str, Any] = {"index": dst, "alias": alias_name}
-        if alias_cfg.get("is_write_index"):
-            add["is_write_index"] = True
-        actions.append({"remove": {"index": src, "alias": alias_name}})
-        actions.append({"add": add})
+def _load_or_create_state(
+    args: argparse.Namespace,
+    commit: str,
+    sorted_types: list[str],
+    sorted_explicit: list[str],
+) -> RunState | None:
+    """Load existing or create new migration state. Returns None in dry-run mode.
 
-    if actions:
-        _info(f"  Moving aliases: {', '.join(aliases)}")
-        try:
-            await es.indices.update_aliases(actions=actions)
-        except Exception as exc:
-            _warn(f"  Alias swap failed: {exc}")
-            return FAILED
-
-    try:
-        await es.indices.delete(index=src)
-    except NotFoundError:
-        pass  # Already deleted — idempotent.
-    except Exception as exc:
-        _warn(f"  Delete of {src} failed: {exc}")
-        return FAILED
-
-    return DONE
-
-
-async def _ensure_reindex(
-    es: AsyncElasticsearch,
-    state: RunState,
-    src: str,
-) -> str:
-    """Decide how to (re)start work for src and return the next status.
-
-    Returns REINDEXING (a task is running — poll it), SWAP_PENDING (destination
-    already complete), DONE (destination already live behind an alias), or
-    FAILED (could not start a fresh reindex).
+    Raises ValueError when a state file exists for a different run (mismatched
+    commit or target set). The caller should treat this as a fatal error and
+    tell the user to pass --reset.
     """
-    idx = state.indices[src]
-    dst = idx.dst
+    if args.dry_run:
+        return None
 
-    # 1. A reindex we already know about is still running — re-attach to it.
-    if idx.task_id and await _task_running(es, idx.task_id):
-        _info(f"  Reattaching to running task [cyan]{idx.task_id}[/cyan]")
-        return REINDEXING
+    if args.reset:
+        _warn("--reset: discarding previous state.")
+        STATE_FILE.unlink(missing_ok=True)
+    else:
+        existing = RunState.load()
+        if existing is not None:
+            if sorted_explicit:
+                matches = (existing.commit == commit
+                           and sorted(existing.explicit_indices) == sorted_explicit)
+                desc = f"commit={existing.commit}, indices={existing.explicit_indices}"
+            else:
+                matches = (existing.commit == commit
+                           and sorted(existing.types) == sorted_types)
+                desc = f"commit={existing.commit}, types={existing.types}"
 
-    # 2. An untracked reindex is already writing to dst (e.g. orphaned by an
-    #    earlier Ctrl-C) — adopt it rather than competing with it.
-    orphan = await _find_running_reindex_to(es, dst)
-    if orphan:
-        _info(f"  Adopting running reindex into {dst}: [cyan]{orphan}[/cyan]")
-        state.update(src, task_id=orphan, status=REINDEXING)
-        return REINDEXING
+            if matches:
+                done = sum(1 for s in existing.indices.values() if s.status == DONE)
+                _info(
+                    f"Resuming previous run from {existing.created_at} "
+                    f"({done}/{len(existing.indices)} indices already done)."
+                )
+                return existing
+            else:
+                raise ValueError(
+                    f"State file is for a different run ({desc}). "
+                    f"Use --reset to start fresh."
+                )
 
-    # 3. No reindex running — inspect the destination.
-    if await _index_exists(es, dst):
-        dst_aliases = await _get_aliases(es, dst)
-        if dst_aliases:
-            # Destination already serves an alias — never delete a live index.
-            _info(f"  Destination {dst} already live (aliases: {', '.join(dst_aliases)}).")
-            return DONE
-
-        src_count = await _doc_count(es, src)
-        dst_count = await _doc_count(es, dst)
-        if dst_count is not None and src_count is not None and dst_count >= src_count:
-            _info(f"  Destination {dst} already complete ({dst_count:,}/{src_count:,}) — skipping reindex.")
-            return SWAP_PENDING
-
-        # Alias-less, incomplete leftover — safe to delete and restart fresh.
-        _warn(f"  Removing partial destination {dst} ({dst_count}/{src_count}) and restarting.")
-        try:
-            await es.indices.delete(index=dst)
-        except NotFoundError:
-            pass
-
-    # 4. Start a fresh reindex.
-    return await _start_reindex(es, state, src)
+    state = RunState.create(commit, sorted_types, explicit_indices=sorted_explicit or None)
+    state.save()
+    _info(f"State file: {STATE_FILE}")
+    return state
 
 
-async def _process_index(
+def _classify_for_migration(
+    idx: str,
+    active_index: str | None,
+    state: RunState | None,
+    commit: str,
+) -> bool:
+    """Classify idx and register it in state on first encounter.
+
+    Returns True if the index should be skipped (active write index or
+    already migrated). Also records the skip reason in state so resume
+    runs don't re-evaluate the decision.
+    """
+    # Already registered — let _process_index handle the status (DONE/SKIPPED/etc.)
+    if state is not None and idx in state.indices:
+        return False
+
+    if idx == active_index:
+        if state is not None:
+            state.indices[idx] = IndexState(
+                status=SKIPPED, src=idx, dst=f"{idx}-{commit}", error="active write index",
+            )
+            state.save()
+        _warn(f"Skipping active write index: {idx}")
+        return True
+
+    if _MIGRATED_RE.search(idx):
+        if state is not None:
+            state.indices[idx] = IndexState(
+                status=SKIPPED, src=idx, dst=idx, error="already migrated",
+            )
+            state.save()
+        _info(f"Skipping already-migrated index: {idx}")
+        return True
+
+    if state is not None:
+        state.indices[idx] = IndexState(status=PENDING, src=idx, dst=f"{idx}-{commit}")
+        state.save()
+
+    return False
+
+
+async def _resolve_active_write_index(
+    es: AsyncElasticsearch,
+    cfg: dict[str, str],
+    args: argparse.Namespace,
+    type_name: str,
+) -> str | None:
+    """Return the active write index that should be excluded from migration, or None.
+
+    With --include-active: prompts for confirmation. If the operator confirms,
+    returns None so the index is included. If declined, returns the index name
+    so it is excluded.
+
+    Without --include-active: always returns the active index name (exclude it)
+    and prints a hint about using --indices after rollover.
+    """
+    active = await _active_index_for(es, cfg["active_alias"])
+    if active is None:
+        return None
+
+    if args.include_active:
+        if _confirm_include_active(active, type_name):
+            return None  # confirmed: include it in migration
+        _warn(f"Skipping {type_name} — confirmation declined.")
+        console.print()
+    else:
+        _warn(f"Skipping active {type_name} index: {active}")
+        console.print("  (Use --indices to target it by name after the period rolls over.)")
+        console.print()
+
+    return active
+
+
+async def _migrate_and_maybe_fm(
     es: AsyncElasticsearch,
     state: RunState | None,
-    src: str,
+    idx: str,
     commit: str,
     dry_run: bool,
-) -> None:
-    """Drive one index through its full migration state machine (reindex → swap)."""
-    if dry_run:
-        _info(f"[dim][dry-run][/dim] Would reindex {src} → {src}-{commit}, swap aliases, delete src.")
-        return
+    fire_fm: bool,
+    fm_tasks: dict[str, str],
+) -> bool:
+    """Migrate one index. Returns True on error.
 
-    assert state is not None
-    idx = state.indices[src]
-
-    if idx.status in (DONE, SKIPPED):
-        _info(f"Skipping [{idx.status}]: {src}")
-        return
-
-    _info(f"Migrating [bold]{src}[/bold] → [bold]{idx.dst}[/bold]"
-          + (f" [dim](resuming from {idx.status})[/dim]" if idx.status != PENDING else ""))
-
-    # ── Step 1: ensure a reindex is running, complete, or already live ──────
-    if idx.status in (PENDING, FAILED, REINDEXING):
-        new_status = await _ensure_reindex(es, state, src)
-        if new_status == FAILED:
-            state.update(src, status=FAILED, error="Failed to start reindex")
-            return
-        # Clear any stale error from a previous failed attempt.
-        state.update(src, status=new_status, error=None)
-        if new_status == DONE:
-            state.update(src, completed_at=_now())
-            _info(f"  [green]✓[/green] {src} → {idx.dst} (already migrated)")
-            return
-
-    # ── Step 2: poll until reindex finishes ─────────────────────────────────
-    if state.indices[src].status == REINDEXING:
-        new_status = await _poll_task(es, state, src)
-        state.update(src, status=new_status)
-        if new_status == FAILED:
-            state.update(src, error="Reindex task failed or destination missing after eviction")
-            return
-
-    # ── Step 3: atomic alias swap + delete ──────────────────────────────────
-    if state.indices[src].status == SWAP_PENDING:
-        new_status = await _do_swap(es, state, src)
-        state.update(src, status=new_status, completed_at=_now() if new_status == DONE else None)
-        if new_status == FAILED:
-            state.update(src, error="Alias swap or source deletion failed")
-            return
-
-    _info(f"  [green]✓[/green] {src} → {idx.dst}")
+    If fire_fm is True and migration succeeds, submits a fire-and-forget
+    force-merge (combined --migrate --force-merge mode).
+    """
+    try:
+        await _process_index(es, state, idx, commit, dry_run=dry_run)
+        if state is not None and state.indices.get(idx, IndexState(PENDING, "", "")).status == FAILED:
+            return True
+        if fire_fm and not dry_run and state is not None and state.indices[idx].status == DONE:
+            task_id = await _start_force_merge_task(es, state.indices[idx].dst)
+            if task_id:
+                fm_tasks[state.indices[idx].dst] = task_id
+        return False
+    except Exception as exc:
+        console.print(f"[red][ERROR][/red] {idx}: {exc}")
+        if state is not None:
+            state.update(idx, status=FAILED, error=str(exc))
+        return True
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Command implementations
 # ---------------------------------------------------------------------------
+
+async def _run_migrate(
+    es: AsyncElasticsearch,
+    args: argparse.Namespace,
+    sorted_types: list[str],
+    sorted_explicit: list[str],
+) -> int:
+    """Reindex all target indices and atomically swap their aliases."""
+    commit = args.commit or _git_short_hash()
+    _info(f"Destination suffix: [cyan]{commit}[/cyan]")
+    console.print()
+
+    try:
+        state = _load_or_create_state(args, commit, sorted_types, sorted_explicit)
+    except ValueError as exc:
+        _warn(str(exc))
+        return 1
+
+    if not args.dry_run:
+        console.print()
+
+    errors = 0
+    fm_tasks: dict[str, str] = {}  # dst index → task_id (combined mode fire-and-forget)
+    fire_fm = args.force_merge
+
+    if sorted_explicit:
+        # ── Explicit-index mode: active-index guard is bypassed ──────────────
+        _info("=== Explicit indices (active-index guard bypassed) ===")
+        for idx in sorted_explicit:
+            if _classify_for_migration(idx, None, state, commit):
+                continue
+            if await _migrate_and_maybe_fm(es, state, idx, commit, args.dry_run, fire_fm, fm_tasks):
+                errors += 1
+        console.print()
+
+    else:
+        # ── Type-discovery mode: discover and skip the active write index ────
+        for type_name in sorted_types:
+            cfg = INDEX_TYPES[type_name]
+            active_index = await _resolve_active_write_index(es, cfg, args, type_name)
+
+            _info(f"=== {cfg['pattern']} (newest first) ===")
+            indices = await _list_indices(es, cfg["pattern"])
+            if not indices:
+                _info(f"No indices found matching {cfg['pattern']}")
+                console.print()
+                continue
+
+            for idx in indices:
+                if _classify_for_migration(idx, active_index, state, commit):
+                    continue
+                if await _migrate_and_maybe_fm(es, state, idx, commit, args.dry_run, fire_fm, fm_tasks):
+                    errors += 1
+
+            console.print()
+
+    if errors:
+        console.print(
+            f"[red][ERROR][/red] Migration finished with {errors} error(s). "
+            f"Review output above, then re-run to retry failed indices."
+        )
+        return 1
+
+    if state is not None:
+        STATE_FILE.unlink(missing_ok=True)
+        _info("State file removed (migration complete).")
+
+    await _print_alias_summary(es)
+    console.print()
+    _info("Migration complete.")
+    console.print()
+    console.print(
+        "[yellow][WARN][/yellow]  ILM note: migrated indices have a new creation date, so their "
+        "ILM deletion timer resets to zero. If storage capacity is a concern, manually delete "
+        "migrated indices for periods that have already expired under your retention policy:\n"
+        "  DELETE /<index-name>  (e.g. via Kibana Dev Tools or curl)"
+    )
+
+    if fm_tasks:
+        console.print()
+        _warn(
+            f"{len(fm_tasks)} force-merge task(s) are running in the background "
+            f"(submitted after each alias swap, not waited on):"
+        )
+        for dst, tid in fm_tasks.items():
+            console.print(f"  [bold]{dst}[/bold]: [cyan]{tid}[/cyan]")
+        console.print(
+            "  Monitor progress: GET /_tasks/<task_id>\n"
+            "  Or run --force-merge --indices <name> to poll with progress."
+        )
+
+    return 0
+
+
+async def _run_force_merge(
+    es: AsyncElasticsearch,
+    args: argparse.Namespace,
+    sorted_types: list[str],
+    sorted_explicit: list[str],
+) -> int:
+    """Submit async force-merges for all targets and poll until complete."""
+    _info("=== Force-merge ===")
+    console.print()
+
+    targets = sorted_explicit or await _discover_for_force_merge(es, sorted_types)
+
+    if not targets:
+        _info("No indices to force-merge.")
+        return 0
+
+    if args.dry_run:
+        for idx in targets:
+            _info(f"[dim][dry-run][/dim] Would force-merge {idx} to 1 segment.")
+        return 0
+
+    fm_tasks: dict[str, str] = {}
+    for idx in targets:
+        task_id = await _start_force_merge_task(es, idx)
+        if task_id:
+            fm_tasks[idx] = task_id
+    console.print()
+
+    if fm_tasks:
+        _info(f"Polling {len(fm_tasks)} force-merge task(s) ...")
+        console.print()
+        await _poll_all_force_merges(es, fm_tasks)
+        console.print()
+
+    _info("Force-merge complete.")
+    return 0
+
 
 async def _print_alias_summary(es: AsyncElasticsearch) -> None:
     """Print which index each key alias currently points to."""
@@ -655,11 +860,15 @@ async def _print_alias_summary(es: AsyncElasticsearch) -> None:
             console.print(f"  [cyan]{alias}[/cyan] → [dim](insufficient privileges)[/dim]")
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 async def _run(args: argparse.Namespace) -> int:
     if not args.migrate and not args.force_merge:
         _die("Specify at least one operation: --migrate and/or --force-merge.")
 
-    url = os.environ.get("GE_ELASTICSEARCH_URL", "https://localhost:9200")
+    url      = os.environ.get("GE_ELASTICSEARCH_URL", "https://localhost:9200")
     username = os.environ.get("GE_ELASTICSEARCH_USERNAME", "elastic")
     password = os.environ.get("GE_ELASTICSEARCH_PASSWORD")
     skip_tls = os.environ.get("GE_ELASTICSEARCH_TLS_SKIP_VERIFY", "false").lower() in (
@@ -680,241 +889,20 @@ async def _run(args: argparse.Namespace) -> int:
         _info(f"Connected to Elasticsearch {info['version']['number']} at {url}")
         console.print()
 
-        sorted_types = sorted(args.types or [])
+        sorted_types    = sorted(args.types or [])
         sorted_explicit = sorted(args.indices or [])
 
         if args.dry_run:
             _warn("Dry-run mode — no changes will be made and state will not be saved.")
         console.print()
 
-        # ── Migration ────────────────────────────────────────────────────────
         if args.migrate:
-            commit = args.commit or _git_short_hash()
-            _info(f"Destination suffix: [cyan]{commit}[/cyan]")
-            console.print()
+            rc = await _run_migrate(es, args, sorted_types, sorted_explicit)
+            if rc != 0:
+                return rc
 
-            # ── State init ───────────────────────────────────────────────────
-            state: RunState | None = None
-
-            if not args.dry_run:
-                if args.reset:
-                    _warn("--reset: discarding previous state.")
-                    STATE_FILE.unlink(missing_ok=True)
-                else:
-                    state = RunState.load()
-                    if state is not None:
-                        if sorted_explicit:
-                            state_matches = (
-                                state.commit == commit
-                                and sorted(state.explicit_indices) == sorted_explicit
-                            )
-                            state_desc = f"commit={state.commit}, indices={state.explicit_indices}"
-                        else:
-                            state_matches = (
-                                state.commit == commit
-                                and sorted(state.types) == sorted_types
-                            )
-                            state_desc = f"commit={state.commit}, types={state.types}"
-
-                        if state_matches:
-                            done = sum(1 for s in state.indices.values() if s.status == DONE)
-                            total_tracked = len(state.indices)
-                            _info(
-                                f"Resuming previous run from {state.created_at} "
-                                f"({done}/{total_tracked} indices already done)."
-                            )
-                        else:
-                            _warn(
-                                f"State file is for a different run ({state_desc}). "
-                                f"Use --reset to start fresh."
-                            )
-                            return 1
-
-                if state is None:
-                    state = RunState.create(commit, sorted_types, explicit_indices=sorted_explicit or None)
-                    state.save()
-                    _info(f"State file: {STATE_FILE}")
-
-                console.print()
-
-            errors = 0
-            # fm_tasks: destination index → task_id for fire-and-forget FMs (combined mode)
-            fm_tasks: dict[str, str] = {}
-
-            async def _migrate_one(idx: str) -> None:
-                """Register idx in state (if needed), migrate it, then fire FM if combined."""
-                nonlocal errors
-                try:
-                    await _process_index(es, state, idx, commit, dry_run=args.dry_run)
-                    if state is not None and state.indices.get(idx, IndexState("", "", "")).status == FAILED:
-                        errors += 1
-                        return
-                    if args.force_merge and not args.dry_run:
-                        dst = state.indices[idx].dst if state else f"{idx}-{commit}"
-                        if state is None or state.indices[idx].status == DONE:
-                            task_id = await _start_force_merge_task(es, dst)
-                            if task_id:
-                                fm_tasks[dst] = task_id
-                except Exception as exc:
-                    console.print(f"[red][ERROR][/red] {idx}: {exc}")
-                    if state is not None:
-                        state.update(idx, status=FAILED, error=str(exc))
-                    errors += 1
-
-            if sorted_explicit:
-                # ── Explicit-index mode ──────────────────────────────────────
-                _info("=== Explicit indices (active-index guard bypassed) ===")
-                for idx in sorted_explicit:
-                    if state is not None and idx not in state.indices:
-                        if _MIGRATED_RE.search(idx):
-                            state.indices[idx] = IndexState(
-                                status=SKIPPED, src=idx, dst=idx, error="already migrated",
-                            )
-                            state.save()
-                            _info(f"Skipping already-migrated index: {idx}")
-                            continue
-                        state.indices[idx] = IndexState(
-                            status=PENDING, src=idx, dst=f"{idx}-{commit}",
-                        )
-                        state.save()
-                    else:
-                        if _MIGRATED_RE.search(idx) and (state is None or idx not in state.indices):
-                            _info(f"Skipping already-migrated index: {idx}")
-                            continue
-                    await _migrate_one(idx)
-                console.print()
-
-            else:
-                # ── Type-discovery mode ──────────────────────────────────────
-                for type_name in sorted_types:
-                    cfg = INDEX_TYPES[type_name]
-                    pattern = cfg["pattern"]
-                    active_alias = cfg["active_alias"]
-
-                    active_index: str | None = None
-                    if args.include_active:
-                        active_index = await _active_index_for(es, active_alias)
-                        if active_index and not _confirm_include_active(active_index, type_name):
-                            _warn(f"Skipping {type_name} — confirmation declined.")
-                            console.print()
-                            active_index = None
-                    else:
-                        active_index = await _active_index_for(es, active_alias)
-                        if active_index:
-                            _warn(f"Skipping active {type_name} index: {active_index}")
-                            console.print(
-                                "  (Use --indices to target it by name after the period rolls over.)"
-                            )
-                            console.print()
-
-                    _info(f"=== {pattern} (newest first) ===")
-                    indices = await _list_indices(es, pattern)
-                    if not indices:
-                        _info(f"No indices found matching {pattern}")
-                        console.print()
-                        continue
-
-                    for idx in indices:
-                        if state is not None and idx not in state.indices:
-                            if idx == active_index:
-                                state.indices[idx] = IndexState(
-                                    status=SKIPPED, src=idx, dst=f"{idx}-{commit}",
-                                    error="active write index",
-                                )
-                                state.save()
-                                _warn(f"Skipping active index: {idx}")
-                                continue
-                            if _MIGRATED_RE.search(idx):
-                                state.indices[idx] = IndexState(
-                                    status=SKIPPED, src=idx, dst=idx, error="already migrated",
-                                )
-                                state.save()
-                                _info(f"Skipping already-migrated index: {idx}")
-                                continue
-                            state.indices[idx] = IndexState(
-                                status=PENDING, src=idx, dst=f"{idx}-{commit}",
-                            )
-                            state.save()
-                        else:
-                            if idx == active_index:
-                                _warn(f"Skipping active index: {idx}")
-                                continue
-                            if _MIGRATED_RE.search(idx) and (state is None or idx not in state.indices):
-                                _info(f"Skipping already-migrated index: {idx}")
-                                continue
-                        await _migrate_one(idx)
-
-                    console.print()
-
-            if errors:
-                console.print(
-                    f"[red][ERROR][/red] Migration finished with {errors} error(s). "
-                    f"Review output above, then re-run to retry failed indices."
-                )
-                return 1
-
-            if state is not None:
-                STATE_FILE.unlink(missing_ok=True)
-                _info("State file removed (migration complete).")
-
-            await _print_alias_summary(es)
-            console.print()
-            _info("Migration complete.")
-            console.print()
-            console.print(
-                "[yellow][WARN][/yellow]  ILM note: migrated indices have a new creation date, so their "
-                "ILM deletion timer resets to zero. If storage capacity is a concern, manually delete "
-                "migrated indices for periods that have already expired under your retention policy:\n"
-                "  DELETE /<index-name>  (e.g. via Kibana Dev Tools or curl)"
-            )
-
-            # In combined mode, report fire-and-forget FM tasks still running in background.
-            if fm_tasks:
-                console.print()
-                _warn(
-                    f"{len(fm_tasks)} force-merge task(s) are running in the background "
-                    f"(submitted after each alias swap, not waited on):"
-                )
-                for dst, tid in fm_tasks.items():
-                    console.print(f"  [bold]{dst}[/bold]: [cyan]{tid}[/cyan]")
-                console.print(
-                    "  Monitor progress: GET /_tasks/<task_id>\n"
-                    "  Or run --force-merge --indices <name> to poll with progress."
-                )
-
-        # ── Force-merge only ─────────────────────────────────────────────────
-        else:
-            _info("=== Force-merge ===")
-            console.print()
-
-            if sorted_explicit:
-                targets = sorted_explicit
-            else:
-                targets = await _discover_for_force_merge(es, sorted_types)
-
-            if not targets:
-                _info("No indices to force-merge.")
-                return 0
-
-            if args.dry_run:
-                for idx in targets:
-                    _info(f"[dim][dry-run][/dim] Would force-merge {idx} to 1 segment.")
-                return 0
-
-            fm_tasks = {}
-            for idx in targets:
-                task_id = await _start_force_merge_task(es, idx)
-                if task_id:
-                    fm_tasks[idx] = task_id
-            console.print()
-
-            if fm_tasks:
-                _info(f"Polling {len(fm_tasks)} force-merge task(s) ...")
-                console.print()
-                await _poll_all_force_merges(es, fm_tasks)
-                console.print()
-
-            _info("Force-merge complete.")
+        if args.force_merge and not args.migrate:
+            return await _run_force_merge(es, args, sorted_types, sorted_explicit)
 
         return 0
 
