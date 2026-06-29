@@ -2,8 +2,8 @@ package common
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -51,13 +51,12 @@ func NewOTelMetricCollector(serviceName, env, projectID, region string, exportIn
 		}
 	}
 
-	// Use Cloud Run instance ID (or hostname as fallback) as node_id so each
-	// instance gets its own GCP metric series — prevents "Points must be written
-	// in order" errors when multiple instances share the same cumulative series.
-	instanceID := os.Getenv("INSTANCE_ID")
-	if instanceID == "" {
-		instanceID, _ = os.Hostname()
-	}
+	// Generate a random instance ID per process so each Cloud Run instance gets
+	// its own GCP metric series — prevents "Points must be written in order"
+	// errors when multiple instances share the same cumulative series.
+	// Cloud Run does not expose a per-instance env var; hostname returns
+	// "localhost" for all instances, so we generate a UUID at startup instead.
+	instanceID := generateInstanceID()
 
 	res, err := resource.New(
 		context.Background(),
@@ -218,4 +217,12 @@ func (c *OTelMetricCollector) getOrCreateGauge(name string) metric.Float64Gauge 
 	g, _ = c.meter.Float64Gauge(name)
 	c.gauges[name] = g
 	return g
+}
+
+func generateInstanceID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%x", b)
 }
