@@ -2,19 +2,19 @@ package common
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"fmt"
 	gcpmetric "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
-
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 )
 
 // OTelMetricCollector exports metrics via OpenTelemetry to GCP Cloud Monitoring or stdout.
@@ -51,12 +51,21 @@ func NewOTelMetricCollector(serviceName, env, projectID, region string, exportIn
 		}
 	}
 
+	// Use Cloud Run instance ID (or hostname as fallback) as node_id so each
+	// instance gets its own GCP metric series — prevents "Points must be written
+	// in order" errors when multiple instances share the same cumulative series.
+	instanceID := os.Getenv("INSTANCE_ID")
+	if instanceID == "" {
+		instanceID, _ = os.Hostname()
+	}
+
 	res, err := resource.New(
 		context.Background(),
 		resource.WithAttributes(
 			semconv.ServiceName(serviceName),
 			semconv.ServiceNamespace(env),
 			semconv.CloudRegion(region),
+			semconv.ServiceInstanceID(instanceID),
 		),
 	)
 	if err != nil {
