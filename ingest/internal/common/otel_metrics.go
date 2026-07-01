@@ -2,19 +2,19 @@ package common
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"fmt"
 	gcpmetric "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
-
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 )
 
 // OTelMetricCollector exports metrics via OpenTelemetry to GCP Cloud Monitoring or stdout.
@@ -51,12 +51,20 @@ func NewOTelMetricCollector(serviceName, env, projectID, region string, exportIn
 		}
 	}
 
+	// Generate a random instance ID per process so each Cloud Run instance gets
+	// its own GCP metric series — prevents "Points must be written in order"
+	// errors when multiple instances share the same cumulative series.
+	// Cloud Run does not expose a per-instance env var; hostname returns
+	// "localhost" for all instances, so we generate a UUID at startup instead.
+	instanceID := generateInstanceID()
+
 	res, err := resource.New(
 		context.Background(),
 		resource.WithAttributes(
 			semconv.ServiceName(serviceName),
 			semconv.ServiceNamespace(env),
 			semconv.CloudRegion(region),
+			semconv.ServiceInstanceID(instanceID),
 		),
 	)
 	if err != nil {
@@ -209,4 +217,12 @@ func (c *OTelMetricCollector) getOrCreateGauge(name string) metric.Float64Gauge 
 	g, _ = c.meter.Float64Gauge(name)
 	c.gauges[name] = g
 	return g
+}
+
+func generateInstanceID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%x", b)
 }
