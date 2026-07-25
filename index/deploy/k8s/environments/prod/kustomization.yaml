@@ -124,7 +124,7 @@ configMapGenerator:
     literals:
       - posts_index_shards=3
       - posts_index_replicas=1
-      - likes_index_shards=7
+      - likes_index_shards=2
       - likes_index_replicas=1
       - tombstones_index_shards=3
       - tombstones_index_replicas=1
