@@ -66,7 +66,7 @@ spec:
           curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/likes_ilm_policy" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
-            -d "$ILM_DELETE_POLICY"
+            -d "$ILM_FORCEMERGE_POLICY"
 
           curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/tombstones_ilm_policy" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
