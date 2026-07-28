@@ -60,10 +60,10 @@ patches:
               - name: elasticsearch
                 resources:
                   requests:
-                    memory: 32Gi
+                    memory: 40Gi
                     cpu: "1250m"
                   limits:
-                    memory: 32Gi
+                    memory: 40Gi
                     cpu: "1250m"
                 env:
                 - name: ES_JAVA_OPTS
