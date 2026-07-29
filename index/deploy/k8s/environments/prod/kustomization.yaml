@@ -60,14 +60,14 @@ patches:
               - name: elasticsearch
                 resources:
                   requests:
-                    memory: 32Gi
-                    cpu: "1250m"
+                    memory: 48Gi
+                    cpu: "7385m"
                   limits:
-                    memory: 32Gi
-                    cpu: "1250m"
+                    memory: 48Gi
+                    cpu: "7385m"
                 env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms16g -Xmx16g"
+                  value: "-Xms8g -Xmx8g"
           volumeClaimTemplates:
           - metadata:
               name: elasticsearch-data
