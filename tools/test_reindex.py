@@ -59,6 +59,63 @@ async def test_doc_count_missing_returns_none():
 
 
 # ---------------------------------------------------------------------------
+# _source_excludes_embeddings
+# ---------------------------------------------------------------------------
+
+async def test_source_excludes_embeddings_true():
+    es = _es()
+    es.indices.get_mapping.return_value = {
+        "posts-2026-w30-abc1234": {"mappings": {"_source": {"excludes": ["embeddings"]}}}
+    }
+    assert await reindex._source_excludes_embeddings(es, "posts-2026-w30-abc1234") is True
+
+
+async def test_source_excludes_embeddings_false_when_absent():
+    es = _es()
+    es.indices.get_mapping.return_value = {
+        "posts-2026-w30": {"mappings": {}}
+    }
+    assert await reindex._source_excludes_embeddings(es, "posts-2026-w30") is False
+
+
+async def test_source_excludes_embeddings_false_for_other_excludes():
+    es = _es()
+    es.indices.get_mapping.return_value = {
+        "posts-2026-w30": {"mappings": {"_source": {"excludes": ["some_other_field"]}}}
+    }
+    assert await reindex._source_excludes_embeddings(es, "posts-2026-w30") is False
+
+
+async def test_source_excludes_embeddings_false_when_index_missing():
+    es = _es()
+    es.indices.get_mapping.side_effect = _nf()
+    assert await reindex._source_excludes_embeddings(es, "missing") is False
+
+
+# ---------------------------------------------------------------------------
+# _start_reindex — vector-drop guard
+# ---------------------------------------------------------------------------
+
+async def test_start_reindex_refuses_when_source_excludes_embeddings(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=PENDING)
+    monkeypatch.setattr(reindex, "_source_excludes_embeddings", AsyncMock(return_value=True))
+
+    assert await reindex._start_reindex(es, st, "s") == FAILED
+    es.reindex.assert_not_awaited()
+
+
+async def test_start_reindex_proceeds_when_source_does_not_exclude_embeddings(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=PENDING)
+    monkeypatch.setattr(reindex, "_source_excludes_embeddings", AsyncMock(return_value=False))
+    es.reindex.return_value = {"task": "node1:99"}
+
+    assert await reindex._start_reindex(es, st, "s") == REINDEXING
+    es.reindex.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # _task_running
 # ---------------------------------------------------------------------------
 

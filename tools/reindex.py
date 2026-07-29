@@ -203,6 +203,25 @@ async def _index_exists(es: AsyncElasticsearch, index: str) -> bool:
         return False
 
 
+async def _source_excludes_embeddings(es: AsyncElasticsearch, index: str) -> bool:
+    """Return True if index's mapping excludes "embeddings" from _source.
+
+    Once _source excludes embeddings, dense_vector data only lives in Lucene's
+    indexed/doc-value structures, not in _source. _reindex reads _source, so
+    migrating such an index would silently produce a destination with the
+    embeddings fields entirely unpopulated.
+    """
+    try:
+        mapping = await es.indices.get_mapping(index=index)
+    except NotFoundError:
+        return False
+    for info in mapping.values():
+        excludes = info.get("mappings", {}).get("_source", {}).get("excludes", [])
+        if "embeddings" in excludes:
+            return True
+    return False
+
+
 async def _doc_count(es: AsyncElasticsearch, index: str) -> int | None:
     """Return the document count for index, or None if it does not exist."""
     try:
@@ -257,6 +276,15 @@ async def _start_reindex(
 ) -> str:
     """Kick off an async sliced reindex. Returns REINDEXING or FAILED."""
     dst = state.indices[src].dst
+
+    if await _source_excludes_embeddings(es, src):
+        _warn(
+            f"  Refusing to reindex {src}: its mapping excludes 'embeddings' from _source. "
+            f"_reindex only copies _source, so the destination would silently end up with no "
+            f"vector data for that field. This index cannot be migrated with a plain reindex."
+        )
+        return FAILED
+
     _info(f"  Starting async reindex (slices=auto, 2000 req/s) ...")
 
     try:
