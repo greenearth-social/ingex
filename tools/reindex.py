@@ -281,7 +281,10 @@ async def _start_reindex(
         _warn(
             f"  Refusing to reindex {src}: its mapping excludes 'embeddings' from _source. "
             f"_reindex only copies _source, so the destination would silently end up with no "
-            f"vector data for that field. This index cannot be migrated with a plain reindex."
+            f"vector data for that field. For shard-count changes use the segment-level "
+            f"_shrink (divisor targets) or _split (multiple targets) APIs instead — they "
+            f"preserve vector data regardless of _source. True mapping changes need a "
+            f"client-side copy that merges _source with fields-API vector retrieval."
         )
         return FAILED
 
