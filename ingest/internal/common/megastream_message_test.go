@@ -1,7 +1,10 @@
 package common
 
 import (
+	"fmt"
 	"testing"
+
+	"github.com/greenearth/ingest/internal/embeddings"
 )
 
 func TestIsAccountDeletion(t *testing.T) {
@@ -951,5 +954,49 @@ func TestMegaStreamMessage_CreatedAtNormalization(t *testing.T) {
 				t.Errorf("GetCreatedAt() = %q, expected %q", got, tt.expectedCreatedAt)
 			}
 		})
+	}
+}
+
+// TestMegaStreamMessage_EmbeddingsParsing covers issue greenearth-social/api#312 step 2:
+// all_MiniLM_L6_v2 is written by ingex but read by nothing in api, so parseInferences
+// must stop decoding and storing it, while still parsing the L12 and gemma embeddings.
+func TestMegaStreamMessage_EmbeddingsParsing(t *testing.T) {
+	logger := NewLogger(false)
+	rawPostJSON := `{
+		"message": {
+			"commit": {
+				"operation": "create",
+				"record": {
+					"text": "hello",
+					"createdAt": "2025-12-12T02:14:25.876Z"
+				}
+			}
+		}
+	}`
+
+	l12, err := embeddings.Encode([]float32{0.1, 0.2, 0.3})
+	if err != nil {
+		t.Fatalf("failed to encode L12 fixture: %v", err)
+	}
+	l6, err := embeddings.Encode([]float32{0.4, 0.5, 0.6})
+	if err != nil {
+		t.Fatalf("failed to encode L6 fixture: %v", err)
+	}
+
+	inferencesJSON := fmt.Sprintf(`{
+		"text_embeddings": {
+			"all-MiniLM-L12-v2": %q,
+			"all-MiniLM-L6-v2": %q
+		}
+	}`, l12, l6)
+
+	msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, inferencesJSON, logger)
+	got := msg.GetEmbeddings()
+
+	if _, ok := got["all_MiniLM_L6_v2"]; ok {
+		t.Errorf("expected all_MiniLM_L6_v2 to be dropped, but it was present: %v", got["all_MiniLM_L6_v2"])
+	}
+	if _, ok := got["all_MiniLM_L12_v2"]; !ok {
+		t.Errorf("expected all_MiniLM_L12_v2 to still be parsed, got %v", got)
 	}
 }
