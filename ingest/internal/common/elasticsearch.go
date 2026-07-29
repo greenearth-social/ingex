@@ -930,11 +930,35 @@ type TotalHits struct {
 
 // Hit represents a single search hit
 type Hit struct {
-	Index  string        `json:"_index"`
-	ID     string        `json:"_id"`
-	Score  float64       `json:"_score"`
-	Sort   []interface{} `json:"sort,omitempty"`
-	Source PostData      `json:"_source"`
+	Index  string                     `json:"_index"`
+	ID     string                     `json:"_id"`
+	Score  float64                    `json:"_score"`
+	Sort   []interface{}              `json:"sort,omitempty"`
+	Source PostData                   `json:"_source"`
+	Fields map[string]json.RawMessage `json:"fields,omitempty"`
+}
+
+// embeddingsFromHit returns hit's embeddings, preferring the "fields" retrieval
+// API over _source. Once an index's mapping excludes "embeddings" from
+// _source (api#312 step 2), Source.Embeddings is empty and the vectors are
+// only recoverable via "fields", which reads doc-value/indexed data directly.
+func embeddingsFromHit(hit Hit) map[string][]float32 {
+	embeddings := make(map[string][]float32, len(hit.Fields))
+	for name, raw := range hit.Fields {
+		modelName, ok := strings.CutPrefix(name, "embeddings.")
+		if !ok {
+			continue
+		}
+		var values [][]float32
+		if err := json.Unmarshal(raw, &values); err != nil || len(values) == 0 {
+			continue
+		}
+		embeddings[modelName] = values[0]
+	}
+	if len(embeddings) > 0 {
+		return embeddings
+	}
+	return hit.Source.Embeddings
 }
 
 // PostData represents the _source field of a search hit
@@ -1061,6 +1085,9 @@ func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *Inges
 			map[string]interface{}{"indexed_at": "asc"},
 		},
 		"size": size,
+		// posts/replies templates exclude "embeddings" from _source (api#312 step 2),
+		// so request it via the fields API, which reads doc-value/indexed data directly.
+		"fields": []interface{}{"embeddings.*"},
 	}
 
 	if afterCreatedAt != "" && afterIndexedAt != "" {
@@ -1183,7 +1210,6 @@ func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *Inges
 
 	return response, nil
 }
-
 
 // QueryPostsByAuthorDID retrieves all post at_uris for a given author_did using scroll API
 func QueryPostsByAuthorDID(ctx context.Context, client *elasticsearch.Client, index string, authorDID string, logger *IngestLogger) ([]string, error) {
