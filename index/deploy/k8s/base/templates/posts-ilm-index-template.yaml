@@ -29,6 +29,9 @@ data:
           "_routing": {
             "required": true
           },
+          "_source": {
+            "excludes": ["embeddings"]
+          },
           "properties": {
             "at_uri": {
               "type": "keyword",
