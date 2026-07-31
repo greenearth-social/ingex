@@ -29,6 +29,9 @@ data:
           "_routing": {
             "required": true
           },
+          "_source": {
+            "excludes": ["embeddings"]
+          },
           "properties": {
             "at_uri": {
               "type": "keyword",
@@ -58,8 +61,7 @@ data:
                 "all_MiniLM_L12_v2": {
                   "type": "dense_vector",
                   "dims": 384,
-                  "index": true,
-                  "similarity": "cosine"
+                  "index": false
                 },
                 "all_MiniLM_L6_v2": {
                   "type": "dense_vector",
