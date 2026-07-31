@@ -217,6 +217,7 @@ deploy_jetstream_service() {
         --set-env-vars="GE_LIKE_RATE_LIMIT_PER_HOUR=600" \
         --set-env-vars="GE_INDEX_PERIOD=$GE_INDEX_PERIOD" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
+        --labels="git-sha=$GIT_SHA" \
         --scaling="$GE_JETSTREAM_INSTANCES" \
         --cpu=1 \
         --memory=512Mi \
@@ -288,6 +289,7 @@ deploy_megastream_service() {
         --set-env-vars="GE_INDEX_PERIOD=$GE_INDEX_PERIOD" \
         --set-env-vars="GE_INFERENCE_BASE_URL=$inference_base_url" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest,GE_AWS_S3_ACCESS_KEY=$aws_access_key_secret:latest,GE_AWS_S3_SECRET_KEY=$aws_secret_key_secret:latest,GE_INFERENCE_API_KEY=$inference_api_key_secret:latest" \
+        --labels="git-sha=$GIT_SHA" \
         --scaling="$GE_MEGASTREAM_INSTANCES" \
         --cpu=1 \
         --memory=1Gi \
@@ -380,6 +382,7 @@ EOF
         --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
         --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
         --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
+        --labels="git-sha=$GIT_SHA" \
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=3600 \
@@ -438,6 +441,7 @@ deploy_extract_job() {
         --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
         --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
         --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
+        --labels="git-sha=$GIT_SHA" \
         --cpu=2 \
         --memory=4Gi \
         --task-timeout=7200 \

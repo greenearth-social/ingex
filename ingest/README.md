@@ -234,6 +234,35 @@ export GE_ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
 
 See `./scripts/gc_setup.sh` and `./scripts/deploy.sh`
 
+### Git sha traceability
+
+So we always know what code is live, `deploy.sh` stamps the short git sha of the
+deployed code (`GIT_SHA`) onto every service and job in two places:
+
+- **Env var `GE_GIT_SHA`** — each binary reports it on its health endpoint (see
+  below) and prefixes it onto every log line.
+- **Cloud Run label `git-sha=<sha>`** — tags the service/revision (and job) so
+  past deployments are identifiable when choosing a rollback target:
+
+  ```bash
+  gcloud run revisions list --service=jetstream-ingest-prod --region=us-east1 \
+    --format='value(metadata.name,metadata.labels.git-sha)'
+  ```
+
+### Health endpoint
+
+Every service and job runs a small health server (`internal/common/health.go`)
+on port 8080 (falling back up to 8089). It serves `/health`, `/healthz`,
+`/ready`, and `/`. The JSON payload includes the deployed sha, so you can confirm
+which revision is live and pin it in bug reports:
+
+```json
+{"healthy": true, "status": "healthy", "started_at": "…", "git_sha": "e9f07f5"}
+```
+
+`git_sha` is omitted when running unstamped code (e.g. local dev, where
+`GE_GIT_SHA` is unset).
+
 ## Development
 
 ### Code Organization
