@@ -8,8 +8,10 @@ import (
 
 // TestEmbeddingsFromHit covers the fallback chain used because posts/replies
 // templates exclude "embeddings" from _source (greenearth-social/api#312 step 2):
-// once that happens, embeddings are only retrievable via the ES "fields" API,
-// not _source.
+// once that happens, embeddings are only retrievable via the ES "docvalue_fields"
+// API, not _source. Both "fields" and "docvalue_fields" populate the same
+// response key ("fields"), so these fixtures apply regardless of which request
+// param was used to ask for them.
 func TestEmbeddingsFromHit(t *testing.T) {
 	t.Run("prefers fields when present", func(t *testing.T) {
 		hit := Hit{
@@ -81,8 +83,10 @@ func TestEmbeddingsFromHit(t *testing.T) {
 }
 
 // TestFetchPosts_RequestsEmbeddingsViaFields verifies FetchPosts asks for
-// embeddings through the "fields" retrieval API (not just _source), so vectors
-// are still retrievable once _source excludes the "embeddings" object.
+// embeddings through the "docvalue_fields" retrieval API (not "fields" and
+// not just _source): "fields" falls back to decompressing _source for
+// dense_vector on this ES version, so it silently returns nothing once
+// _source excludes the field (see greenearth-social/api#325).
 func TestFetchPosts_RequestsEmbeddingsViaFields(t *testing.T) {
 	var capturedBody map[string]interface{}
 
@@ -101,11 +105,14 @@ func TestFetchPosts_RequestsEmbeddingsViaFields(t *testing.T) {
 		t.Fatalf("FetchPosts returned error: %v", err)
 	}
 
-	fields, ok := capturedBody["fields"].([]interface{})
+	fields, ok := capturedBody["docvalue_fields"].([]interface{})
 	if !ok || len(fields) == 0 {
-		t.Fatalf("expected query to request \"fields\", got: %v", capturedBody)
+		t.Fatalf("expected query to request \"docvalue_fields\", got: %v", capturedBody)
 	}
 	if fields[0] != "embeddings.*" {
-		t.Errorf("expected fields=[\"embeddings.*\"], got %v", fields)
+		t.Errorf("expected docvalue_fields=[\"embeddings.*\"], got %v", fields)
+	}
+	if _, ok := capturedBody["fields"]; ok {
+		t.Errorf("expected no \"fields\" param (silently returns nothing for dense_vector once _source excludes it), got: %v", capturedBody)
 	}
 }

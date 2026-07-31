@@ -29,8 +29,8 @@ func HitToExtractPost(hit Hit) ExtractPost {
 		ReplyRootURI:    hit.Source.ThreadRootPost,
 	}
 
-	// Encode embeddings if present. embeddingsFromHit prefers the "fields" API
-	// over _source since posts/replies templates exclude "embeddings" from
+	// Encode embeddings if present. embeddingsFromHit prefers the "docvalue_fields"
+	// API over _source since posts/replies templates exclude "embeddings" from
 	// _source (api#312 step 2).
 	if hitEmbeddings := embeddingsFromHit(hit); len(hitEmbeddings) > 0 {
 		extractPost.Embeddings = make(map[string]string, len(hitEmbeddings))
