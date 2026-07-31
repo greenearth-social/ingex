@@ -236,8 +236,12 @@ See `./scripts/gc_setup.sh` and `./scripts/deploy.sh`
 
 ### Git sha traceability
 
-So we always know what code is live, `deploy.sh` stamps the short git sha of the
-deployed code (`GIT_SHA`) onto every service and job in two places:
+So the stamped sha always matches what ships, `deploy.sh` **refuses to deploy
+with a dirty working tree** (uncommitted changes). Deploying an unpushed branch
+is fine — only a dirty tree is rejected. Commit or stash first.
+
+It then stamps the short git sha of the deployed code (`GIT_SHA`) onto every
+service and job in two places:
 
 - **Env var `GE_GIT_SHA`** — each binary reports it on its health endpoint (see
   below) and prefixes it onto every log line.

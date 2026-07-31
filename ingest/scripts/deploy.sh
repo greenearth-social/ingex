@@ -21,8 +21,10 @@ GE_AWS_S3_PREFIX="${GE_AWS_S3_PREFIX:-mega/}"
 GE_JETSTREAM_INSTANCES="${GE_JETSTREAM_INSTANCES:-1}"
 GE_MEGASTREAM_INSTANCES="${GE_MEGASTREAM_INSTANCES:-1}"
 
-# Get current git SHA (short version) for deployment tracking
-GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+# Short git SHA of the deployed code, resolved by require_clean_worktree().
+# Stamped onto every Cloud Run service/job (env var + git-sha label) so we can
+# identify exactly what code is live.
+GIT_SHA=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -84,6 +86,29 @@ cleanup_old_revisions() {
             done
         fi
     fi
+}
+
+require_clean_worktree() {
+    log_info "Verifying git working tree is clean..."
+
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        log_error "Not inside a git repository — cannot verify the deployed code."
+        log_error "Run deploy.sh from a checkout of the ingex repo."
+        exit 1
+    fi
+
+    # Refuse to deploy with uncommitted changes so the stamped git sha always
+    # matches the code that ships. Deploying an unpushed branch is fine — only a
+    # dirty tree is rejected.
+    if [ -n "$(git status --porcelain)" ]; then
+        log_error "Working tree has uncommitted changes. Commit or stash them before deploying"
+        log_error "so the deployed git sha reflects the running code."
+        git status --short
+        exit 1
+    fi
+
+    GIT_SHA="$(git rev-parse --short HEAD)"
+    log_info "Deploying git sha: $GIT_SHA ($(git rev-parse --abbrev-ref HEAD))"
 }
 
 validate_config() {
@@ -488,6 +513,9 @@ show_service_status() {
 
 main() {
     local service="${1:-all}"
+
+    # Refuse to deploy a dirty tree and resolve GIT_SHA before anything uses it.
+    require_clean_worktree
 
     # Derive GE_INDEX_PERIOD from GE_ENVIRONMENT after all flags have been parsed.
     # Using unconditional assignment so a stale GE_INDEX_PERIOD in the caller's
