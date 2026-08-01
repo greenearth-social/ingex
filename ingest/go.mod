@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.43.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.32
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.99.0
+	github.com/elastic/elastic-transport-go/v8 v8.9.0
 	github.com/elastic/go-elasticsearch/v9 v9.4.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/parquet-go/parquet-go v0.29.0
@@ -49,7 +50,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/elastic/elastic-transport-go/v8 v8.9.0 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect

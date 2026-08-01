@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	"github.com/elastic/go-elasticsearch/v9"
 )
 
@@ -167,21 +168,23 @@ type ElasticsearchConfig struct {
 
 // NewElasticsearchClient creates and tests a new Elasticsearch client
 func NewElasticsearchClient(config ElasticsearchConfig, logger *IngestLogger) (*elasticsearch.Client, error) {
-	esConfig := elasticsearch.Config{
-		Addresses: []string{config.URL},
-		APIKey:    config.APIKey,
+	opts := []elasticsearch.Option{
+		elasticsearch.WithAddresses(config.URL),
+		elasticsearch.WithAPIKey(config.APIKey),
 	}
 
 	if config.SkipTLSVerify {
 		logger.Info("TLS certificate verification disabled (local development mode)")
-		esConfig.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // nolint:gosec // G402: Required for local development with self-signed certs
-			},
-		}
+		opts = append(opts, elasticsearch.WithTransportOptions(
+			elastictransport.WithTransport(&http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true, // nolint:gosec // G402: Required for local development with self-signed certs
+				},
+			}),
+		))
 	}
 
-	client, err := elasticsearch.NewClient(esConfig)
+	client, err := elasticsearch.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Elasticsearch client: %w", err)
 	}
