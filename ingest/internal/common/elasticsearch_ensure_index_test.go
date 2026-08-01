@@ -25,9 +25,7 @@ func (m *mockESHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func newMockESClient(t *testing.T, handler http.Handler) (*elasticsearch.Client, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
-	client, err := elasticsearch.NewClient(elasticsearch.Config{
-		Addresses: []string{srv.URL},
-	})
+	client, err := elasticsearch.New(elasticsearch.WithAddresses(srv.URL))
 	if err != nil {
 		srv.Close()
 		t.Fatalf("failed to create mock ES client: %v", err)
@@ -84,7 +82,7 @@ func TestEnsureIndex_ResourceAlreadyExists_IsNotAnError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := elasticsearch.NewClient(elasticsearch.Config{Addresses: []string{srv.URL}})
+	client, err := elasticsearch.New(elasticsearch.WithAddresses(srv.URL))
 	if err != nil {
 		t.Fatalf("failed to create ES client: %v", err)
 	}
