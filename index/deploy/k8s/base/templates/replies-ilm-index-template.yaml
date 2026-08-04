@@ -66,16 +66,6 @@ data:
                   "type": "dense_vector",
                   "dims": 384,
                   "index": false
-                },
-                "all_MiniLM_L6_v2": {
-                  "type": "dense_vector",
-                  "dims": 384,
-                  "index": false
-                },
-                "google_embeddinggemma_300m": {
-                  "type": "dense_vector",
-                  "dims": 768,
-                  "index": false
                 }
               }
             },

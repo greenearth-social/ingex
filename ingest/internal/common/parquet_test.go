@@ -75,7 +75,11 @@ func TestHitToExtractPost(t *testing.T) {
 			},
 		},
 		{
-			name: "post with embeddings",
+			// Only the post-tower vector is exported. The L12 content vector stays
+			// on the ES document (serving reads it) but is not carried into
+			// Parquet, and families that are no longer ingested must not reappear
+			// here from older documents (ingex#444).
+			name: "post with embeddings exports only the post-tower vector",
 			hit: Hit{
 				Source: PostData{
 					AtURI:     "at://did:plc:embedder/app.bsky.feed.post/embed1",
@@ -84,8 +88,9 @@ func TestHitToExtractPost(t *testing.T) {
 					CreatedAt: "2025-01-15T13:00:00Z",
 					IndexedAt: "2025-01-15T13:01:00Z",
 					Embeddings: map[string][]float32{
-						"model1": {1.0, 2.0, 3.0},
-						"model2": {0.5, 0.6, 0.7},
+						GEPostEmbeddingFamily:        {1.0, 2.0, 3.0},
+						ContentEmbeddingFamily:       {0.5, 0.6, 0.7},
+						"google_embeddinggemma_300m": {0.1, 0.2, 0.3},
 					},
 				},
 			},
@@ -96,8 +101,7 @@ func TestHitToExtractPost(t *testing.T) {
 				RecordCreatedAt: "2025-01-15T13:00:00Z",
 				InsertedAt:      "2025-01-15T13:01:00Z",
 				Embeddings: map[string]string{
-					"model1": "c${NkXs~BsU~m8;2LK5}0e}",
-					"model2": "c${NkQ}>9rE6?Q=u<&;10SZD",
+					GEPostEmbeddingFamily: "c${NkXs~BsU~m8;2LK5}0e}",
 				},
 			},
 		},

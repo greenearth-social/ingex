@@ -11,10 +11,10 @@ func TestIsAccountDeletion(t *testing.T) {
 	logger := NewLogger(false)
 
 	tests := []struct {
-		name                    string
-		rawPostJSON             string
+		name                      string
+		rawPostJSON               string
 		expectedIsAccountDeletion bool
-		expectedAccountStatus   string
+		expectedAccountStatus     string
 	}{
 		{
 			name: "account deletion event",
@@ -30,7 +30,7 @@ func TestIsAccountDeletion(t *testing.T) {
 				}
 			}`,
 			expectedIsAccountDeletion: true,
-			expectedAccountStatus:   "deleted",
+			expectedAccountStatus:     "deleted",
 		},
 		{
 			name: "account deactivation event",
@@ -46,7 +46,7 @@ func TestIsAccountDeletion(t *testing.T) {
 				}
 			}`,
 			expectedIsAccountDeletion: false,
-			expectedAccountStatus:   "deactivated",
+			expectedAccountStatus:     "deactivated",
 		},
 		{
 			name: "active account event",
@@ -62,7 +62,7 @@ func TestIsAccountDeletion(t *testing.T) {
 				}
 			}`,
 			expectedIsAccountDeletion: false,
-			expectedAccountStatus:   "",
+			expectedAccountStatus:     "",
 		},
 		{
 			name: "regular post creation event",
@@ -79,7 +79,7 @@ func TestIsAccountDeletion(t *testing.T) {
 				}
 			}`,
 			expectedIsAccountDeletion: false,
-			expectedAccountStatus:   "",
+			expectedAccountStatus:     "",
 		},
 		{
 			name: "regular post deletion event",
@@ -92,7 +92,7 @@ func TestIsAccountDeletion(t *testing.T) {
 				}
 			}`,
 			expectedIsAccountDeletion: false,
-			expectedAccountStatus:   "",
+			expectedAccountStatus:     "",
 		},
 	}
 
@@ -957,9 +957,12 @@ func TestMegaStreamMessage_CreatedAtNormalization(t *testing.T) {
 	}
 }
 
-// TestMegaStreamMessage_EmbeddingsParsing covers issue greenearth-social/api#312 step 2:
-// all_MiniLM_L6_v2 is written by ingex but read by nothing in api, so parseInferences
-// must stop decoding and storing it, while still parsing the L12 and gemma embeddings.
+// TestMegaStreamMessage_EmbeddingsParsing covers api#312 step 2 and ingex#444:
+// only the families something actually reads are ingested. all_MiniLM_L6_v2 and
+// google_embeddinggemma_300m are read by nothing, so parseInferences must not
+// store them; all_MiniLM_L12_v2 must still be parsed, because serving reads it
+// (MMR and the heavy ranker) and it is the post tower's input. Every field kept
+// on a post document is paid for on the hydration path and again in _source.
 func TestMegaStreamMessage_EmbeddingsParsing(t *testing.T) {
 	logger := NewLogger(false)
 	rawPostJSON := `{
@@ -983,18 +986,37 @@ func TestMegaStreamMessage_EmbeddingsParsing(t *testing.T) {
 		t.Fatalf("failed to encode L6 fixture: %v", err)
 	}
 
+	gemma, err := embeddings.Encode([]float32{0.7, 0.8, 0.9})
+	if err != nil {
+		t.Fatalf("failed to encode gemma fixture: %v", err)
+	}
+
 	inferencesJSON := fmt.Sprintf(`{
 		"text_embeddings": {
 			"all-MiniLM-L12-v2": %q,
 			"all-MiniLM-L6-v2": %q
+		},
+		"video": {
+			"audio_transcription": {
+				"text": "a transcript",
+				"language": "en",
+				"embeddings": {"google/embeddinggemma-300m": %q}
+			}
 		}
-	}`, l12, l6)
+	}`, l12, l6, gemma)
 
 	msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, inferencesJSON, logger)
 	got := msg.GetEmbeddings()
 
 	if _, ok := got["all_MiniLM_L6_v2"]; ok {
 		t.Errorf("expected all_MiniLM_L6_v2 to be dropped, but it was present: %v", got["all_MiniLM_L6_v2"])
+	}
+	if _, ok := got["google_embeddinggemma_300m"]; ok {
+		t.Errorf("expected google_embeddinggemma_300m to be dropped, but it was present: %v", got["google_embeddinggemma_300m"])
+	}
+	// The transcript itself is still ingested; only its embedding is dropped.
+	if msg.GetVideoTranscript() != "a transcript" {
+		t.Errorf("video transcript should still be parsed, got %q", msg.GetVideoTranscript())
 	}
 	if _, ok := got["all_MiniLM_L12_v2"]; !ok {
 		t.Errorf("expected all_MiniLM_L12_v2 to still be parsed, got %v", got)

@@ -2,6 +2,20 @@ package common
 
 import "github.com/greenearth/ingest/internal/embeddings"
 
+// GEPostEmbeddingFamily is the post-tower output vector (128d, the one
+// two-tower kNN searches). ContentEmbeddingFamily is the MiniLM L12 content
+// vector: it stays on post documents because serving reads it (MMR
+// diversification and both rankers) and because it is the post tower's input.
+const (
+	GEPostEmbeddingFamily  = "ge_post_embedding"
+	ContentEmbeddingFamily = "all_MiniLM_L12_v2"
+)
+
+// ExportedEmbeddingFamilies are the families written to Parquet. Everything
+// else is either no longer ingested (ingex#444) or recoverable from the
+// megastream archives, so exporting it only inflates every extract.
+var ExportedEmbeddingFamilies = []string{GEPostEmbeddingFamily}
+
 // ExtractPost represents the Post document structure for Parquet serialization
 // Field names match the expected parquet output format
 type ExtractPost struct {
@@ -29,16 +43,25 @@ func HitToExtractPost(hit Hit) ExtractPost {
 		ReplyRootURI:    hit.Source.ThreadRootPost,
 	}
 
-	// Encode embeddings if present. embeddingsFromHit prefers the "docvalue_fields"
-	// API over _source since posts/replies templates exclude "embeddings" from
-	// _source (api#312 step 2).
+	// Export only the post-tower vector. The other families are either no longer
+	// ingested (ingex#444) or are inputs recoverable from the megastream
+	// archives, so carrying them here only inflates every export.
+	// embeddingsFromHit prefers the "docvalue_fields" API over _source, which is
+	// how indexed dense_vector fields are read back.
 	if hitEmbeddings := embeddingsFromHit(hit); len(hitEmbeddings) > 0 {
-		extractPost.Embeddings = make(map[string]string, len(hitEmbeddings))
-		for modelName, floatArray := range hitEmbeddings {
-			if encoded, err := embeddings.Encode(floatArray); err == nil {
-				extractPost.Embeddings[modelName] = encoded
+		for _, modelName := range ExportedEmbeddingFamilies {
+			floatArray, ok := hitEmbeddings[modelName]
+			if !ok {
+				continue
 			}
-			// Silently skip embeddings that fail to encode
+			encoded, err := embeddings.Encode(floatArray)
+			if err != nil {
+				continue // Silently skip embeddings that fail to encode
+			}
+			if extractPost.Embeddings == nil {
+				extractPost.Embeddings = make(map[string]string, len(ExportedEmbeddingFamilies))
+			}
+			extractPost.Embeddings[modelName] = encoded
 		}
 	}
 

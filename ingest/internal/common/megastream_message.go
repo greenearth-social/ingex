@@ -295,15 +295,11 @@ func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *Inges
 	m.videoTranscript, _ = audioTranscription["text"].(string)
 	m.videoTranscriptLanguage, _ = audioTranscription["language"].(string)
 
-	if embeddingsMap, ok := audioTranscription["embeddings"].(map[string]interface{}); ok {
-		if embGemma, ok := embeddingsMap["google/embeddinggemma-300m"].(string); ok {
-			if decoded, err := embeddings.Decode(embGemma); err == nil {
-				m.embeddings["google_embeddinggemma_300m"] = decoded
-			} else {
-				logger.Debug("Failed to decode embeddinggemma-300m for %s: %v", m.atURI, err)
-			}
-		}
-	}
+	// The transcript embedding (google/embeddinggemma-300m, 768d) is deliberately
+	// not ingested: nothing reads it, and every field carried on a post document
+	// is paid for on the hydration path and again in _source (ingex#444, which
+	// removed the _source exclusion that used to hide that cost). It remains
+	// available in the megastream archives if a use case appears.
 }
 
 // Interface method implementations
