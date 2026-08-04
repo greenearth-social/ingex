@@ -10,6 +10,10 @@ import (
 )
 
 // templatesDir locates index/deploy/k8s/base/templates relative to this package.
+//
+// Caveat: these YAML files are outside this Go package, so `go test` will serve
+// a cached PASS after they change. Run with `-count=1` when editing a template.
+// CI starts from a cold cache, so the guard is reliable there.
 func templatesDir(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join("..", "..", "..", "index", "deploy", "k8s", "base", "templates")
@@ -73,9 +77,12 @@ func loadTemplateJSON(t *testing.T, path string) map[string]any {
 // `like_count>=20` and "has a searchable vector" mutually exclusive and left
 // two-tower kNN unable to return anything.
 //
-// Use "mode": "synthetic" instead: _source is still not stored verbatim (so
-// api#312's payload reduction is preserved) but it is reconstructed from doc
-// values, so updates round-trip every field.
+// "mode": "synthetic" is NOT the fix: it is an Enterprise feature, and on our
+// basic licence Elasticsearch silently ignores it and stores _source normally.
+// Measured on ES 9.0.0: a synthetic-mode index and a default index produced
+// byte-identical stores, and the synthetic index's mapping did not echo the
+// _source block back at all. Anything that relies on it would be a no-op that
+// reads as a working optimisation, so this test rejects it too.
 func TestIndexTemplatesDoNotExcludeEmbeddingsFromSource(t *testing.T) {
 	dir := templatesDir(t)
 	entries, err := os.ReadDir(dir)
@@ -98,11 +105,19 @@ func TestIndexTemplatesDoNotExcludeEmbeddingsFromSource(t *testing.T) {
 		if !ok {
 			continue
 		}
+		checked++
+
 		source, ok := mappings["_source"].(map[string]any)
 		if !ok {
 			continue
 		}
-		checked++
+
+		if mode, _ := source["mode"].(string); mode == "synthetic" {
+			t.Errorf("%s sets _source.mode=synthetic: that is an Enterprise feature, "+
+				"silently ignored on our basic licence (measured byte-identical to a "+
+				"default index on ES 9.0.0). It looks like an optimisation but is a "+
+				"no-op — see ingex#444", entry.Name())
+		}
 
 		excludes, ok := source["excludes"].([]any)
 		if !ok {
@@ -112,14 +127,14 @@ func TestIndexTemplatesDoNotExcludeEmbeddingsFromSource(t *testing.T) {
 			field, _ := ex.(string)
 			if field == "embeddings" || strings.HasPrefix(field, "embeddings.") {
 				t.Errorf("%s excludes %q from _source: any update to a document "+
-					"(e.g. a like_count increment) will silently drop it. Use "+
-					"\"_source\": {\"mode\": \"synthetic\"} instead — see ingex#444",
-					entry.Name(), field)
+					"(e.g. a like_count increment) will silently drop it, destroying "+
+					"the vectors two-tower kNN and the extract/training pipeline rely "+
+					"on — see ingex#444", entry.Name(), field)
 			}
 		}
 	}
 
 	if checked == 0 {
-		t.Fatal("no index template declared a _source block; the check did not run")
+		t.Fatal("no index templates were parsed; the check did not run")
 	}
 }

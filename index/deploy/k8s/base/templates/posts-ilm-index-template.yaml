@@ -29,9 +29,6 @@ data:
           "_routing": {
             "required": true
           },
-          "_source": {
-            "mode": "synthetic"
-          },
           "properties": {
             "at_uri": {
               "type": "keyword",
