@@ -30,6 +30,11 @@ spec:
             configMapKeyRef:
               name: ilm-settings
               key: ilm_forcemerge_age
+        - name: POSTS_QUALITY_ILM_DELETE_AGE
+          valueFrom:
+            configMapKeyRef:
+              name: ilm-settings
+              key: posts_quality_ilm_delete_age
         command:
         - /bin/sh
         - -c
@@ -57,6 +62,14 @@ spec:
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
             -H "Content-Type: application/json" \
             -d "$ILM_FORCEMERGE_POLICY"
+
+          # The quality index is a two-week retrieval corpus, not an archive: it is
+          # rebuilt continuously from posts and deleted well before the 60d posts
+          # retention, so it gets its own shorter delete age.
+          curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/posts_quality_ilm_policy" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d "{\"policy\":{\"phases\":{\"warm\":{\"min_age\":\"$ILM_FORCEMERGE_AGE\",\"actions\":{\"forcemerge\":{\"max_num_segments\":1}}},\"delete\":{\"min_age\":\"$POSTS_QUALITY_ILM_DELETE_AGE\",\"actions\":{\"delete\":{}}}}}}"
 
           curl -k --fail-with-body -X PUT "https://greenearth-es-http:9200/_ilm/policy/replies_ilm_policy" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
@@ -131,6 +144,13 @@ spec:
             -d @/templates/posts-ilm-index-template.json
           echo "posts_ilm_template completed!"
 
+          echo "Applying posts_quality_ilm_template template..."
+          curl -k -X PUT "https://greenearth-es-http:9200/_index_template/posts_quality_ilm_template" \
+            -u "es-service-user:$ES_SERVICE_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d @/templates/posts-quality-ilm-index-template.json
+          echo "posts_quality_ilm_template completed!"
+
           echo "Applying likes_ilm_template template..."
           curl -k -X PUT "https://greenearth-es-http:9200/_index_template/likes_ilm_template" \
             -u "es-service-user:$ES_SERVICE_PASSWORD" \
@@ -203,6 +223,8 @@ spec:
               name: inferences-index-template
           - configMap:
               name: posts-ilm-index-template
+          - configMap:
+              name: posts-quality-ilm-index-template
           - configMap:
               name: likes-ilm-index-template
           - configMap:

@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: posts-quality-ilm-index-template
+data:
+  posts-quality-ilm-index-template.json: |
+    {
+      "index_patterns": ["posts-quality-*"],
+      "_meta": {
+        "description": "Lean two-week retrieval corpus for two-tower kNN (greenearth-social/ingex#442). Holds only posts at or above the quality like threshold, so the like_count filter is non-selective here and Lucene keeps using the HNSW graph instead of exact-scanning every matching vector."
+      },
+      "priority": 200,
+      "template": {
+        "settings": {
+          "number_of_shards": $(POSTS_QUALITY_INDEX_SHARDS),
+          "number_of_replicas": $(POSTS_QUALITY_INDEX_REPLICAS),
+          "refresh_interval": "30s",
+          "translog.durability": "async",
+          "translog.sync_interval": "30s",
+          "lifecycle": {
+            "name": "posts_quality_ilm_policy"
+          }
+        },
+        "mappings": {
+          "_routing": {
+            "required": true
+          },
+          "_source": {
+            "excludes": ["embeddings"]
+          },
+          "properties": {
+            "at_uri": {
+              "type": "keyword",
+              "index": true
+            },
+            "author_did": {
+              "type": "keyword",
+              "index": true
+            },
+            "content": {
+              "type": "text",
+              "index": false
+            },
+            "created_at": {
+              "type": "date",
+              "format": "iso8601",
+              "index": true
+            },
+            "embeddings": {
+              "type": "object",
+              "dynamic": false,
+              "properties": {
+                "ge_post_embedding": {
+                  "type": "dense_vector",
+                  "dims": 128,
+                  "index": true,
+                  "similarity": "cosine"
+                }
+              }
+            },
+            "ge_post_embedding_model_uuid": {
+              "type": "keyword",
+              "index": true
+            },
+            "indexed_at": {
+              "type": "date",
+              "format": "iso8601",
+              "index": true
+            },
+            "like_count": {
+              "type": "integer",
+              "index": true
+            },
+            "contains_images": {"type": "boolean", "index": false},
+            "contains_video": {"type": "boolean", "index": true},
+            "image_count": {"type": "integer", "index": false},
+            "video_count": {"type": "integer", "index": false},
+            "external_embed": {
+              "type": "object",
+              "properties": {
+                "uri": {"type": "keyword", "index": false},
+                "title": {"type": "text", "index": false},
+                "description": {"type": "text", "index": false}
+              }
+            }
+          }
+        }
+      }
+    }

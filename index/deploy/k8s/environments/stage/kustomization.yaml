@@ -118,6 +118,9 @@ configMapGenerator:
     literals:
       - posts_index_shards=2
       - posts_index_replicas=1
+      - posts_quality_index_shards=1
+      - posts_quality_index_replicas=1
+      - posts_quality_ilm_delete_age=4h
       - likes_index_shards=2
       - likes_index_replicas=1
       - tombstones_index_shards=1

@@ -66,6 +66,14 @@ type Config struct {
 	// Index period configuration
 	IndexPeriod string // GE_INDEX_PERIOD: "week", "hour", or "10min"
 
+	// Quality corpus configuration (greenearth-social/ingex#442). The quality
+	// index is the lean two-week corpus two-tower kNN searches; posts join it
+	// when they cross QualityLikeThreshold. Must stay in step with the api's
+	// MIN_LIKE_COUNT and with posts_quality_ilm_delete_age in the ILM settings.
+	QualityIndexEnabled  bool          // GE_QUALITY_INDEX_ENABLED, default true
+	QualityLikeThreshold int           // GE_QUALITY_LIKE_THRESHOLD, default 20
+	QualityRetentionAge  time.Duration // GE_QUALITY_RETENTION_AGE, default 336h (14d)
+
 	// Inference service configuration
 	InferenceBaseURL        string        // GE_INFERENCE_BASE_URL; empty disables post-tower embeddings
 	InferenceAPIKey         string        // GE_INFERENCE_API_KEY
@@ -108,6 +116,9 @@ func LoadConfig() *Config {
 		LikeRateLimitWindowMinutes: getEnvInt("GE_LIKE_RATE_LIMIT_WINDOW_MIN", 5),
 		LikeBlockDurationMinutes:   getEnvInt("GE_LIKE_BLOCK_DURATION_MIN", 60),
 		IndexPeriod:                getEnv("GE_INDEX_PERIOD", IndexPeriod10Min),
+		QualityIndexEnabled:        getEnvBool("GE_QUALITY_INDEX_ENABLED", true),
+		QualityLikeThreshold:       getEnvInt("GE_QUALITY_LIKE_THRESHOLD", 20),
+		QualityRetentionAge:        getEnvDuration("GE_QUALITY_RETENTION_AGE", 14*24*time.Hour),
 		InferenceBaseURL:           getEnv("GE_INFERENCE_BASE_URL", ""),
 		InferenceAPIKey:            getEnv("GE_INFERENCE_API_KEY", ""),
 		InferenceTimeout:           getEnvDuration("GE_INFERENCE_TIMEOUT", 10*time.Second),

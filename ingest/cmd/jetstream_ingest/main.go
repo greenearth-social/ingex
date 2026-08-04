@@ -373,6 +373,20 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		}()
 	}
 
+	// Posts join the lean two-tower corpus the moment a like pushes them over
+	// the threshold (greenearth-social/ingex#442). nil disables promotion.
+	var qualityCfg *common.QualityPromotionConfig
+	if config.QualityIndexEnabled {
+		qualityCfg = &common.QualityPromotionConfig{
+			SourceIndex:  "posts",
+			Threshold:    config.QualityLikeThreshold,
+			IndexPeriod:  config.IndexPeriod,
+			RetentionAge: config.QualityRetentionAge,
+		}
+		logger.Info("Quality corpus promotion enabled (threshold: %d likes, retention: %s)",
+			config.QualityLikeThreshold, config.QualityRetentionAge)
+	}
+
 	// Start worker pool for parallel Elasticsearch writes
 	const numWorkers = 10
 	workersDone := make(chan struct{})
@@ -380,7 +394,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		var wg sync.WaitGroup
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, &wg)
+			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, qualityCfg, &wg)
 		}
 		wg.Wait()
 		close(workersDone)
@@ -644,7 +658,7 @@ cleanup:
 }
 
 // esWorker processes batches of documents and writes them to Elasticsearch
-func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, wg *sync.WaitGroup) {
+func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, qualityCfg *common.QualityPromotionConfig, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	batchCounter := 0
@@ -720,11 +734,28 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 					}
 				}
 
+				// The posts update runs inline rather than through
+				// BulkIndexWorker so its results are available: they carry each
+				// post's new like count, which is what identifies a threshold
+				// crossing without a second read.
 				var wg sync.WaitGroup
-				wg.Add(2)
-				go common.BulkIndexWorker(&wg, ctx, esClient, "posts", updates, dryRun, logger, common.BulkUpdateLikeCounts, "increment like counts in")
+				wg.Add(1)
 				go common.BulkIndexWorker(&wg, ctx, esClient, "replies", updates, dryRun, logger, common.BulkUpdateLikeCounts, "increment like counts in")
+
+				likeResults, err := common.BulkUpdateLikeCountsWithResults(ctx, esClient, "posts", updates, dryRun, logger)
+				if err != nil {
+					logger.Error("Worker %d: Failed to increment like counts in posts: %v", id, err)
+				}
 				wg.Wait()
+
+				// Promotion failures are logged, not fatal: the quality corpus is
+				// a derived view that the backfill script can rebuild, and a
+				// missed promotion must never stall like ingestion.
+				if err == nil && qualityCfg != nil && len(likeResults) > 0 {
+					if _, perr := common.PromoteQualityPosts(ctx, esClient, logger, *qualityCfg, likeResults, dryRun); perr != nil {
+						logger.Error("Worker %d: Failed to promote posts to the quality corpus: %v", id, perr)
+					}
+				}
 			}
 		}
 

@@ -4,7 +4,8 @@ metadata:
   name: update-recent-alias
 spec:
   # Run every 5 minutes. The shortest period is 10min (local), so this ensures
-  # posts_recent is updated within at most 5 minutes of each period boundary.
+  # posts_recent and posts_recent_quality are updated within at most 5 minutes
+  # of each period boundary.
   schedule: "*/5 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
@@ -77,69 +78,93 @@ spec:
                   | grep -o '"[^"]*"' | tr -d '"' | grep "^${prefix}" | head -1 || true
               }
 
-              NOW=$(date -u +%s)
-              PERIOD_SECS=$(period_seconds)
+              # Point alias at the most recent $3 period indices named "$1-<suffix>",
+              # removing any member that has fallen outside that window.
+              #
+              #   update_alias <index-prefix> <alias> <period-count>
+              update_alias() {
+                local prefix="$1"
+                local alias="$2"
+                local periods="$3"
 
-              CURRENT_SUFFIX=$(suffix_for_epoch "$NOW")
-              PRIOR_SUFFIX=$(suffix_for_epoch "$(( NOW - PERIOD_SECS ))")
+                local now period_secs i suffix idx
+                now=$(date -u +%s)
+                period_secs=$(period_seconds)
 
-              echo "Current period: posts-$CURRENT_SUFFIX"
-              echo "Prior period:   posts-$PRIOR_SUFFIX"
+                # Resolve the physical index backing each period in the window.
+                # WANTED stays space-delimited so it can be membership-tested below.
+                local wanted="" current_index=""
+                i=0
+                while [ "$i" -lt "$periods" ]; do
+                  suffix=$(suffix_for_epoch "$(( now - i * period_secs ))")
+                  idx=$(find_index "$prefix-$suffix")
+                  if [ -n "$idx" ]; then
+                    wanted="$wanted $idx"
+                    if [ "$i" -eq 0 ]; then
+                      current_index="$idx"
+                    fi
+                  fi
+                  i=$(( i + 1 ))
+                done
 
-              CURRENT_INDEX=$(find_index "posts-$CURRENT_SUFFIX")
-              PRIOR_INDEX=$(find_index "posts-$PRIOR_SUFFIX")
-
-              if [ -z "$CURRENT_INDEX" ]; then
-                echo "Current period index not found — skipping update"
-                exit 0
-              fi
-
-              echo "Resolved current index: $CURRENT_INDEX"
-              if [ -n "$PRIOR_INDEX" ]; then
-                echo "Resolved prior index:   $PRIOR_INDEX"
-              else
-                echo "Prior index not yet created — will add when it exists"
-              fi
-
-              # Fetch the current members of posts_recent.
-              ALIAS_JSON=$(curl -k -s -u "$AUTH" "$ES/*/_alias/posts_recent" 2>/dev/null || echo "{}")
-
-              # Check whether posts_recent already contains all expected members.
-              CURRENT_PRESENT=$(echo "$ALIAS_JSON" | grep -c "\"$CURRENT_INDEX\"" || true)
-              if [ -n "$PRIOR_INDEX" ]; then
-                PRIOR_PRESENT=$(echo "$ALIAS_JSON" | grep -c "\"$PRIOR_INDEX\"" || true)
-              else
-                PRIOR_PRESENT=1
-              fi
-
-              if [ "${CURRENT_PRESENT:-0}" -gt 0 ] && [ "${PRIOR_PRESENT:-0}" -gt 0 ]; then
-                echo "posts_recent already covers both periods — no update needed"
-                exit 0
-              fi
-
-              # Build atomic alias update: remove any index outside the 2-period window,
-              # add the current and prior indices.
-              REMOVE_ACTIONS=""
-              CURRENT_MEMBERS=$(echo "$ALIAS_JSON" | \
-                grep -o '"[^"]*":{"aliases":{"posts_recent"' | \
-                grep -o '^"[^"]*"' | tr -d '"' || true)
-
-              for idx in $CURRENT_MEMBERS; do
-                if [ "$idx" != "$CURRENT_INDEX" ] && [ "$idx" != "$PRIOR_INDEX" ]; then
-                  REMOVE_ACTIONS="${REMOVE_ACTIONS}{\"remove\":{\"index\":\"$idx\",\"alias\":\"posts_recent\"}},"
+                if [ -z "$current_index" ]; then
+                  echo "$alias: current period index ($prefix-$(suffix_for_epoch "$now")) not found — skipping"
+                  return 0
                 fi
-              done
 
-              ADD_ACTIONS="{\"add\":{\"index\":\"$CURRENT_INDEX\",\"alias\":\"posts_recent\"}}"
-              if [ -n "$PRIOR_INDEX" ]; then
-                ADD_ACTIONS="${ADD_ACTIONS},{\"add\":{\"index\":\"$PRIOR_INDEX\",\"alias\":\"posts_recent\"}}"
-              fi
+                echo "$alias: target members:$wanted"
 
-              echo "Updating posts_recent..."
-              curl -k --fail-with-body -X POST "$ES/_aliases" \
-                -u "$AUTH" \
-                -H "Content-Type: application/json" \
-                -d "{\"actions\":[${REMOVE_ACTIONS}${ADD_ACTIONS}]}"
+                local alias_json members missing add_actions remove_actions
+                alias_json=$(curl -k -s -u "$AUTH" "$ES/*/_alias/$alias" 2>/dev/null || echo "{}")
+                # Space-delimited, not newline-delimited: the membership tests below
+                # are `case " $members " in *" $idx "*`, which needs a space on both
+                # sides of every entry to match the last one on a line.
+                members=$(echo "$alias_json" | \
+                  grep -o "\"[^\"]*\":{\"aliases\":{\"$alias\"" | \
+                  grep -o '^"[^"]*"' | tr -d '"' | tr '\n' ' ' || true)
 
-              echo ""
-              echo "posts_recent updated."
+                # An update is needed if any target is absent, or any member is stale.
+                missing=0
+                for idx in $wanted; do
+                  case " $members " in
+                    *" $idx "*) ;;
+                    *) missing=1 ;;
+                  esac
+                done
+
+                remove_actions=""
+                for idx in $members; do
+                  case " $wanted " in
+                    *" $idx "*) ;;
+                    *) remove_actions="${remove_actions}{\"remove\":{\"index\":\"$idx\",\"alias\":\"$alias\"}}," ;;
+                  esac
+                done
+
+                if [ "$missing" -eq 0 ] && [ -z "$remove_actions" ]; then
+                  echo "$alias: already correct — no update needed"
+                  return 0
+                fi
+
+                add_actions=""
+                for idx in $wanted; do
+                  if [ -n "$add_actions" ]; then
+                    add_actions="${add_actions},"
+                  fi
+                  add_actions="${add_actions}{\"add\":{\"index\":\"$idx\",\"alias\":\"$alias\"}}"
+                done
+
+                echo "Updating $alias..."
+                curl -k --fail-with-body -X POST "$ES/_aliases" \
+                  -u "$AUTH" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"actions\":[${remove_actions}${add_actions}]}"
+
+                echo ""
+                echo "$alias updated."
+              }
+
+              # posts_recent spans 2 periods; the two-tower quality corpus spans 3 so
+              # that its window is never shorter than the 14 days the retrieval path
+              # assumes (2 weekly periods dip to 7 days just after a period boundary).
+              update_alias "posts" "posts_recent" 2
+              update_alias "posts-quality" "posts_recent_quality" 3
