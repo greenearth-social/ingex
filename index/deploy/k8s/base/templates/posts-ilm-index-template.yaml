@@ -30,7 +30,7 @@ data:
             "required": true
           },
           "_source": {
-            "excludes": ["embeddings"]
+            "mode": "synthetic"
           },
           "properties": {
             "at_uri": {
