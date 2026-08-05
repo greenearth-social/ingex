@@ -13,6 +13,7 @@ resources:
   - templates/hashtags-alias.yaml
   - templates/inferences-index-template.yaml
   - templates/posts-ilm-index-template.yaml
+  - templates/posts-quality-ilm-index-template.yaml
   - templates/likes-ilm-index-template.yaml
   - templates/post-tombstones-ilm-index-template.yaml
   - templates/like-tombstones-ilm-index-template.yaml
@@ -46,6 +47,9 @@ configMapGenerator:
     literals:
       - posts_index_shards=1
       - posts_index_replicas=0
+      - posts_quality_index_shards=1
+      - posts_quality_index_replicas=0
+      - posts_quality_ilm_delete_age=30m
       - likes_index_shards=1
       - likes_index_replicas=0
       - tombstones_index_shards=1
@@ -122,6 +126,27 @@ vars:
       apiVersion: v1
     fieldref:
       fieldpath: data.posts_index_replicas
+  - name: POSTS_QUALITY_INDEX_SHARDS
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.posts_quality_index_shards
+  - name: POSTS_QUALITY_INDEX_REPLICAS
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.posts_quality_index_replicas
+  - name: POSTS_QUALITY_ILM_DELETE_AGE
+    objref:
+      kind: ConfigMap
+      name: ilm-settings
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.posts_quality_ilm_delete_age
   - name: LIKES_INDEX_SHARDS
     objref:
       kind: ConfigMap

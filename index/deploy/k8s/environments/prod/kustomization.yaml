@@ -124,6 +124,12 @@ configMapGenerator:
     literals:
       - posts_index_shards=3
       - posts_index_replicas=1
+      # The quality index holds ~4.6% of the posts corpus (~773k docs @14d), so a
+      # single primary shard is both sufficient and preferable: kNN fans out to
+      # every shard, and fewer shards means fewer HNSW graphs consulted per query.
+      - posts_quality_index_shards=1
+      - posts_quality_index_replicas=1
+      - posts_quality_ilm_delete_age=14d
       - likes_index_shards=2
       - likes_index_replicas=1
       - tombstones_index_shards=3

@@ -969,21 +969,24 @@ func embeddingsFromHit(hit Hit) map[string][]float32 {
 
 // PostData represents the _source field of a search hit
 type PostData struct {
-	AtURI            string               `json:"at_uri"`
-	AuthorDID        string               `json:"author_did"`
-	Content          string               `json:"content"`
-	CreatedAt        string               `json:"created_at"`
-	ThreadRootPost   string               `json:"thread_root_post,omitempty"`
-	ThreadParentPost string               `json:"thread_parent_post,omitempty"`
-	QuotePost        string               `json:"quote_post,omitempty"`
-	Embeddings       map[string][]float32 `json:"embeddings,omitempty"`
-	IndexedAt        string               `json:"indexed_at"`
-	Media            []MediaItem          `json:"media,omitempty"`
-	ContainsImages   bool                 `json:"contains_images"`
-	ContainsVideo    bool                 `json:"contains_video"`
-	ImageCount       int                  `json:"image_count"`
-	VideoCount       int                  `json:"video_count"`
-	MediaCount       int                  `json:"media_count"`
+	AtURI                  string               `json:"at_uri"`
+	AuthorDID              string               `json:"author_did"`
+	Content                string               `json:"content"`
+	CreatedAt              string               `json:"created_at"`
+	ThreadRootPost         string               `json:"thread_root_post,omitempty"`
+	ThreadParentPost       string               `json:"thread_parent_post,omitempty"`
+	QuotePost              string               `json:"quote_post,omitempty"`
+	Embeddings             map[string][]float32 `json:"embeddings,omitempty"`
+	PostEmbeddingModelUUID string               `json:"ge_post_embedding_model_uuid,omitempty"`
+	IndexedAt              string               `json:"indexed_at"`
+	LikeCount              int                  `json:"like_count"`
+	Media                  []MediaItem          `json:"media,omitempty"`
+	ContainsImages         bool                 `json:"contains_images"`
+	ContainsVideo          bool                 `json:"contains_video"`
+	ImageCount             int                  `json:"image_count"`
+	VideoCount             int                  `json:"video_count"`
+	MediaCount             int                  `json:"media_count"`
+	ExternalEmbed          *ExternalEmbed       `json:"external_embed,omitempty"`
 }
 
 // LikeData represents the _source field of a like search hit
@@ -1521,23 +1524,42 @@ func aggregateLikeCountUpdates(updates []LikeCountUpdate) map[string]int {
 	return aggregated
 }
 
+// LikeCountResult is the post-update state of one document, parsed from the
+// bulk response. Increment is the change that produced LikeCount, so callers
+// can tell what the count was beforehand — which is how threshold crossings are
+// detected without a second read (see PostsCrossingQualityThreshold).
+type LikeCountResult struct {
+	AtURI     string
+	LikeCount int
+	Increment int
+}
+
 // BulkUpdateLikeCounts updates like_count fields on documents using the ES update API.
 // Routes each update to the correct shard by extracting the author DID from the AT-URI.
 func BulkUpdateLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) error {
+	_, err := BulkUpdateLikeCountsWithResults(ctx, client, index, updates, dryRun, logger)
+	return err
+}
+
+// BulkUpdateLikeCountsWithResults is BulkUpdateLikeCounts, additionally
+// returning the post-update like count of every document that was updated.
+// The counts come from the `get._source` the bulk request already asks for
+// via "_source": true, so this costs no extra round trip.
+func BulkUpdateLikeCountsWithResults(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) ([]LikeCountResult, error) {
 	if len(updates) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	if dryRun {
 		logger.Debug("Dry-run: Skipping bulk update of %d post like counts", len(updates))
-		return nil
+		return nil, nil
 	}
 
 	// Aggregate updates by subject_uri (in case same post appears multiple times)
 	aggregated := aggregateLikeCountUpdates(updates)
 
 	if len(aggregated) == 0 {
-		return fmt.Errorf("no valid updates in batch")
+		return nil, fmt.Errorf("no valid updates in batch")
 	}
 
 	var buf bytes.Buffer
@@ -1563,7 +1585,7 @@ func BulkUpdateLikeCounts(ctx context.Context, client *elasticsearch.Client, ind
 
 		metaJSON, err := json.Marshal(meta)
 		if err != nil {
-			return fmt.Errorf("failed to marshal update metadata: %w", err)
+			return nil, fmt.Errorf("failed to marshal update metadata: %w", err)
 		}
 
 		buf.Write(metaJSON)
@@ -1583,7 +1605,7 @@ func BulkUpdateLikeCounts(ctx context.Context, client *elasticsearch.Client, ind
 
 		updateJSON, err := json.Marshal(updateBody)
 		if err != nil {
-			return fmt.Errorf("failed to marshal update body: %w", err)
+			return nil, fmt.Errorf("failed to marshal update body: %w", err)
 		}
 
 		buf.Write(updateJSON)
@@ -1592,7 +1614,7 @@ func BulkUpdateLikeCounts(ctx context.Context, client *elasticsearch.Client, ind
 
 	if validUpdateCount == 0 {
 		logger.Debug("No like-count updates to perform (no corresponding posts found)")
-		return nil
+		return nil, nil
 	}
 	// Log if we skipped some updates due to missing posts
 	if skippedNoRouting > 0 {
@@ -1606,7 +1628,7 @@ func BulkUpdateLikeCounts(ctx context.Context, client *elasticsearch.Client, ind
 	)
 	logger.Metric("es.update_like_counts.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
-		return fmt.Errorf("bulk update request failed: %w", err)
+		return nil, fmt.Errorf("bulk update request failed: %w", err)
 	}
 	defer func() {
 		if err := res.Body.Close(); err != nil {
@@ -1615,26 +1637,49 @@ func BulkUpdateLikeCounts(ctx context.Context, client *elasticsearch.Client, ind
 	}()
 
 	if res.IsError() {
-		return fmt.Errorf("bulk update request returned error: %s", res.String())
+		return nil, fmt.Errorf("bulk update request returned error: %s", res.String())
 	}
 
 	var bulkResponse struct {
 		Took   int  `json:"took"`
 		Errors bool `json:"errors"`
 		Items  []map[string]struct {
-			Status int `json:"status"`
+			ID     string `json:"_id"`
+			Status int    `json:"status"`
 			Error  *struct {
 				Type   string `json:"type"`
 				Reason string `json:"reason"`
 			} `json:"error"`
+			Get *struct {
+				Source struct {
+					LikeCount *int `json:"like_count"`
+				} `json:"_source"`
+			} `json:"get"`
 		} `json:"items"`
 	}
 
 	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
-		return fmt.Errorf("failed to parse bulk update response: %w", err)
+		return nil, fmt.Errorf("failed to parse bulk update response: %w", err)
 	}
 
 	logger.Metric("es.update_like_counts.took_ms", float64(bulkResponse.Took))
+
+	// Collect the post-update counts. Items without a `get` block are updates
+	// that did not apply (most often a 404 for a post we never ingested), and
+	// simply do not appear in the results.
+	var results []LikeCountResult
+	for _, item := range bulkResponse.Items {
+		for _, details := range item {
+			if details.Error != nil || details.Get == nil || details.Get.Source.LikeCount == nil {
+				continue
+			}
+			results = append(results, LikeCountResult{
+				AtURI:     details.ID,
+				LikeCount: *details.Get.Source.LikeCount,
+				Increment: aggregated[details.ID],
+			})
+		}
+	}
 
 	if bulkResponse.Errors {
 		hasRealErrors := false
@@ -1664,12 +1709,12 @@ func BulkUpdateLikeCounts(ctx context.Context, client *elasticsearch.Client, ind
 			itemsJSON, _ := json.Marshal(bulkResponse.Items)
 			logger.Error("Bulk like-count update failed with errors")
 			logger.Debug("Response items with errors: %s", string(itemsJSON))
-			return fmt.Errorf("bulk update failed: some updates had errors")
+			return nil, fmt.Errorf("bulk update failed: some updates had errors")
 		}
 	}
 
 	logger.Debug("Successfully updated like counts for %d posts", validUpdateCount)
-	return nil
+	return results, nil
 }
 
 // ExtractHashtags extracts hashtags from post content and returns them with hour bucket and count
@@ -2151,19 +2196,22 @@ func FetchHashtags(ctx context.Context, client *elasticsearch.Client, logger *In
 //	CurrentIndexName("likes", "hour")              → "likes-2026-04-12-14"
 //	CurrentIndexName("post_tombstones", "10min")   → "post-tombstones-2026-04-12-14-30"
 func CurrentIndexName(base, period string) string {
+	return IndexNameForTime(base, period, time.Now().UTC())
+}
+
+// IndexNameForTime is CurrentIndexName for an arbitrary timestamp. The quality
+// corpus buckets documents by the post's created_at rather than by ingest time,
+// so it needs to name an index for a time other than now.
+func IndexNameForTime(base, period string, t time.Time) string {
 	kebabBase := strings.ReplaceAll(base, "_", "-")
-	now := time.Now().UTC()
+	t = t.UTC()
 	switch period {
-	case IndexPeriodWeek:
-		year, week := now.ISOWeek()
-		return fmt.Sprintf("%s-%d-w%02d", kebabBase, year, week)
 	case IndexPeriodHour:
-		return fmt.Sprintf("%s-%s", kebabBase, now.Format("2006-01-02-15"))
+		return fmt.Sprintf("%s-%s", kebabBase, t.Format("2006-01-02-15"))
 	case IndexPeriod10Min:
-		truncated := now.Truncate(10 * time.Minute)
-		return fmt.Sprintf("%s-%s", kebabBase, truncated.Format("2006-01-02-15-04"))
+		return fmt.Sprintf("%s-%s", kebabBase, t.Truncate(10*time.Minute).Format("2006-01-02-15-04"))
 	default:
-		year, week := now.ISOWeek()
+		year, week := t.ISOWeek()
 		return fmt.Sprintf("%s-%d-w%02d", kebabBase, year, week)
 	}
 }
