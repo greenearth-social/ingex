@@ -11,10 +11,12 @@ const (
 	ContentEmbeddingFamily = "all_MiniLM_L12_v2"
 )
 
-// ExportedEmbeddingFamilies are the families written to Parquet. Everything
-// else is either no longer ingested (ingex#444) or recoverable from the
-// megastream archives, so exporting it only inflates every extract.
-var ExportedEmbeddingFamilies = []string{GEPostEmbeddingFamily}
+// ExportedEmbeddingFamilies are the families written to Parquet: the post
+// tower's output and the content vector that is its input, which training
+// needs in order to retrain the tower. Families that are no longer ingested
+// (ingex#444) stay out — they are recoverable from the megastream archives if
+// a use case appears, and exporting them only inflates every extract.
+var ExportedEmbeddingFamilies = []string{GEPostEmbeddingFamily, ContentEmbeddingFamily}
 
 // ExtractPost represents the Post document structure for Parquet serialization
 // Field names match the expected parquet output format
@@ -43,11 +45,10 @@ func HitToExtractPost(hit Hit) ExtractPost {
 		ReplyRootURI:    hit.Source.ThreadRootPost,
 	}
 
-	// Export only the post-tower vector. The other families are either no longer
-	// ingested (ingex#444) or are inputs recoverable from the megastream
-	// archives, so carrying them here only inflates every export.
-	// embeddingsFromHit prefers the "docvalue_fields" API over _source, which is
-	// how indexed dense_vector fields are read back.
+	// Export only the families in ExportedEmbeddingFamilies; anything else a
+	// document still carries from an older mapping is dropped here rather than
+	// inflating the extract. embeddingsFromHit prefers the "docvalue_fields"
+	// API over _source, which is how indexed dense_vector fields are read back.
 	if hitEmbeddings := embeddingsFromHit(hit); len(hitEmbeddings) > 0 {
 		for _, modelName := range ExportedEmbeddingFamilies {
 			floatArray, ok := hitEmbeddings[modelName]
