@@ -163,8 +163,12 @@ spec:
                 echo "$alias updated."
               }
 
-              # posts_recent spans 2 periods; the two-tower quality corpus spans 3 so
-              # that its window is never shorter than the 14 days the retrieval path
-              # assumes (2 weekly periods dip to 7 days just after a period boundary).
-              update_alias "posts" "posts_recent" 2
+              # Both aliases span 3 periods so that neither window is ever shorter
+              # than the 14 days the retrieval path assumes — 2 weekly periods dip to
+              # 7 days just after a period boundary. Keeping them equal also matters
+              # because candidates retrieved from the quality corpus are hydrated
+              # against posts_recent (L12 embeddings, and like_count for the rankers):
+              # if posts_recent were the narrower window, a candidate could be
+              # retrievable but not hydratable.
+              update_alias "posts" "posts_recent" 3
               update_alias "posts-quality" "posts_recent_quality" 3
