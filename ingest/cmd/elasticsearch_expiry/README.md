@@ -6,11 +6,22 @@ A Go service for automatically expiring (deleting) old documents from Elasticsea
 
 The service automatically processes these collections:
 
-| Collection | Index Alias | Date Field | Description |
-|------------|-------------|------------|-------------|
-| Posts | `posts` | `created_at` | BlueSky posts and threads |
-| Likes | `likes` | `created_at` | User likes on posts |
-| Post Tombstones | `post_tombstones` | `deleted_at` | Records of deleted posts |
+| Collection | Index Alias  | Date Field | Description             |
+|------------|--------------|------------|-------------------------|
+| Hashtags   | `hashtags`   | `hour`     | Per-hour hashtag counts |
+
+Posts, likes, and tombstones are expired by ILM delete-only policies, not by
+this job.
+
+### Transient failures
+
+Delete-by-query has no tolerance for an unavailable shard: while the cluster is
+RED — during a node replacement, say — every request against the alias comes
+back `503 ... Search rejected due to missing shards`. Those windows last tens of
+seconds, so the job retries each collection up to 6 times with exponential
+backoff (2s doubling to 32s) before giving up and exiting non-zero. A run that
+logs `Attempt n/6 ... hit a transient Elasticsearch failure` and then completes
+is healthy; check cluster health only if the run fails outright.
 
 ## Configuration
 
