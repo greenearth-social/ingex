@@ -97,7 +97,8 @@ spec:
             [ "$status_code" = "200" ]
           }
 
-          # Helper function to apply template and create index if needed
+          # Helper function to apply template, create the index if needed, and
+          # reassert the alias
           apply_template_and_index() {
             local template_name=$1
             local template_file=$2
@@ -113,17 +114,31 @@ spec:
             if index_exists "$index_name"; then
               echo "$index_name already exists - template updated, skipping index creation"
             else
-              echo "$index_name does not exist - creating index and alias"
+              echo "$index_name does not exist - creating index"
               curl -k -X PUT "https://greenearth-es-http:9200/$index_name" \
                 -u "es-service-user:$ES_SERVICE_PASSWORD" \
                 -H "Content-Type: application/json"
-
-              echo "Applying alias for $index_name..."
-              curl -k -X POST "https://greenearth-es-http:9200/_aliases" \
-                -u "es-service-user:$ES_SERVICE_PASSWORD" \
-                -H "Content-Type: application/json" \
-                -d @/aliases/$alias_file
             fi
+
+            # Reassert the alias on every run, not just when the index is
+            # created. These aliases are single-index by design, so anything
+            # that adds a second member also takes the is_write_index flag with
+            # it and writes silently divert to an index the template never
+            # matched. That happened to hashtags in stage: a since-reverted
+            # commit had the expiry job call EnsureIndex on the hashtags alias,
+            # which created a period-suffixed index and made it the write
+            # target. It held every hashtag written for the next three months
+            # while hashtags_v1 sat at 6 documents, and bootstrap could not
+            # correct it because it only touched the alias on first creation.
+            # The action list strips the alias from the whole index family and
+            # re-adds it to the canonical index as sole write target, which is
+            # a no-op once already correct.
+            echo "Asserting alias for $index_name..."
+            curl -k --fail-with-body -X POST "https://greenearth-es-http:9200/_aliases" \
+              -u "es-service-user:$ES_SERVICE_PASSWORD" \
+              -H "Content-Type: application/json" \
+              -d @/aliases/$alias_file
+
             echo "$template_name completed!"
           }
 
