@@ -7,6 +7,8 @@ resources:
   - ../../base
   - elasticsearch-pod-monitoring.yaml
   - max-map-count-daemonset.yaml
+  - elasticsearch-master-pdb.yaml
+  - elasticsearch-data-pdb.yaml
 
 patches:
   - target:
@@ -18,7 +20,7 @@ patches:
         value: master
       - op: replace
         path: /spec/nodeSets/0/count
-        value: 2
+        value: 3
       - op: replace
         path: /spec/nodeSets/0/config
         value:
@@ -27,6 +29,18 @@ patches:
       - op: add
         path: /spec/nodeSets/0/config/node.store.allow_mmap
         value: true
+      - op: add
+        path: /spec/nodeSets/0/podTemplate/spec/affinity
+        value:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/statefulset-name: greenearth-es-master
+                topologyKey: kubernetes.io/hostname
+      - op: add
+        path: /spec/podDisruptionBudget
+        value: {}
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
         value: 6Gi
