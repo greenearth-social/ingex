@@ -14,18 +14,24 @@ type JetstreamMessage interface {
 	GetTimeUs() int64
 	IsLike() bool
 	IsLikeDelete() bool
+	IsFollow() bool
+	IsFollowDelete() bool
+	GetFollowSubjectDID() string
 }
 
 // jetstreamMessage is the implementation of JetstreamMessage
 type jetstreamMessage struct {
-	uri          string
-	subjectURI   string
-	authorDID    string
-	createdAt    string
-	timeUs       int64
-	isLike       bool
-	isLikeDelete bool
-	parseError   error
+	uri              string
+	subjectURI       string
+	authorDID        string
+	createdAt        string
+	timeUs           int64
+	isLike           bool
+	isLikeDelete     bool
+	isFollow         bool
+	isFollowDelete   bool
+	followSubjectDID string
+	parseError       error
 }
 
 // JetstreamEventData represents the raw Jetstream event structure
@@ -95,6 +101,31 @@ func (m *jetstreamMessage) parseRawEvent(rawJSON string, logger *IngestLogger) {
 			// subject_uri will be fetched from Elasticsearch
 		}
 	}
+
+	// Follow events feed the API's per-user followed-users cache (api#83).
+	// The firehose is already unfiltered here for likes, so these cost no
+	// extra bandwidth; the follow writer drops everything but our own users.
+	if event.Kind == "commit" && event.Commit.Collection == "app.bsky.graph.follow" {
+		m.uri = fmt.Sprintf("at://%s/%s/%s", event.Did, event.Commit.Collection, event.Commit.RKey)
+
+		switch event.Commit.Operation {
+		case "create":
+			// In app.bsky.graph.follow the subject is a bare DID string, not
+			// the {"uri": ...} object a like's subject uses.
+			subjectDID, ok := event.Commit.Record["subject"].(string)
+			if !ok || subjectDID == "" {
+				logger.Error("Failed to extract follow subject DID (at_uri: %s)", m.uri)
+				return
+			}
+			m.isFollow = true
+			m.followSubjectDID = subjectDID
+		case "delete":
+			// Deletes carry only did, collection and rkey — there is no way
+			// to tell *who* was unfollowed without a record of the rkey. The
+			// API handles this by invalidating the user's entry instead.
+			m.isFollowDelete = true
+		}
+	}
 }
 
 // Interface method implementations
@@ -125,4 +156,16 @@ func (m *jetstreamMessage) IsLike() bool {
 
 func (m *jetstreamMessage) IsLikeDelete() bool {
 	return m.isLikeDelete
+}
+
+func (m *jetstreamMessage) IsFollow() bool {
+	return m.isFollow
+}
+
+func (m *jetstreamMessage) IsFollowDelete() bool {
+	return m.isFollowDelete
+}
+
+func (m *jetstreamMessage) GetFollowSubjectDID() string {
+	return m.followSubjectDID
 }
