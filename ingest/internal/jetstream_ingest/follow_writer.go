@@ -69,6 +69,9 @@ func (t *TrackedUsers) Refresh(ctx context.Context) error {
 	dids, err := t.lister.ListUserDIDs(ctx)
 	if err != nil {
 		t.logger.Error("Failed to refresh tracked users: %v", err)
+		// A stuck set means follow deltas silently stop being written for
+		// users added since the last success, so this needs to be visible.
+		t.logger.Metric("jetstream.tracked_users_refresh_failures_count", 1)
 		return err
 	}
 	set := make(map[string]struct{}, len(dids))
@@ -76,6 +79,7 @@ func (t *TrackedUsers) Refresh(ctx context.Context) error {
 		set[common.UserDocID(did)] = struct{}{}
 	}
 	t.set.Store(set)
+	t.logger.Metric("jetstream.tracked_users_rate", float64(len(set)))
 	return nil
 }
 
@@ -170,6 +174,7 @@ func (w *FollowWriter) Enqueue(msg common.JetstreamMessage) bool {
 	default:
 		w.dropped.Add(1)
 		w.logger.Error("Follow event buffer full; dropped event for %s", event.userDocID)
+		w.logger.Metric("jetstream.follow_dropped_count", 1)
 		return false
 	}
 }
@@ -199,11 +204,16 @@ func (w *FollowWriter) apply(ctx context.Context, event followEvent) {
 		err = w.store.InvalidateFollows(ctx, event.userDocID)
 	}
 	if err != nil {
-		// Never fatal: the API refreshes on a TTL regardless.
+		// Never fatal: the API refreshes on a TTL regardless. Counted so a
+		// Firestore that starts rejecting writes is visible as more than a
+		// log line — the api side keeps looking healthy while its entries
+		// quietly go stale.
 		w.logger.Error("Failed to write follow delta for %s: %v", event.userDocID, err)
+		w.logger.Metric("jetstream.follow_write_failures_count", 1)
 		return
 	}
 	w.written.Add(1)
+	w.logger.Metric("jetstream.follow_writes_count", 1)
 }
 
 // Close stops the writer after the queued events have been applied.

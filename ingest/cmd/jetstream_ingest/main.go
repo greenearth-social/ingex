@@ -452,8 +452,12 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			// negligible either way, and Enqueue drops rather than blocking
 			// so this can never stall the ingestion loop.
 			if followWriter != nil && (msg.IsFollow() || msg.IsFollowDelete()) {
+				// Labelled by whether the event was for one of our users, so
+				// "no follow writes" can be told apart from "no follows seen".
 				if followWriter.Enqueue(msg) {
 					logger.Metric("jetstream.follow_events_count", 1)
+				} else {
+					logger.Metric("jetstream.follow_events_untracked_count", 1)
 				}
 				continue
 			}

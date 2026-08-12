@@ -3,6 +3,7 @@ package jetstream_ingest
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -262,5 +263,121 @@ func TestUserDocID(t *testing.T) {
 		if got := common.UserDocID(did); got != want {
 			t.Errorf("UserDocID(%q) = %q, want %q", did, got, want)
 		}
+	}
+}
+
+// recordingLogger captures Metric() calls so the writer's counters can be
+// asserted on. Without these exported, a Firestore that starts rejecting
+// writes shows up only as log lines while the api side still looks healthy.
+type recordingCollector struct {
+	mu      sync.Mutex
+	metrics map[string]float64
+}
+
+func (c *recordingCollector) Record(name string, value float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.metrics == nil {
+		c.metrics = map[string]float64{}
+	}
+	c.metrics[name] += value
+}
+
+func (c *recordingCollector) get(name string) float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.metrics[name]
+}
+
+func loggerWithMetrics(c *recordingCollector) *common.IngestLogger {
+	// Metric() is a no-op on a disabled logger, so metrics need an enabled
+	// one; the output goes nowhere to keep test runs quiet.
+	l := common.NewLogger(true)
+	l.SetOutput(io.Discard)
+	l.SetMetricCollector(c)
+	return l
+}
+
+func trackedOurs(t *testing.T, logger *common.IngestLogger) *TrackedUsers {
+	t.Helper()
+	tracked := NewTrackedUsers(&fakeUserLister{dids: []string{"did:plc:ours"}}, logger)
+	if err := tracked.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	return tracked
+}
+
+func TestFollowWriter_CountsSuccessfulWrites(t *testing.T) {
+	collector := &recordingCollector{}
+	logger := loggerWithMetrics(collector)
+	store := &fakeFollowStore{}
+	w := NewFollowWriter(store, trackedOurs(t, logger), logger, 16)
+	go w.Run(context.Background())
+
+	w.Enqueue(makeFollow("did:plc:ours", "did:plc:a"))
+	w.Enqueue(makeUnfollow("did:plc:ours"))
+	drain(t, w)
+
+	if got := collector.get("jetstream.follow_writes_count"); got != 2 {
+		t.Fatalf("follow_writes_count = %v, want 2", got)
+	}
+}
+
+func TestFollowWriter_CountsWriteFailures(t *testing.T) {
+	collector := &recordingCollector{}
+	logger := loggerWithMetrics(collector)
+	store := &fakeFollowStore{appendErr: errors.New("firestore down")}
+	w := NewFollowWriter(store, trackedOurs(t, logger), logger, 16)
+	go w.Run(context.Background())
+
+	w.Enqueue(makeFollow("did:plc:ours", "did:plc:a"))
+	drain(t, w)
+
+	if got := collector.get("jetstream.follow_write_failures_count"); got != 1 {
+		t.Fatalf("follow_write_failures_count = %v, want 1", got)
+	}
+	if got := collector.get("jetstream.follow_writes_count"); got != 0 {
+		t.Fatalf("follow_writes_count = %v, want 0 on failure", got)
+	}
+}
+
+func TestFollowWriter_CountsDrops(t *testing.T) {
+	collector := &recordingCollector{}
+	logger := loggerWithMetrics(collector)
+	// No Run() goroutine, so the buffer fills.
+	w := NewFollowWriter(&fakeFollowStore{}, trackedOurs(t, logger), logger, 1)
+
+	w.Enqueue(makeFollow("did:plc:ours", "did:plc:a"))
+	w.Enqueue(makeFollow("did:plc:ours", "did:plc:b"))
+
+	if got := collector.get("jetstream.follow_dropped_count"); got != 1 {
+		t.Fatalf("follow_dropped_count = %v, want 1", got)
+	}
+}
+
+func TestTrackedUsers_ReportsPopulationAsAGauge(t *testing.T) {
+	collector := &recordingCollector{}
+	logger := loggerWithMetrics(collector)
+	tracked := NewTrackedUsers(&fakeUserLister{dids: []string{"did:plc:a", "did:plc:b"}}, logger)
+
+	if err := tracked.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	if got := collector.get("jetstream.tracked_users_rate"); got != 2 {
+		t.Fatalf("tracked_users_rate = %v, want 2", got)
+	}
+}
+
+func TestTrackedUsers_CountsRefreshFailures(t *testing.T) {
+	collector := &recordingCollector{}
+	logger := loggerWithMetrics(collector)
+	lister := &fakeUserLister{err: errors.New("firestore down")}
+	tracked := NewTrackedUsers(lister, logger)
+
+	_ = tracked.Refresh(context.Background())
+
+	if got := collector.get("jetstream.tracked_users_refresh_failures_count"); got != 1 {
+		t.Fatalf("tracked_users_refresh_failures_count = %v, want 1", got)
 	}
 }
