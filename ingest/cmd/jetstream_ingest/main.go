@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"cloud.google.com/go/firestore"
 	"cloud.google.com/go/storage"
 	"github.com/elastic/go-elasticsearch/v9"
 	"github.com/greenearth/ingest/internal/common"
@@ -197,6 +198,27 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	blockDur := time.Duration(config.LikeBlockDurationMinutes) * time.Minute
 	rateLimiter := jetstream_ingest.NewRateLimiter(windowDur, blockDur, threshold)
 	rateLimiter.Start(ctx)
+
+	// Follow deltas for the API's per-user followed-users cache (api#83).
+	// Entirely optional: with no Firestore project configured, or if the
+	// client cannot be built, ingestion carries on exactly as before and the
+	// API falls back to its TTL refresh.
+	var followWriter *jetstream_ingest.FollowWriter
+	var followFirestore *firestore.Client
+	if !dryRun && config.FollowCacheEnabled() {
+		followFirestore, err = common.NewFirestoreClient(ctx, config.FirestoreProject, config.FirestoreDatabase)
+		if err != nil {
+			logger.Error("Failed to create Firestore client for follow deltas: %v (continuing without follow-cache updates)", err)
+		} else {
+			followStore := common.NewFirestoreFollowStore(followFirestore, logger)
+			trackedUsers := jetstream_ingest.NewTrackedUsers(followStore, logger)
+			go trackedUsers.Run(ctx, time.Duration(config.FollowsTrackedRefreshSec)*time.Second)
+
+			followWriter = jetstream_ingest.NewFollowWriter(followStore, trackedUsers, logger, config.FollowsWriteBuffer)
+			go followWriter.Run(ctx)
+			logger.Info("Follow-delta writer started (database=%s)", config.FirestoreDatabase)
+		}
+	}
 
 	// Start blocklist persistence goroutine (writes to GCS periodically)
 	if !dryRun && config.BlocklistDestination != "" {
@@ -422,6 +444,24 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			logger.Metric("jetstream.inbound_count", 1)
 			msg := common.NewJetstreamMessage(rawMsg, logger)
 
+			// Follow deltas for the API's followed-users cache (api#83).
+			// Handled before the sampler deliberately: sampling exists to
+			// control *like* volume in stage, and applying it here would
+			// silently drop most of a stage user's follows. The writer
+			// filters to the users we actually serve, so the volume is
+			// negligible either way, and Enqueue drops rather than blocking
+			// so this can never stall the ingestion loop.
+			if followWriter != nil && (msg.IsFollow() || msg.IsFollowDelete()) {
+				// Labelled by whether the event was for one of our users, so
+				// "no follow writes" can be told apart from "no follows seen".
+				if followWriter.Enqueue(msg) {
+					logger.Metric("jetstream.follow_events_count", 1)
+				} else {
+					logger.Metric("jetstream.follow_events_untracked_count", 1)
+				}
+				continue
+			}
+
 			if !common.ShouldSampleDID(msg.GetAuthorDID(), config.Environment) {
 				logger.Metric("jetstream.sample_dropped_count", 1)
 				skippedCount++
@@ -573,6 +613,23 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	}
 
 cleanup:
+	// Let queued follow deltas land before the Firestore client closes.
+	if followWriter != nil {
+		followWriter.Close()
+		select {
+		case <-followWriter.Done():
+		case <-time.After(5 * time.Second):
+			logger.Error("Timeout draining follow-delta writer")
+		}
+		logger.Info("Follow-delta writer stopped (written: %d, dropped: %d)",
+			followWriter.Written(), followWriter.Dropped())
+	}
+	if followFirestore != nil {
+		if err := followFirestore.Close(); err != nil {
+			logger.Error("Failed to close Firestore client: %v", err)
+		}
+	}
+
 	// Send final like batch to workers
 	if len(batch) > 0 {
 		job := batchJob{

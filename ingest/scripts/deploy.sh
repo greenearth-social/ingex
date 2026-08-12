@@ -232,6 +232,8 @@ deploy_jetstream_service() {
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --set-env-vars="GE_JETSTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/jetstream_state.json" \
+        --set-env-vars="GE_FIRESTORE_PROJECT=$GE_GCP_PROJECT_ID" \
+        --set-env-vars="GE_FIRESTORE_DATABASE=greenearth-$GE_ENVIRONMENT" \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \

@@ -81,10 +81,30 @@ type Config struct {
 	InferenceChunkSize      int           // GE_INFERENCE_CHUNK_SIZE, must be <= server GE_INFERENCE_MAX_BATCH
 	InferenceMaxConcurrency int           // GE_INFERENCE_MAX_CONCURRENCY, concurrent inference requests
 	InferenceRetryMax       int           // GE_INFERENCE_RETRY_MAX, retries beyond the first attempt
+
+	// Followed-users cache configuration (api#83). Jetstream is the only part
+	// of the system that sees follow and unfollow events as they happen, so it
+	// keeps the API's per-user follow cache current. Leaving FirestoreProject
+	// empty disables the whole path; ingest keeps writing likes as before.
+	FirestoreProject         string // GE_FIRESTORE_PROJECT; empty disables follow-delta writes
+	FirestoreDatabase        string // GE_FIRESTORE_DATABASE, e.g. greenearth-prod
+	FirestoreEmulatorHost    string // GE_FIRESTORE_EMULATOR_HOST, for devenv
+	FollowsTrackedRefreshSec int    // GE_FOLLOWS_TRACKED_REFRESH_SEC, default 300
+	FollowsWriteBuffer       int    // GE_FOLLOWS_WRITE_BUFFER, default 1024
+}
+
+// FollowCacheEnabled reports whether follow deltas should be written.
+func (c *Config) FollowCacheEnabled() bool {
+	return c.FirestoreProject != ""
 }
 
 // LoadConfig loads configuration from environment variables with defaults
 func LoadConfig() *Config {
+	// The Google SDK reads FIRESTORE_EMULATOR_HOST natively; copy the
+	// GE-prefixed variable into that standard name, as the API does.
+	if host := getEnv("GE_FIRESTORE_EMULATOR_HOST", ""); host != "" {
+		_ = os.Setenv("FIRESTORE_EMULATOR_HOST", host)
+	}
 	return &Config{
 		JetstreamURL:               getEnv("GE_JETSTREAM_URL", "wss://jetstream2.us-east.bsky.network/subscribe"),
 		WebSocketWorkers:           getEnvInt("GE_WEBSOCKET_WORKERS", 3),
@@ -125,6 +145,11 @@ func LoadConfig() *Config {
 		InferenceChunkSize:         getEnvInt("GE_INFERENCE_CHUNK_SIZE", 64),
 		InferenceMaxConcurrency:    getEnvInt("GE_INFERENCE_MAX_CONCURRENCY", 8),
 		InferenceRetryMax:          getEnvInt("GE_INFERENCE_RETRY_MAX", 3),
+		FirestoreProject:           getEnv("GE_FIRESTORE_PROJECT", ""),
+		FirestoreDatabase:          getEnv("GE_FIRESTORE_DATABASE", ""),
+		FirestoreEmulatorHost:      getEnv("GE_FIRESTORE_EMULATOR_HOST", ""),
+		FollowsTrackedRefreshSec:   getEnvInt("GE_FOLLOWS_TRACKED_REFRESH_SEC", 300),
+		FollowsWriteBuffer:         getEnvInt("GE_FOLLOWS_WRITE_BUFFER", 1024),
 	}
 }
 

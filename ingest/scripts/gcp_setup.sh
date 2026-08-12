@@ -164,6 +164,13 @@ create_service_account() {
         --member="serviceAccount:$SA_EMAIL" \
         --role="roles/monitoring.metricWriter"
 
+    # Permission to read the users collection and write follow deltas into the
+    # API's followed-users cache (api#83). Firestore IAM is project-wide, so it
+    # cannot be scoped to just those two collections.
+    gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
+        --member="serviceAccount:$SA_EMAIL" \
+        --role="roles/datastore.user"
+
     log_info "Service account permissions configured."
 }
 
