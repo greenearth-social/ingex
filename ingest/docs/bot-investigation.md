@@ -158,10 +158,30 @@ Skywatch also emits political and ideological labels — `maga-trump`,
 viewpoint filtering we have not agreed to. Any adoption must whitelist
 specific label values, which is what `--ignore-labels` exists to model.
 
-Other labelers worth measuring the same way: `labeler.hailey.at` (ai-agent,
-shopping-spam, reply-link-spam), `profile-labels.bossett.social` (rapidposts,
-onlyreplies — behavioural, automatic), `perisai.bsky.social` (autobase, scam,
-affiliator), `engagement-hacks.bsky.social`.
+Declared vocabularies of the other candidates, via
+`app.bsky.labeler.getServices?detailed=true`:
+
+- **`labeler.hailey.at`** — `coordinated-abuse`, `ai-agent`, `general-spam`,
+  `spam`, `shopping-spam`, `reply-link-spam`, `mass-follow-mid`,
+  `mass-follow-high`, `new-acct-replies`, `suss-handle-change`. The closest
+  vocabulary to coordinated political manipulation after Skywatch, and
+  `coordinated-abuse` is exactly the shape of thing we care about. **Could not
+  be measured: its Ozone endpoint serves a certificate for `CN=qeezi.com`, so
+  every `queryLabels` request fails TLS verification.** Worth re-testing before
+  writing it off — but a labeler we depend on needs to be operationally sound,
+  and this is the kind of thing that would take our ingest filter offline.
+- **`profile-labels.bossett.social`** — `rapidposts`, `onlyreplies`,
+  `changedhandle`, `nonplcdid`, `bridgy`, `nostr`, `threads`. Purely
+  behavioural and fully automatic, so it makes no abuse judgement; useful as a
+  feature, not a verdict.
+- **`aimod.social`** — `ai-imagery`, `ai-avatar-or-banner`,
+  `user-frequent-ai-imagery`. Relevant if AI-generated slop is in scope.
+- **`perisai.bsky.social`** — `autobase`, `scam`, `impersonation`,
+  `affiliator`, `crypto`.
+
+For political manipulation specifically, the on-target label values across all
+of these are Skywatch's `platform-manipulation`, `disinformation-network`,
+`amplifier`, and `suspect-inauthentic`, plus Hailey's `coordinated-abuse`.
 
 ### Follower count is not a substitute
 
@@ -185,15 +205,26 @@ self-declared bots and adult content both have willing audiences, so the 2.9%
 and 1.2% lines above are measurements, not proposals. That leaves Skywatch's
 6.5% as the number worth acting on.
 
-**Prefer a labeler subscription to a static list.** Both exist for this.
+**Prefer a labeler subscription to a static list — measured, not assumed.**
 Casey Ho's modlist ("Platform Manipulation, Spam, & Coordinated Inauthentic
-Behavior", 282,855 accounts) is one curator's snapshot: reading it means
-paging ~2,800 records out of their PDS, it has no incremental update
-mechanism, and a mistaken entry is invisible to us. A labeler exposes
-`queryLabels` for bulk lookup and `subscribeLabels` for a live feed, versions
-each label with `cts`, and can *retract* one via `neg: true`. For something
-that decides what enters our corpus, retractability is the feature that
-matters.
+Behavior") holds 282,859 accounts, and matches **41 of our 44,856 ingested
+authors — 0.25% of posts**, against Skywatch's 6.52%.
+
+The reason is that a static list ages into a graveyard: **91.7% of a random
+120-account sample from it no longer resolves at all** — deleted, deactivated,
+or taken down. It is a historical record of accounts the platform has already
+removed, and removed accounts do not post. Where it does hit a still-active
+author, Skywatch agrees 56% of the time, so it is not wrong, just late.
+
+A labeler tracks accounts while they are still posting, exposes `queryLabels`
+for bulk lookup and `subscribeLabels` for a live feed, versions each label with
+`cts`, and can *retract* one via `neg: true`. For something that decides what
+enters our corpus, currency and retractability are what matter.
+
+(Retrieval cost is not the differentiator: see `scripts/fetch_modlist.py`. A
+whole 282k-member list comes down via `com.atproto.sync.getRepo` as one 94 MB
+CAR in about six seconds, versus ~2,800 paged requests. Freshness is the
+problem with lists, not bandwidth.)
 
 **Do not drop at ingest — mark at ingest, filter at retrieval.** Dropping is
 irreversible: we cannot re-derive a post we never indexed, so a labeler false
@@ -204,12 +235,22 @@ every decision reversible and auditable.
 **Whitelist label values, never a whole labeler.** Skywatch's political
 vocabulary is entangled with its abuse vocabulary in one subscription.
 
-**Check whether the quality corpus already handles this.** `posts_recent_quality`
-requires `like_count >= 20`, and an account no human reads should rarely clear
-that bar. If so, two-tower retrieval is already largely protected and the 6.5%
-is an ingest- and storage-cost argument rather than a feed-quality one — a much
-weaker reason to act. Worth measuring directly against ES before building
-anything.
+**The quality corpus does not handle this — it may amplify it.**
+`posts_recent_quality` requires `like_count >= 20`. That bar screens out
+*human* posts that landed badly; it does nothing to a bot farm, which
+manufactures its own likes. Inauthentic engagement clears the threshold by
+construction, which means coordinated accounts are *promoted* into the lean
+retrieval corpus rather than filtered out of it, and their posts become
+two-tower training examples. Engagement thresholds are the wrong instrument
+against manipulation, because manipulation is a supply of engagement.
+
+This makes the like path the higher-stakes surface, not the post path. Likes
+feed user history for both training and serving, and they decide quality-corpus
+membership. A DID exclusion set is worth at least as much applied to
+`jetstream_ingest` likes as to posts — and that service already has the
+machinery, in the rate-limiter and its `GE_BLOCKLIST_DESTINATION` export.
+Measuring what share of ingested *likes* come from labeler-flagged accounts is
+the highest-value next step; this investigation only covered posts.
 
 **The bigger lever is still language.** `record.langs` is already in the
 payload, covers 26.9% of posts, and would be a genuinely selective indexed
