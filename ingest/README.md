@@ -121,9 +121,9 @@ See individual command READMEs for detailed usage:
 
 Analysis notes:
 
-- [What share of megastream data could we skip indexing?](docs/bot-investigation.md)
-  — moderation labels, self-declared bots, and what the upstream payload
-  carries that we currently discard.
+- [Filtering inauthentic accounts out of ingest](docs/bot-investigation.md) —
+  why Skywatch Blue is the labeler worth subscribing to, how to keep its DID
+  set current, and why it matters more for likes than for posts.
 
 ## Configuration
 
