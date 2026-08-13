@@ -244,9 +244,59 @@ Megastream SQLite databases contain hydrated BlueSky posts with:
 - Pre-computed sentence embeddings (MiniLM-L6-v2 and MiniLM-L12-v2)
 - Deletion markers
 
-The SQLite files are expected to be in `.db.zip` format and contain a `posts` table with the following columns:
+Chunks arrive in the bucket at roughly one per five minutes, ~115 MB and
+~4,000 rows each (~800 chunks/day). Adjacent chunks can repeat an `at_uri` —
+typically a post created in one and deleted in the next — so consumers that
+aggregate across chunks should deduplicate.
 
+Despite the `.db.zip` suffix, current chunks are **raw SQLite**; older
+archived chunks are real zip archives. The spooler sniffs the magic bytes
+(`isZipFile` in `internal/megastream_ingest/spooler.go`) and handles both, so
+the suffix alone tells you nothing about the encoding.
+
+Each file holds an `enriched_posts` table:
+
+- `id` - autoincrement row id
 - `at_uri` - AT Protocol URI for the post
 - `did` - Decentralized Identifier of the author
-- `raw_post` - JSON blob with post data
-- `inferences` - JSON blob with embeddings and other computed data
+- `time_us` - jetstream event timestamp, microseconds
+- `raw_post` - JSON blob with post data (see below)
+- `inferences` - JSON blob with embeddings and per-post model outputs
+- `enriched_metadata` - JSON blob recording which models ran
+- `created_at` - when the row was written
+
+### What we read, and what we leave behind
+
+`internal/common/megastream_message.go` extracts roughly fifteen fields and
+discards the rest. The unread remainder is substantial, and worth knowing
+about before adding a feature that assumes we'd have to go fetch it:
+
+- `raw_post.hydrated_metadata.user` - the author's full
+  `profileViewDetailed`: `labels[]` (moderation and self-labels applied to the
+  account), `followers_count`, `follows_count`, `posts_count`, `created_at`,
+  `handle`, `description`. None of it reaches Elasticsearch.
+- `raw_post.message.commit.record.langs` - declared post languages. About 27%
+  of posts declare something other than `en`.
+- `raw_post.message.commit.record.labels` - author **self**-labels on the post
+  (`porn`, `sexual`, `graphic-media`, `nudity`).
+- `inferences.text.<field-path>.*` - per-post classifier outputs keyed by which
+  text was analyzed: `moderation`, `toxicity`, `marketing_check`, `topic`,
+  `sentiment`, `emotion_sentiment`, `financial_sentiment`,
+  `language_detection`, `text_arbitrary`. Only the embeddings are ingested.
+
+`scripts/megastream_drop_analysis.py` reads these directly from the chunks and
+reports what share of ingested posts they would let us skip. Note that
+`marketing_check` did not discriminate spam in sampling — see that script's
+docstring before relying on it.
+
+### Fetching chunks by hand
+
+The bucket is **requester-pays**, so `aws` calls need `--request-payer
+requester` (the spooler passes `RequestPayer: "requester"` for the same
+reason) and the transfer is billed to us — about 90 GB for a full day.
+
+```bash
+set -a && . ingest/.env && set +a   # AWS credentials
+aws s3api list-objects-v2 --bucket graze-mega-02 --prefix mega/ \
+  --request-payer requester --query 'Contents[*].Key' --output text | sort | tail -5
+```
