@@ -16,7 +16,7 @@ Everything label-based together — spam verdicts, self-declared bots, and adult
 labels — comes to 4.3%.
 
 | Category | Posts | Accounts |
-|---|---|---|
+| --- | --- | --- |
 | Self-declared bot account | 2.9% | 628 |
 | Labeler spam verdict | 0.2% | 32 |
 | Account labelled adult | 1.2% | — |
@@ -120,14 +120,98 @@ upper bound on a population worth investigating, not a droppable set.
 - Current chunks are raw SQLite despite the `.db.zip` suffix. The spooler
   sniffs for this; ad-hoc tooling must too.
 
+## Third-party labelers (follow-up, same sample)
+
+Bluesky's own labeler is not the only source, and it is by far the weakest for
+this purpose. `scripts/megastream_labeler_coverage.py` asks a labeler's Ozone
+instance about our ingested authors directly, via
+`com.atproto.label.queryLabels`, and weights the answer by post volume.
+
+This has to be a direct query. The `hydrated_metadata.user.labels` in the
+payload only carries labels from labelers the *hydrating client* subscribes
+to — in practice just `moderation.bsky.app`. Third-party labels are invisible
+to us until we ask for them.
+
+**Skywatch Blue (`skywatch.blue`) catches 33x more than Bluesky's labeler.**
+Restricted to its abuse vocabulary — dropping its political and informational
+labels — it flags **6.52% of ingested posts across 1,367 accounts**, against
+0.2% for `moderation.bsky.app`:
+
+| Label | Posts | Accounts |
+| --- | --- | --- |
+| platform-manipulation | 2.07% | 285 |
+| suspect-inauthentic | 1.88% | 314 |
+| spam | 1.85% | 237 |
+| repetitive-domain-spam-sustained | 1.75% | 214 |
+| repetitive-domain-spam-burst | 1.40% | 161 |
+| follow-farming | 0.66% | 262 |
+| bulk-following | 0.63% | 213 |
+| amplifier | 0.62% | 109 |
+| engagement-abuse | 0.30% | 86 |
+| inauthentic-fundraising | 0.14% | 33 |
+| **union, abuse labels only** | **6.52%** | **1,367** |
+
+Skywatch also emits political and ideological labels — `maga-trump`,
+`tankie`, `hammer-sickle`, `terf-gc`, `inverted-red-triangle`, `elon-musk`,
+`fringe-media`, `intolerance` — plus informational ones like `bluesky-elder`
+(15.8% of posts, and meaningless here). Subscribing wholesale would import
+viewpoint filtering we have not agreed to. Any adoption must whitelist
+specific label values, which is what `--ignore-labels` exists to model.
+
+Other labelers worth measuring the same way: `labeler.hailey.at` (ai-agent,
+shopping-spam, reply-link-spam), `profile-labels.bossett.social` (rapidposts,
+onlyreplies — behavioural, automatic), `perisai.bsky.social` (autobase, scam,
+affiliator), `engagement-hacks.bsky.social`.
+
+### Follower count is not a substitute
+
+The obvious in-house proxy does not work. Accounts Skywatch flags for abuse
+have a **median 442 followers against 427 for everyone else** — statistically
+indistinguishable, because follow-farming and reciprocal-follow schemes give
+these accounts ordinary-looking social graphs. A `followers < 100` rule
+catches only 25% of flagged accounts while sweeping in 10,936 unflagged ones.
+
+Post rate separates better (median 25.7/day flagged vs 4.7/day) but still
+catches prolific humans and news bots.
+
+So the labeler supplies information we cannot cheaply reconstruct. That is the
+strongest argument for adopting one.
+
 ## If we act on this
 
-The `bot` self-declaration and the `moderation.bsky.app` spam verdict are both
-account-level and both cheap to carry: one keyword field on the post document,
-or a DID exclusion set applied at ingest. Neither justifies a datastore change
-on its own — 4.3% is not a corpus-shaping number.
+**Scope.** The target is accounts no human would willingly read: platform
+manipulation, engagement farming, spam. Explicitly *not* in scope —
+self-declared bots and adult content both have willing audiences, so the 2.9%
+and 1.2% lines above are measurements, not proposals. That leaves Skywatch's
+6.5% as the number worth acting on.
 
-The language filter is the one that could be. `record.langs` is already in the
-payload, would be a genuinely selective indexed attribute, and connects
-directly to the kNN restructuring question — unlike the spam labels, it is
-large enough to change what the retrieval corpus looks like.
+**Prefer a labeler subscription to a static list.** Both exist for this.
+Casey Ho's modlist ("Platform Manipulation, Spam, & Coordinated Inauthentic
+Behavior", 282,855 accounts) is one curator's snapshot: reading it means
+paging ~2,800 records out of their PDS, it has no incremental update
+mechanism, and a mistaken entry is invisible to us. A labeler exposes
+`queryLabels` for bulk lookup and `subscribeLabels` for a live feed, versions
+each label with `cts`, and can *retract* one via `neg: true`. For something
+that decides what enters our corpus, retractability is the feature that
+matters.
+
+**Do not drop at ingest — mark at ingest, filter at retrieval.** Dropping is
+irreversible: we cannot re-derive a post we never indexed, so a labeler false
+positive silently and permanently removes an account. Writing an
+`author_spam_labels` keyword field costs one field per document and keeps
+every decision reversible and auditable.
+
+**Whitelist label values, never a whole labeler.** Skywatch's political
+vocabulary is entangled with its abuse vocabulary in one subscription.
+
+**Check whether the quality corpus already handles this.** `posts_recent_quality`
+requires `like_count >= 20`, and an account no human reads should rarely clear
+that bar. If so, two-tower retrieval is already largely protected and the 6.5%
+is an ingest- and storage-cost argument rather than a feed-quality one — a much
+weaker reason to act. Worth measuring directly against ES before building
+anything.
+
+**The bigger lever is still language.** `record.langs` is already in the
+payload, covers 26.9% of posts, and would be a genuinely selective indexed
+attribute — unlike any spam signal here, it is large enough to change what the
+retrieval corpus looks like.
