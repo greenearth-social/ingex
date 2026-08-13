@@ -161,23 +161,43 @@ specific label values, which is what `--ignore-labels` exists to model.
 Declared vocabularies of the other candidates, via
 `app.bsky.labeler.getServices?detailed=true`:
 
-- **`labeler.hailey.at`** — `coordinated-abuse`, `ai-agent`, `general-spam`,
-  `spam`, `shopping-spam`, `reply-link-spam`, `mass-follow-mid`,
-  `mass-follow-high`, `new-acct-replies`, `suss-handle-change`. The closest
-  vocabulary to coordinated political manipulation after Skywatch, and
-  `coordinated-abuse` is exactly the shape of thing we care about. **Could not
-  be measured: its Ozone endpoint serves a certificate for `CN=qeezi.com`, so
-  every `queryLabels` request fails TLS verification.** Worth re-testing before
-  writing it off — but a labeler we depend on needs to be operationally sound,
-  and this is the kind of thing that would take our ingest filter offline.
-- **`profile-labels.bossett.social`** — `rapidposts`, `onlyreplies`,
-  `changedhandle`, `nonplcdid`, `bridgy`, `nostr`, `threads`. Purely
-  behavioural and fully automatic, so it makes no abuse judgement; useful as a
-  feature, not a verdict.
+- **`labeler.hailey.at`** — **dead, not worth pursuing.** Its declared
+  vocabulary was the best complement to Skywatch (`coordinated-abuse`,
+  `ai-agent`, `general-spam`, `mass-follow-high`, `reply-link-spam`), but the
+  endpoint is gone. `ozone.hailey.at` serves a certificate for `CN=qeezi.com`,
+  and with verification disabled it returns HTTP 200 with the HTML of an
+  unrelated web app ("G1XL V2") on every path including `_health`. The DID
+  document still advertises it as the labeler service; nothing is there.
 - **`aimod.social`** — `ai-imagery`, `ai-avatar-or-banner`,
-  `user-frequent-ai-imagery`. Relevant if AI-generated slop is in scope.
-- **`perisai.bsky.social`** — `autobase`, `scam`, `impersonation`,
-  `affiliator`, `crypto`.
+  `user-frequent-ai-imagery`, relevant if AI-generated slop is in scope.
+  Serves single queries fine, but **rate-limits bulk access hard**: a per-DID
+  sweep started returning 403s a few thousand authors in, and afterwards the
+  wildcard enumeration was refused outright. Coverage is unmeasured. Retry
+  later, gently, via enumeration rather than per-DID batches.
+- **`perisai.bsky.social`** — Indonesian-language, and regionally scoped: its
+  profile translates as "an account labelling system to protect you from
+  seeing accounts and content you do or do not want in your timeline."
+  Label values, translated:
+
+  | Label | Meaning |
+  | --- | --- |
+  | `autobase` | relays messages from users anonymously (a popular Indonesian format) |
+  | `roleplayer` | roleplay account |
+  | `olgambling` | offers online gambling |
+  | `scam` | fraud, impersonating some entity |
+  | `impersonation` | imitates another figure, for jokes or fraud |
+  | `affiliator` | affiliate-marketing account |
+  | `crypto` | promotes cryptocurrency |
+  | `hoax` | false information intended to mislead about a fact |
+  | `hatespeech` / `rudecomment` | hate speech / abusive language |
+  | `ncseventeen`, `pornography`, `adultery`, `prostitution` | adult categories |
+
+  The commercially-motivated ones (`olgambling`, `scam`, `affiliator`,
+  `crypto`, `hoax`) are on-target, but the labeler is aimed at Indonesian
+  Bluesky and our corpus is 73% English, so expect small coverage. Cheap to
+  measure if we want the number.
+- **`profile-labels.bossett.social`** — skipped by decision: `rapidposts` /
+  `onlyreplies` are behavioural descriptions, not abuse verdicts.
 
 For political manipulation specifically, the on-target label values across all
 of these are Skywatch's `platform-manipulation`, `disinformation-network`,
@@ -246,11 +266,78 @@ against manipulation, because manipulation is a supply of engagement.
 
 This makes the like path the higher-stakes surface, not the post path. Likes
 feed user history for both training and serving, and they decide quality-corpus
-membership. A DID exclusion set is worth at least as much applied to
-`jetstream_ingest` likes as to posts — and that service already has the
-machinery, in the rate-limiter and its `GE_BLOCKLIST_DESTINATION` export.
-Measuring what share of ingested *likes* come from labeler-flagged accounts is
-the highest-value next step; this investigation only covered posts.
+membership.
+
+### Applying labels to likes
+
+**Labels attach to accounts, not posts, so no post is needed.** Account-level
+labels come back from `queryLabels` with `uri: "did:plc:..."`, and a like
+record carries its author's DID. The same maintained DID set filters likes and
+posts alike. This also sidesteps the structural problem noted above — that
+labeler labels are never on a freshly-created post — because an account label
+predates the like.
+
+Two confirmed transports for keeping that set current, both on
+`ozone.skywatch.blue`:
+
+- **`queryLabels?uriPatterns=*`** — plain HTTP, paginated by an integer
+  cursor, ~610 labels/sec sustained. Resumable: saving the cursor and passing
+  it back returns only labels newer than that point (verified — resuming from
+  a stored cursor returned labels timestamped months after the ones a
+  from-scratch scan starts with). This is what `scripts/enumerate_labeler.py`
+  uses: full backfill once, then cheap incremental refreshes.
+- **`subscribeLabels?cursor=0`** — websocket, replays the labeler's entire
+  history then tails live. Confirmed working (`101 Switching Protocols`), but
+  **only over HTTP/1.1** — the same request over HTTP/2 returns 404. This is
+  the better long-run home, because `jetstream_ingest` is already a
+  cursor-managing websocket consumer and a second subscription fits that shape
+  exactly.
+
+Retractions arrive as records with `neg: true` and must be applied, or the
+exclusion set only ever grows and never forgives. `enumerate_labeler.py`
+handles this by discarding the DID from that label's set.
+
+Bulk enumeration is also simply the better-behaved approach: per-DID batch
+lookups across ~45k authors got us 403-ed by `aimod.social` partway through,
+while enumerating a labeler wholesale is one ordered scan and far gentler on
+the operator.
+
+Note that Skywatch's labels are majority **post-level** — in a 5,000-label
+sample, 3,199 were `at://` post URIs against 1,801 account labels. Only the
+account-level ones are usable for likes, which `enumerate_labeler.py` keeps by
+default.
+
+### What a full enumeration actually costs and yields
+
+Enumerating Skywatch end to end: **1,133,558 labels scanned in 32 minutes**
+(~595/s), 3,713 retractions applied, yielding **128,587 distinct account DIDs
+across 79 label values**. Restricted to the abuse vocabulary that is 111,602
+accounts. Largest sets:
+
+| Label | Accounts |
+| --- | --- |
+| bulk-following | 67,874 |
+| platform-manipulation | 18,326 |
+| suspect-inauthentic | 13,209 |
+| inauthentic-fundraising | 9,428 |
+| engagement-abuse | 8,883 |
+| spam | 7,729 |
+| follow-farming | 1,362 |
+
+That is a one-time cost. Incremental refresh from a stored cursor is seconds,
+and the resulting file is small enough to ship to `jetstream_ingest` the same
+way the existing blocklist export is shipped.
+
+**Caveat: enumeration appears incomplete.** Scoring our ingested authors
+against the enumerated set gives 1,133 authors / 5.96% of posts, where the
+targeted per-DID sweep found 1,367 / 6.52% — the enumeration recovers 83% of
+what direct queries return. There is also a stability signal worth chasing: a
+20-page wildcard scan and a 700-page scan, both starting from no cursor,
+ended on cursors that were not consistent with each other, which suggests
+`uriPatterns=*` ordering is not stable across requests and a cursor walk can
+skip records. Before depending on enumeration as the source of truth,
+reconcile it against a targeted sweep, or use `subscribeLabels` — whose
+cursor is a sequence number by specification — instead.
 
 **The bigger lever is still language.** `record.langs` is already in the
 payload, covers 26.9% of posts, and would be a genuinely selective indexed
