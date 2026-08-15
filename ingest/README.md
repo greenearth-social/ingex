@@ -67,7 +67,12 @@ ingest/
 │   ├── k8s_delete_es_data_filesystem_emergency.sh     # Delete ES data from filesystem (emergency only)
 │   ├── fix_es_readonly.sh                             # Fix ES read-only blocks
 │   ├── es_stats.py                                    # Ingest-rate and video-size stats from ES
-│   └── megastream_drop_analysis.py                    # What share of ingested posts we could skip
+│   ├── megastream_drop_analysis.py                    # What share of ingested posts we could skip
+│   ├── megastream_label_inventory.py                  # Moderation labels present in megastream data
+│   ├── megastream_labeler_coverage.py                 # What a third-party labeler would catch
+│   ├── enumerate_labeler.py                           # Build/refresh a labeler's account DID set
+│   ├── jetstream_like_sample.py                       # Flagged share of live like traffic
+│   └── fetch_modlist.py                               # Download a moderation list via getRepo
 ├── go.mod                          # Module: github.com/greenearth/ingest
 └── test_data/                      # Sample SQLite databases for testing
 ```

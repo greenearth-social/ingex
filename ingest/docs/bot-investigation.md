@@ -17,10 +17,12 @@ authors, strided across ~3 days ending 2026-08-12.
    **6.52% of ingested posts across 1,367 authors**, against 0.2% for
    Bluesky's own labeler. Nothing else came close.
 2. **Apply it to likes, not just posts.** Labels attach to accounts, so the
-   same DID set works on both — and the like path is where bot-farm damage
-   actually lands.
-3. **Mark at ingest, filter at retrieval.** Dropping is irreversible; a
-   labeler false positive would silently erase an account forever.
+   same DID set works on both. Flagged accounts are **1.21% of live like
+   traffic** and like 2.2x as hard as everyone else — and the like path is
+   where bot-farm damage actually lands.
+3. **Mark posts, skip likes.** Posts get a flag and are held out of the kNN
+   corpus, so a retraction re-admits them. Likes are simply dropped —
+   like counts do not have to be perfect.
 4. **Don't build this in-house.** Follower count, the obvious proxy, does not
    separate these accounts at all.
 
@@ -89,7 +91,7 @@ catches prolific humans and news bots.
 The labeler supplies information we cannot cheaply reconstruct. That is the
 core argument for adopting one.
 
-## Applying this to likes
+## Why likes matter more than posts
 
 **The like path is the higher-stakes surface.** `posts_recent_quality`
 requires `like_count >= 20`. That bar screens out human posts that landed
@@ -110,6 +112,77 @@ label predates the like.
 **`jetstream_ingest` is the natural home.** It already consumes a websocket
 with cursor state, and already exports a DID blocklist via
 `GE_BLOCKLIST_DESTINATION`.
+
+### How many likes would we skip?
+
+`scripts/jetstream_like_sample.py` scores live like traffic off the public
+Jetstream firehose — the same source `jetstream_ingest` consumes — against the
+enumerated Skywatch DID set. Over **628,008 likes in a 40-minute window**
+(261/s, 113,554 distinct likers):
+
+| | Share |
+| --- | --- |
+| **flagged likes** | **1.21%** |
+| flagged likers | 0.55% of likers (627 accounts) |
+| bulk-following | 0.45% |
+| engagement-abuse | 0.36% |
+| suspect-inauthentic | 0.21% |
+| platform-manipulation | 0.14% |
+| spam | 0.11% |
+
+**Flagged accounts like 2.2x as hard as everyone else** — 12.09 likes per
+account in the window against 5.49 — which is why 0.55% of likers produce
+1.21% of likes. That concentration is the signature we are looking for, and it
+compounds on any single post a farm decides to push.
+
+Two reasons to treat 1.21% as a floor rather than an estimate:
+
+- **It measures steady state.** A 40-minute window is the worst possible
+  instrument for burst behaviour, and coordinated like floods are bursts by
+  definition. The damage a farm does to `like_count` is concentrated in time
+  and on specific posts, neither of which a uniform sample captures.
+- **The DID set is incomplete.** Enumeration recovers ~83% of what targeted
+  queries find (see Open questions), so the true flagged share is higher.
+
+Sampling several windows across a day, and separately looking at per-post like
+concentration rather than per-account rates, would give a better picture of
+what a farm actually does to the quality corpus.
+
+## How to apply it: mark posts, skip likes
+
+**Posts: flag them, hold them out of the corpus, let a retraction re-admit
+them.** This works, but *where* the flag is enforced decides whether it saves
+any RAM, because the two kNN corpora are built differently:
+
+- **`posts_recent_quality`** is a real index (`posts-quality-*`), populated by
+  ingex's promotion path when a post crosses the like threshold. Gating
+  promotion on the flag keeps flagged posts out of the index entirely, which
+  removes their vectors from that HNSW graph — **a genuine RAM saving** — and a
+  retraction just re-promotes them. This is the corpus two-tower kNN actually
+  searches, so it is also where the quality benefit lands.
+- **`posts_recent`** is a plain alias over the three most recent `posts-*`
+  weekly indices (see `update-recent-alias-cronjob.yaml`). Flagged posts still
+  live in those indices with `ge_post_embedding` indexed, so adding a
+  `must_not` filter to queries improves results but **saves no RAM at all** —
+  the vectors are still in the graph. Saving RAM there would mean routing
+  flagged posts to a separate index whose vector field is `index: false`,
+  making a retraction a reindex rather than a field update.
+
+The query-time filter is safe from the selectivity trap that shaped the
+current design: excluding ~6% still leaves ~94% of documents matching, so
+Lucene stays on the HNSW graph rather than falling back to exact scan.
+
+Retention bounds how long reversibility has to hold. Both aliases span three
+periods, and the quality corpus is a 14-day window, so a retraction arriving
+more than a few weeks late is moot — the post has already aged out. That makes
+gating promotion sufficient; no long-lived reprocessing machinery is needed.
+
+**Likes: just skip them.** Dropping a like from a flagged account at ingest is
+irreversible, but a like is individually low-value and our like counts do not
+need to be exact. A retraction simply means that account's *future* likes are
+kept. Skipping also does the useful work directly: it deflates manufactured
+engagement, which is what promotes coordinated posts into the quality corpus
+in the first place.
 
 ### Keeping the DID set current
 
@@ -137,9 +210,10 @@ Largest account-level label sets from the full enumeration:
 | spam | 7,729 |
 | follow-farming | 1,362 |
 
-**Honour retractions.** They arrive as records with `neg: true`. Without
-applying them the exclusion set only grows and never forgives — which is what
-makes occasional false positives tolerable.
+**Honour retractions in the DID set.** They arrive as records with
+`neg: true`. Without applying them the set only grows and never forgives.
+Retractions matter for posts, which can rejoin the corpus when the flag
+clears; they do not need to be replayed against likes already skipped.
 
 **Enumerate rather than batch-query.** Per-DID lookups across 45k authors got
 us 403-ed by `aimod.social` partway through and then blocked entirely. One
@@ -157,10 +231,10 @@ labels are usable for likes; `enumerate_labeler.py` keeps those by default.
   cursors, suggesting `uriPatterns=*` ordering is not stable and a cursor walk
   can skip records. Reconcile against a targeted sweep, or use
   `subscribeLabels`, before treating enumeration as the source of truth.
-- **What share of ingested *likes* comes from flagged accounts?** Unmeasured;
-  this investigation covered posts only. Expect it to be higher, since farming
-  likes is cheaper than farming posts. This is the number that would justify
-  the work.
+- **Do like floods show up as bursts?** The 1.21% steady-state figure above
+  says nothing about the pattern that matters most: a farm dumping thousands
+  of likes onto one post over a few minutes. Measuring per-post like
+  concentration, rather than per-account rates, is the follow-up.
 - **Does Skywatch's coverage hold up over time?** One 3-day sample. Re-run
   before committing.
 
