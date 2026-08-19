@@ -27,6 +27,10 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if !config.LoggingEnabled {
 		t.Error("Expected default LoggingEnabled to be true")
 	}
+
+	if config.QualityLikeThreshold != 10 {
+		t.Errorf("Expected default QualityLikeThreshold to be 10, got %d", config.QualityLikeThreshold)
+	}
 }
 
 func TestLoadConfig_FromEnvironment(t *testing.T) {
