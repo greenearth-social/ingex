@@ -177,6 +177,62 @@ get_elasticsearch_internal_lb_ip() {
     fi
 }
 
+# Final assertion on the resolved Elasticsearch URL, run once after
+# get_elasticsearch_internal_lb_ip and before anything is deployed.
+#
+# Every deploy bakes this value into --set-env-vars, and an empty one is not
+# inert: the Go client falls back to 127.0.0.1:9200, so each container starts,
+# fails to dial, and exits 1. That is how the extract job silently stopped
+# producing parquet for six days in August 2026 — the scheduled job ran on time
+# and failed every time. Checking the resolved value here catches it regardless
+# of which path above produced it, including a caller that exports a blank
+# GE_ELASTICSEARCH_URL into the environment.
+require_elasticsearch_url() {
+    log_info "Verifying resolved Elasticsearch URL..."
+
+    # Strip whitespace so an all-spaces value is treated as empty rather than
+    # sailing through the -z check and deploying as blank.
+    local url
+    url=$(echo "$GE_ELASTICSEARCH_URL" | tr -d '[:space:]')
+
+    if [ -z "$url" ]; then
+        log_error "GE_ELASTICSEARCH_URL resolved to an empty value."
+        log_error "Deploying this would set an empty env var on every service and job;"
+        log_error "each container would fall back to 127.0.0.1:9200 and exit 1 on startup."
+        log_error "Set GE_ELASTICSEARCH_URL explicitly, or make sure the internal LB is"
+        log_error "reachable: kubectl get service greenearth-es-internal-lb -n greenearth-$GE_ENVIRONMENT"
+        exit 1
+    fi
+
+    if [ "$url" = "INTERNAL_LB_PLACEHOLDER" ]; then
+        log_error "GE_ELASTICSEARCH_URL is still the literal placeholder INTERNAL_LB_PLACEHOLDER."
+        log_error "Auto-detection did not replace it. Set GE_ELASTICSEARCH_URL manually."
+        exit 1
+    fi
+
+    case "$url" in
+        http://*|https://*) ;;
+        *)
+            log_error "GE_ELASTICSEARCH_URL is not an http(s) URL: $url"
+            log_error "Expected something like https://10.142.0.81:9200"
+            exit 1
+            ;;
+    esac
+
+    # Cloud Run containers have no Elasticsearch on loopback. A localhost URL
+    # here is the same failure as an empty one, just spelled out.
+    case "$url" in
+        *//localhost:*|*//127.0.0.1:*|*//[::1]:*)
+            log_error "GE_ELASTICSEARCH_URL points at loopback: $url"
+            log_error "Cloud Run services cannot reach Elasticsearch on localhost."
+            log_error "Use the internal load balancer address for $GE_ENVIRONMENT."
+            exit 1
+            ;;
+    esac
+
+    log_info "Elasticsearch URL verified: $GE_ELASTICSEARCH_URL"
+}
+
 verify_vpc_connector() {
     log_info "Verifying VPC connector exists..."
 
@@ -550,6 +606,7 @@ main() {
     fi
 
     get_elasticsearch_internal_lb_ip
+    require_elasticsearch_url
 
     case "$service" in
         jetstream|jetstream-ingest)
