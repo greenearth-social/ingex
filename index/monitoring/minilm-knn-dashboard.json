@@ -6,7 +6,7 @@
       {
         "xPos": 0,
         "yPos": 0,
-        "width": 6,
+        "width": 4,
         "height": 4,
         "widget": {
           "title": "HNSW Vector Index Memory — data nodes",
@@ -25,9 +25,9 @@
         }
       },
       {
-        "xPos": 6,
+        "xPos": 4,
         "yPos": 0,
-        "width": 6,
+        "width": 4,
         "height": 4,
         "widget": {
           "title": "JVM Heap Used — data nodes",
@@ -46,44 +46,86 @@
         }
       },
       {
-        "xPos": 0,
-        "yPos": 4,
-        "width": 6,
+        "xPos": 8,
+        "yPos": 0,
+        "width": 4,
         "height": 4,
         "widget": {
-          "title": "Segment Merge Rate — data nodes",
+          "title": "OS Memory Used — data nodes",
           "xyChart": {
             "dataSets": [
               {
                 "timeSeriesQuery": {
-                  "prometheusQuery": "rate(elasticsearch_indices_merges_total_time_seconds_total{namespace=\"greenearth-prod\", node=~\"greenearth-es-data-.*\"}[5m])"
+                  "prometheusQuery": "elasticsearch_os_mem_used_bytes{namespace=\"greenearth-prod\", node=~\"greenearth-es-data-.*\"}"
                 },
                 "plotType": "LINE",
                 "legendTemplate": "${labels.node}"
               }
             ],
-            "yAxis": { "label": "s/s", "scale": "LINEAR" }
+            "yAxis": { "label": "Bytes", "scale": "LINEAR" }
           }
         }
       },
       {
-        "xPos": 6,
+        "xPos": 0,
         "yPos": 4,
-        "width": 6,
+        "width": 4,
         "height": 4,
         "widget": {
-          "title": "Search Query Time Rate — data nodes",
+          "title": "Avg kNN Query Latency — data nodes",
           "xyChart": {
             "dataSets": [
               {
                 "timeSeriesQuery": {
-                  "prometheusQuery": "rate(elasticsearch_indices_search_query_time_seconds{namespace=\"greenearth-prod\", node=~\"greenearth-es-data-.*\"}[5m])"
+                  "prometheusQuery": "rate(elasticsearch_indices_search_query_time_seconds{namespace=\"greenearth-prod\", node=~\"greenearth-es-data-.*\"}[5m]) / rate(elasticsearch_indices_search_query_total{namespace=\"greenearth-prod\", node=~\"greenearth-es-data-.*\"}[5m])"
                 },
                 "plotType": "LINE",
                 "legendTemplate": "${labels.node}"
               }
             ],
-            "yAxis": { "label": "s/s", "scale": "LINEAR" }
+            "yAxis": { "label": "s/query", "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 4,
+        "yPos": 4,
+        "width": 4,
+        "height": 4,
+        "widget": {
+          "title": "Search QPS — data nodes",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "prometheusQuery": "rate(elasticsearch_indices_search_query_total{namespace=\"greenearth-prod\", node=~\"greenearth-es-data-.*\"}[5m])"
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${labels.node}"
+              }
+            ],
+            "yAxis": { "label": "queries/s", "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 8,
+        "yPos": 4,
+        "width": 4,
+        "height": 4,
+        "widget": {
+          "title": "Search Thread Pool Rejections — data nodes",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "prometheusQuery": "rate(elasticsearch_thread_pool_rejected_count{namespace=\"greenearth-prod\", node=~\"greenearth-es-data-.*\", type=\"search\"}[5m])"
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${labels.node}"
+              }
+            ],
+            "yAxis": { "label": "rejections/s", "scale": "LINEAR" }
           }
         }
       }
