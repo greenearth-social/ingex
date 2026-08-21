@@ -65,7 +65,8 @@ data:
                 "all_MiniLM_L12_v2": {
                   "type": "dense_vector",
                   "dims": 384,
-                  "index": false
+                  "index": true,
+                  "similarity": "cosine"
                 }
               }
             },
