@@ -124,11 +124,10 @@ See individual command READMEs for detailed usage:
 - [megastream_ingest documentation](cmd/megastream_ingest/README.md)
 - [jetstream_ingest documentation](cmd/jetstream_ingest/README.md)
 
-Analysis notes:
-
-- [Filtering inauthentic accounts out of ingest](docs/bot-investigation.md) —
-  why Skywatch Blue is the labeler worth subscribing to, how to keep its DID
-  set current, and why it matters more for likes than for posts.
+The labeler and megastream analysis scripts under `scripts/` are reference
+implementations for
+[#474](https://github.com/greenearth-social/ingex/issues/474) — filtering
+inauthentic accounts out of ingest.
 
 ## Configuration
 
