@@ -1,0 +1,92 @@
+{
+  "displayName": "miniLM kNN Index Health",
+  "mosaicLayout": {
+    "columns": 12,
+    "tiles": [
+      {
+        "xPos": 0,
+        "yPos": 0,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "HNSW Vector Index Memory — data nodes",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "prometheusQuery": "elasticsearch_indices_segments_vector_index_memory_bytes{namespace=\"greenearth-prod\", node=~\"greenearth-es-data-.*\"}"
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${labels.node}"
+              }
+            ],
+            "yAxis": { "label": "Bytes", "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "yPos": 0,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "JVM Heap Used — data nodes",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "prometheusQuery": "elasticsearch_jvm_memory_used_bytes{namespace=\"greenearth-prod\", node=~\"greenearth-es-data-.*\", area=\"heap\"}"
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${labels.node}"
+              }
+            ],
+            "yAxis": { "label": "Bytes", "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 4,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Segment Merge Rate — data nodes",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "prometheusQuery": "rate(elasticsearch_indices_merges_total_time_seconds_total{namespace=\"greenearth-prod\", node=~\"greenearth-es-data-.*\"}[5m])"
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${labels.node}"
+              }
+            ],
+            "yAxis": { "label": "s/s", "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "yPos": 4,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Search Query Time Rate — data nodes",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "prometheusQuery": "rate(elasticsearch_indices_search_query_time_seconds{namespace=\"greenearth-prod\", node=~\"greenearth-es-data-.*\"}[5m])"
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${labels.node}"
+              }
+            ],
+            "yAxis": { "label": "s/s", "scale": "LINEAR" }
+          }
+        }
+      }
+    ]
+  }
+}
