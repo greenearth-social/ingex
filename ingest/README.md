@@ -65,7 +65,14 @@ ingest/
 │   ├── k8s_recreate_api_key.sh                        # Recreate Elasticsearch API key
 │   ├── k8s_delete_es_data_via_api.sh                  # Delete ES data via API (safe)
 │   ├── k8s_delete_es_data_filesystem_emergency.sh     # Delete ES data from filesystem (emergency only)
-│   └── fix_es_readonly.sh                             # Fix ES read-only blocks
+│   ├── fix_es_readonly.sh                             # Fix ES read-only blocks
+│   ├── es_stats.py                                    # Ingest-rate and video-size stats from ES
+│   ├── megastream_drop_analysis.py                    # What share of ingested posts we could skip
+│   ├── megastream_label_inventory.py                  # Moderation labels present in megastream data
+│   ├── megastream_labeler_coverage.py                 # What a third-party labeler would catch
+│   ├── enumerate_labeler.py                           # Build/refresh a labeler's account DID set
+│   ├── jetstream_like_sample.py                       # Flagged share of live like traffic
+│   └── fetch_modlist.py                               # Download a moderation list via getRepo
 ├── go.mod                          # Module: github.com/greenearth/ingest
 └── test_data/                      # Sample SQLite databases for testing
 ```
@@ -116,6 +123,11 @@ See individual command READMEs for detailed usage:
 
 - [megastream_ingest documentation](cmd/megastream_ingest/README.md)
 - [jetstream_ingest documentation](cmd/jetstream_ingest/README.md)
+
+The labeler and megastream analysis scripts under `scripts/` are reference
+implementations for
+[#474](https://github.com/greenearth-social/ingex/issues/474) — filtering
+inauthentic accounts out of ingest.
 
 ## Configuration
 
@@ -192,10 +204,12 @@ Use the `encoded` value from the response.
 **For Local Source (`--source local`):**
 
 - `GE_LOCAL_SQLITE_DB_PATH` - Directory containing `.db.zip` files to process
+  (the suffix is required, but the contents may be either a zip archive or a
+  raw SQLite database — the spooler sniffs which)
 
 **For S3 Source (`--source s3`):**
 
-- `GE_AWS_S3_BUCKET` - S3 bucket name containing SQLite files
+- `GE_AWS_S3_BUCKET` - S3 bucket name containing SQLite files (requester-pays)
 - `GE_AWS_S3_PREFIX` - S3 key prefix (folder path)
 - `GE_AWS_REGION` - AWS region (default: "us-east-1")
 
