@@ -49,21 +49,22 @@ log_build() {
     echo -e "${BLUE}[BUILD]${NC} $1"
 }
 
+# Trims a service's revision history. This is also the rollback window: only the
+# revisions kept here can be rolled back to with scripts/rollback.sh.
+#
+# Services only. Cloud Run jobs have no revisions — `gcloud run jobs revisions`
+# is not a command, so the job branch this function used to carry never did
+# anything (its errors were swallowed). A job's deployment history lives in its
+# executions instead, each of which snapshots the image digest and git sha it
+# ran with; see scripts/rollback.sh.
 cleanup_old_revisions() {
-    local resource_type="$1"  # "service" or "job"
-    local resource_name="$2"
+    local service_name="$1"
     local max_revisions=10
 
     log_info "Cleaning up old revisions..."
 
-    local list_cmd
-    if [ "$resource_type" = "service" ]; then
-        list_cmd="gcloud run revisions list --service=$resource_name"
-    else
-        list_cmd="gcloud run jobs revisions list --job=$resource_name"
-    fi
-
-    local all_revisions=$($list_cmd \
+    local all_revisions=$(gcloud run revisions list \
+        --service="$service_name" \
         --region="$GE_GCP_REGION" \
         --format="value(name)" \
         --sort-by="~metadata.creationTimestamp" 2>/dev/null || true)
@@ -74,17 +75,37 @@ cleanup_old_revisions() {
             log_info "Found $revision_count revisions, keeping the $max_revisions most recent"
             echo "$all_revisions" | tail -n +$((max_revisions + 1)) | while read -r revision; do
                 log_info "Deleting old revision: $revision"
-                if [ "$resource_type" = "service" ]; then
-                    gcloud run revisions delete "$revision" \
-                        --region="$GE_GCP_REGION" \
-                        --quiet 2>/dev/null || log_warn "Failed to delete $revision"
-                else
-                    gcloud run jobs revisions delete "$revision" \
-                        --region="$GE_GCP_REGION" \
-                        --quiet 2>/dev/null || log_warn "Failed to delete $revision"
-                fi
+                gcloud run revisions delete "$revision" \
+                    --region="$GE_GCP_REGION" \
+                    --quiet 2>/dev/null || log_warn "Failed to delete $revision"
             done
         fi
+    fi
+}
+
+# A rollback (scripts/rollback.sh) pins traffic to a named revision, which takes
+# LATEST out of the traffic split — after that, deploying would create a
+# perfectly healthy revision that serves nothing. Resetting to LATEST here makes
+# "deploy the fix" the way out of a rolled-back state, with no extra step to
+# remember. On a normal deploy this is a no-op. It runs only after the deploy
+# succeeded, so a failed build leaves traffic where the rollback put it.
+#
+# Services only: rolling a job back rewrites its single mutable template, which
+# the next `gcloud run jobs deploy` replaces outright.
+reset_traffic_to_latest() {
+    local service_name="$1"
+
+    log_info "Pointing traffic at the latest revision..."
+
+    if ! gcloud run services update-traffic "$service_name" \
+        --region="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" \
+        --to-latest \
+        --quiet > /dev/null; then
+        log_error "Deployed successfully, but could not point traffic at the new revision."
+        log_error "The previous revision is still serving. Retry with:"
+        log_error "  gcloud run services update-traffic $service_name --region=$GE_GCP_REGION --to-latest"
+        exit 1
     fi
 }
 
@@ -310,7 +331,8 @@ deploy_jetstream_service() {
         --allow-unauthenticated \
         --args="--max-rewind,$max_rewind"
 
-    cleanup_old_revisions "service" "jetstream-ingest-$GE_ENVIRONMENT"
+    reset_traffic_to_latest "jetstream-ingest-$GE_ENVIRONMENT"
+    cleanup_old_revisions "jetstream-ingest-$GE_ENVIRONMENT"
 }
 
 deploy_megastream_service() {
@@ -382,7 +404,8 @@ deploy_megastream_service() {
         --allow-unauthenticated \
         --args="--source,s3,--mode,spool,--max-rewind,$max_rewind"
 
-    cleanup_old_revisions "service" "megastream-ingest-$GE_ENVIRONMENT"
+    reset_traffic_to_latest "megastream-ingest-$GE_ENVIRONMENT"
+    cleanup_old_revisions "megastream-ingest-$GE_ENVIRONMENT"
 }
 
 deploy_expiry_job() {
@@ -471,7 +494,6 @@ EOF
         --task-timeout=3600 \
         --args="--retention-hours,$retention_hours,--hashtag-retention-hours,$hashtag_retention_hours"
 
-    cleanup_old_revisions "job" "elasticsearch-expiry-$GE_ENVIRONMENT"
 }
 
 deploy_extract_job() {
@@ -530,7 +552,6 @@ deploy_extract_job() {
         --task-timeout=7200 \
         --args="--window-size-min,$window_minutes"
 
-    cleanup_old_revisions "job" "extract-$GE_ENVIRONMENT"
 }
 
 deploy_all_services() {
