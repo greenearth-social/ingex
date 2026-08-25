@@ -9,4 +9,8 @@ data:
   last-schema-update: ""
   last-resource-update: ""
   deployment-git-sha: ""
+  # Newline-separated "<timestamp> <git-sha> <ctypes>" entries, newest first,
+  # written by deploy.sh. deployment-git-sha above only says what is deployed
+  # now; this says what came before it, which is what a rollback needs.
+  deployment-history: ""
   index-types: "posts,likes,post_tombstones,like_tombstones"
