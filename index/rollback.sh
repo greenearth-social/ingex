@@ -127,8 +127,21 @@ setup_kubectl_context() {
 
 # --- deployment history ----------------------------------------------------
 
+# What is deployed right now. deployment-history's newest entry is authoritative
+# when it exists: it is appended on every deploy, whereas deployment-git-sha is
+# a single slot that older deploy.sh versions did not always update. Falling
+# back to the slot keeps this working against clusters deployed before history
+# existed.
 current_sha() {
     local namespace=$1
+
+    local head
+    head="$(deployment_history "$namespace" | head -n 1 | awk '{ print $2 }')"
+    if [ -n "$head" ]; then
+        echo "$head"
+        return 0
+    fi
+
     kubectl get configmap elasticsearch-deployment-state \
         -n "$namespace" \
         -o jsonpath='{.data.deployment-git-sha}' 2>/dev/null || echo ""
@@ -255,9 +268,11 @@ require_manifests() {
     fi
 }
 
+# POSIX character class rather than \s: \s is a GNU extension, and if the
+# pattern silently matched nothing the downgrade check below would fail open.
 manifest_es_version() {
     local dir=$1
-    grep -E '^\s+version:' "$dir/base/elasticsearch.yaml" 2>/dev/null \
+    grep -E '^[[:space:]]+version:' "$dir/base/elasticsearch.yaml" 2>/dev/null \
         | head -n 1 \
         | awk '{ print $2 }'
 }

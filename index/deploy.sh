@@ -398,7 +398,11 @@ update_deployment_state() {
     if [ "$update_type" = "schema" ]; then
         patch="{\"data\":{\"last-schema-update\":\"$timestamp\",\"deployment-git-sha\":\"$git_sha\",\"deployment-history\":\"$history\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     elif [ "$update_type" = "resource" ]; then
-        patch="{\"data\":{\"last-resource-update\":\"$timestamp\",\"deployment-history\":\"$history\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
+        # deployment-git-sha is updated here too. It means "sha of the manifests
+        # last applied", and a resource deploy applies manifests — leaving it
+        # stale made it disagree with deployment-history, which would send a
+        # rollback at the revision that is already deployed.
+        patch="{\"data\":{\"last-resource-update\":\"$timestamp\",\"deployment-git-sha\":\"$git_sha\",\"deployment-history\":\"$history\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     else
         patch="{\"data\":{\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"deployment-git-sha\":\"$git_sha\",\"deployment-history\":\"$history\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     fi
