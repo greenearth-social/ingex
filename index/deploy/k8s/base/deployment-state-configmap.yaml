@@ -9,4 +9,11 @@ data:
   last-schema-update: ""
   last-resource-update: ""
   deployment-git-sha: ""
+  # NOTE: deploy.sh also maintains a "deployment-history" key here — newline-
+  # separated "<timestamp> <git-sha> <ctypes>" entries, newest first, which is
+  # what rollback.sh reads to find a target. It is deliberately NOT declared in
+  # this manifest: deploy.sh runs `kubectl apply -k` before recording state, so
+  # a declared key would be reset to "" on every deploy and the history could
+  # never grow past a single entry. Accumulated history is runtime state, so
+  # `kubectl patch` is its only writer.
   index-types: "posts,likes,post_tombstones,like_tombstones"

@@ -3,7 +3,15 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Manifest root. Normally the checkout's own manifests; rollback.sh points this
+# at a git worktree of an older revision via --manifests-dir, so a rollback
+# applies old manifests using the current, reviewed deploy logic rather than
+# re-running whatever deploy.sh looked like back then.
 K8S_DIR="$SCRIPT_DIR/deploy/k8s"
+
+# How many deployment-history entries to keep in the state ConfigMap.
+MAX_DEPLOYMENT_HISTORY=20
 
 # set default cluster, region, project id
 GE_GCP_REGION="${GE_GCP_REGION:-us-east1}"
@@ -26,6 +34,8 @@ print_usage() {
     echo "  --dry-run           Show what would be deployed without applying"
     echo "  --no-timeout        Wait indefinitely for resources (no timeout)"
     echo "  --teardown          Delete the entire environment (prompts for confirmation)"
+    echo "  --manifests-dir DIR Apply manifests from DIR instead of this checkout"
+    echo "                      (used by rollback.sh; not for normal deploys)"
     echo "  -h, --help          Show this help message"
     echo ""
     echo "Required Environment Variables:"
@@ -335,8 +345,39 @@ verify_cluster_health() {
     return 0
 }
 
+# The sha of the manifests being applied, which is not always this checkout's
+# HEAD: under --manifests-dir (rollback.sh) it is the older revision's worktree,
+# and the recorded sha must describe what actually landed in the cluster.
 get_git_sha() {
-    git rev-parse --short HEAD 2>/dev/null || echo "unknown"
+    git -C "$K8S_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown"
+}
+
+# Reads the ConfigMap's deployment-history and returns it with a new entry
+# prepended, capped at MAX_DEPLOYMENT_HISTORY lines.
+#
+# deployment-git-sha is a single mutable slot: it says what is deployed now, but
+# not what was deployed before, which is exactly what a rollback needs to know.
+# The history keeps that record in the cluster, next to the thing it describes,
+# so it survives a fresh checkout and does not depend on reading git reflogs
+# from whichever laptop ran the last deploy (see rollback.sh).
+build_deployment_history() {
+    local namespace=$1
+    local timestamp=$2
+    local git_sha=$3
+    local update_type=$4
+
+    local existing
+    existing=$(kubectl get configmap elasticsearch-deployment-state \
+        -n "$namespace" \
+        -o jsonpath='{.data.deployment-history}' 2>/dev/null || echo "")
+
+    local entry="$timestamp $git_sha $update_type"
+
+    if [ -n "$existing" ]; then
+        printf '%s\n%s\n' "$entry" "$existing" | head -n "$MAX_DEPLOYMENT_HISTORY"
+    else
+        echo "$entry"
+    fi
 }
 
 update_deployment_state() {
@@ -348,13 +389,22 @@ update_deployment_state() {
     local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     local git_sha=$(get_git_sha)
 
+    # JSON-encode the newline-separated history for the merge patch.
+    local history
+    history=$(build_deployment_history "$namespace" "$timestamp" "$git_sha" "$update_type" \
+        | awk '{ printf "%s\\n", $0 }')
+
     local patch=""
     if [ "$update_type" = "schema" ]; then
-        patch="{\"data\":{\"last-schema-update\":\"$timestamp\",\"deployment-git-sha\":\"$git_sha\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
+        patch="{\"data\":{\"last-schema-update\":\"$timestamp\",\"deployment-git-sha\":\"$git_sha\",\"deployment-history\":\"$history\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     elif [ "$update_type" = "resource" ]; then
-        patch="{\"data\":{\"last-resource-update\":\"$timestamp\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
+        # deployment-git-sha is updated here too. It means "sha of the manifests
+        # last applied", and a resource deploy applies manifests — leaving it
+        # stale made it disagree with deployment-history, which would send a
+        # rollback at the revision that is already deployed.
+        patch="{\"data\":{\"last-resource-update\":\"$timestamp\",\"deployment-git-sha\":\"$git_sha\",\"deployment-history\":\"$history\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     else
-        patch="{\"data\":{\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"deployment-git-sha\":\"$git_sha\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
+        patch="{\"data\":{\"last-schema-update\":\"$timestamp\",\"last-resource-update\":\"$timestamp\",\"deployment-git-sha\":\"$git_sha\",\"deployment-history\":\"$history\"},\"metadata\":{\"annotations\":{\"last-deployment\":\"$timestamp\"}}}"
     fi
 
     kubectl patch configmap elasticsearch-deployment-state \
@@ -602,7 +652,15 @@ deploy_environment() {
 
     log_info "Deploying to $environment environment (namespace: $namespace)"
 
-    trap "cleanup_on_failure $namespace" ERR
+    # cleanup_on_failure deletes the namespace, which is only ever the right
+    # response to a half-built fresh environment. Installing it unconditionally
+    # meant a failed `--ctypes schema` run against prod would tear down the live
+    # cluster. Scope it to init, and let every other change type fail in place
+    # with the cluster intact — a failed schema or resource update leaves
+    # something to inspect and roll back (see rollback.sh).
+    if [ "$CHANGE_TYPES" = "init" ]; then
+        trap "cleanup_on_failure $namespace" ERR
+    fi
 
     if [ "$INSTALL_ECK" = true ]; then
         install_eck_operator
@@ -703,6 +761,16 @@ while [[ $# -gt 0 ]]; do
         --teardown)
             TEARDOWN=true
             shift
+            ;;
+        --manifests-dir)
+            # Apply manifests from somewhere other than this checkout. Used by
+            # rollback.sh; not part of the normal deploy path.
+            if [ ! -d "$2/environments" ]; then
+                log_error "--manifests-dir must point at a k8s manifest root (no environments/ in $2)"
+                exit 1
+            fi
+            K8S_DIR="$(cd "$2" && pwd)"
+            shift 2
             ;;
         -h|--help)
             print_usage
