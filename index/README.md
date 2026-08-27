@@ -345,6 +345,35 @@ documents. A breaking mapping change that has already been written to needs a
 reindex (`tools/reindex.py`, see the [ingex README](../README.md#index-schema-migrations))
 or a snapshot restore.
 
+#### Testing the rollback tooling
+
+`./rollback_test.sh` runs the parts of `deploy.sh` and `rollback.sh` that can be
+checked without a cluster. It puts fake `kubectl`/`gcloud`/`sleep` on `PATH`,
+runs the real scripts against them, and asserts on the commands they issue. It
+takes a couple of seconds, makes no network calls, and never contacts GCP.
+
+```bash
+./rollback_test.sh                  # from ingex/index
+KEEP_WORKDIR=1 ./rollback_test.sh   # leave temp files for inspection
+```
+
+It exists mainly for one thing: `cleanup_on_failure` ends in `kubectl delete
+namespace`, and whether it fires cannot be checked against a real cluster,
+because getting it wrong deletes the cluster. The suite covers both states —
+under the current `set -e` the trap is not inherited into nested functions and
+so never fires, and against a `set -eE` copy the scoping still holds (schema and
+resource leave the namespace alone; init still cleans up). If anyone hardens
+this script with `errtrace`, that test is what catches a regression.
+
+It also covers `deployment-history` surviving `apply -k`, `deployment-git-sha`
+being recorded for every change type, `--manifests-dir` validation and worktree
+sha resolution, rollback target selection, `--dry-run` issuing no mutating
+commands, and the Elasticsearch version-downgrade refusal.
+
+What it cannot cover is the ECK reconcile itself — that a rolled-back manifest
+actually changes the cluster. Verify that against Elasticsearch directly, e.g.
+`GET _index_template/posts_ilm_template` before and after.
+
 #### Emergency rollback (manual)
 
 If `rollback.sh` cannot run — no history, a revision predating the current
