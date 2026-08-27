@@ -260,12 +260,68 @@ service and job in two places:
 - **Env var `GE_GIT_SHA`** — each binary reports it on its health endpoint (see
   below) and prefixes it onto every log line.
 - **Cloud Run label `git-sha=<sha>`** — tags the service/revision (and job) so
-  past deployments are identifiable when choosing a rollback target:
+  past deployments are identifiable when choosing a rollback target
+  (`./scripts/rollback.sh --list`, see [Rolling back a
+  deployment](#rolling-back-a-deployment)).
 
-  ```bash
-  gcloud run revisions list --service=jetstream-ingest-prod --region=us-east1 \
-    --format='value(metadata.name,metadata.labels.git-sha)'
-  ```
+### Rolling back a deployment
+
+`deploy.sh` builds from source, so the repo never names an image tag and there
+is nothing to rebuild from an old sha: the deployed artifacts themselves are the
+rollback targets. `scripts/rollback.sh` uses the same workload names as
+`deploy.sh` and rolls back all four by default.
+
+```bash
+./scripts/rollback.sh --environment prod --list   # candidates for all workloads
+./scripts/rollback.sh --environment prod          # everything back one deployment
+./scripts/rollback.sh jetstream --environment prod        # one workload
+./scripts/rollback.sh --environment prod --to e11d1b2     # a specific git sha
+```
+
+`--dry-run` prints the exact `gcloud` commands without running them; `--yes`
+skips the confirmation prompt. The script resolves the whole plan first and
+shows it before changing anything, so a rollback across four workloads is one
+decision rather than four.
+
+The two workload kinds roll back differently:
+
+| | Mechanism | History | Window |
+| --- | --- | --- | --- |
+| **Services** (`jetstream-ingest`, `megastream-ingest`) | Shift 100% of traffic to an older revision, which pins the image digest and env config it was deployed with | Cloud Run revisions | The 10 most recent revisions — `deploy.sh` deletes the rest on each deploy |
+| **Jobs** (`elasticsearch-expiry`, `extract`) | Re-point the job's template at an earlier image | Job **executions**, each of which snapshots the image digest and `GE_GIT_SHA` it ran with | Bounded by execution history (`--max-executions`, default 1000 ≈ three weeks) |
+
+Cloud Run jobs have no revisions — a job is a single mutable template — which is
+why their history comes from executions instead. Both jobs run on a schedule, so
+every deployed generation that survived one tick is recoverable, and Artifact
+Registry keeps the old digests. Rolling a job back changes its **image only**;
+other env vars keep their current values. The rolled-back image takes effect on
+the job's next scheduled run, or immediately via `gcloud run jobs execute`.
+
+After a service rollback the script polls `/health` until the service reports
+the target's sha, so the rollback is confirmed from outside Cloud Run's own
+bookkeeping.
+
+**Getting back out:** a service rollback pins traffic to a named revision,
+taking `LATEST` out of the traffic split. `deploy.sh` resets traffic to `LATEST`
+after a successful deploy, so deploying the fix is all it takes; for jobs, the
+next deploy replaces the template outright. Because the reset runs only on
+success, a failed build leaves traffic on the rolled-back revision.
+
+**When to rebuild from git instead.** Every ingest workload reaches Elasticsearch
+at an internal LB IP baked in at deploy time. If that IP has moved since the
+target was deployed, rolling back restores a dead address — `rollback.sh` warns
+about this when it can reach the cluster, and it is also the fallback when the
+target has aged out of the window:
+
+```bash
+git checkout <sha> && ./scripts/deploy.sh --environment prod
+```
+
+Elasticsearch itself rolls back separately; see the
+[index README](../index/README.md).
+
+Rollbacks are manual by design. Cloud Run's own health-check behavior is
+untouched — a revision that never becomes Ready never receives traffic.
 
 ### Health endpoint
 

@@ -18,7 +18,8 @@ For detailed architecture information, see [VPC_ARCHITECTURE.md](VPC_ARCHITECTUR
   - Processed in batch sqlite files from [Graze Megastream](https://graze.leaflet.pub/3m33mkloj222o)
 - **Like**
   - Processed in realtime from [Bluesky JetStream](https://docs.bsky.app/blog/jetstream)
-- **Runtime**: Deployed on [Google Kubernetes Engine](https://cloud.google.com/kubernetes-engine/docs)
+- **Runtime**: Deployed on [Cloud Run](https://cloud.google.com/run/docs) — two
+  services (jetstream, megastream) and two scheduled jobs (expiry, extract)
 - **Client Library**: [go-elasticsearch](https://pkg.go.dev/github.com/elastic/go-elasticsearch/v9) for connecting to ES and data indexing
 - **Documentation**: See [ingest/README.md](ingest/README.md) for development and deployment instructions
 
