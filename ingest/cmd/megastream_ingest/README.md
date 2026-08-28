@@ -25,6 +25,7 @@ Configuration is done through environment variables and command line flags.
 - `--dry-run` - Run without writing to Elasticsearch (for testing)
 - `--skip-tls-verify` - Skip TLS certificate verification (local development only)
 - `--no-rewind` - Do not rewind to the last processed timestamp on startup (drops intervening data)
+- `--no-perspective` - Skip Perspective API scoring of posts
 
 ### Environment Variables
 
@@ -82,6 +83,56 @@ Failures are fail-open: posts are still indexed without the field. Disabled in
 > write index) *before* deploying this service with `GE_INFERENCE_BASE_URL`
 > set. Otherwise Elasticsearch dynamically maps the field as `float`, which
 > cannot serve kNN queries and requires a reindex to fix.
+
+**Perspective Scoring (optional):**
+
+When `GE_PERSPECTIVE_API_KEY` is set, each new non-reply post is scored by
+Google's Perspective API and the result is stored on the posts index as
+`perspective_scores` (the 15 raw PRC attribute scores), `combined_perspective_score`
+(the weighted PRC score in `[0, 1]`), and `perspective_scored_at`.
+
+This exists so the api does not have to score candidates on the serving path,
+and so we accumulate a complete attribute-score corpus before the Perspective
+API sunsets in January — see greenearth-social/api#368. Replies are not scored.
+
+Three states are meaningful, and the api distinguishes all three:
+
+| document state | meaning |
+|---|---|
+| all three fields set | scored |
+| `perspective_scored_at` only | permanently unscorable — no text at all (an image-only post), or a language the API declines to rate. Never retried. |
+| no fields | not scored yet. The api scores it live; `backfill_perspective` fills it in. |
+
+The middle state matters more than it looks: without it, every image-only and
+non-English post would be re-submitted on every backfill run and re-queried by
+the api on every feed request, forever.
+
+Failures are fail-open: posts are still indexed with no perspective fields.
+Disabled in `--dry-run` mode and by `--no-perspective`.
+
+- `GE_PERSPECTIVE_API_KEY` - Perspective API key (GSM secret `perspective-api-key-{env}`); unset disables scoring
+- `GE_PERSPECTIVE_HOST` - API host override (default: `https://commentanalyzer.googleapis.com`); the devenv points this at its local stub
+- `GE_PERSPECTIVE_QPS` - This service's share of the shared quota (default: `150`)
+- `GE_PERSPECTIVE_ON_QUOTA` - `wait` to throttle ingest, `skip` to index posts unscored (default: `wait`)
+- `GE_PERSPECTIVE_TIMEOUT` - Per-request HTTP timeout (default: `2s`)
+- `GE_PERSPECTIVE_MAX_CONCURRENCY` - Concurrent scoring requests (default: `32`)
+- `GE_PERSPECTIVE_RETRY_MAX` - Retries beyond the first attempt (default: `2`)
+
+> **Quota is shared.** The Perspective quota is 36 000 requests/minute (600 QPS)
+> across *both* this service and the api's serving path. `GE_PERSPECTIVE_QPS` is
+> ingest's slice of it, so raising it takes budget away from serving — which
+> sees spikes ingest does not. `wait` keeps ingest inside its slice by slowing
+> it down; switch to `skip` when serving needs the budget more than the corpus
+> does, then recover the gap with `backfill_perspective`.
+
+> **Rollout ordering:** as with `ge_post_embedding`, deploy the posts index
+> template first. Elasticsearch would otherwise dynamically map
+> `perspective_scores` and admit any attribute name the API ever returns.
+
+**Metrics.** `perspective.rate_limit.wait_ms` rises first when the budget starts
+binding; `perspective.rate_limit.throttled.count` shows how often. A non-zero
+`perspective.rate_limit.skipped.count` means posts were indexed unscored and a
+`backfill_perspective` run is owed.
 
 ## Usage
 

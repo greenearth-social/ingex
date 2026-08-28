@@ -165,6 +165,13 @@ func clearEnvVars() {
 		"GE_INFERENCE_CHUNK_SIZE",
 		"GE_INFERENCE_MAX_CONCURRENCY",
 		"GE_INFERENCE_RETRY_MAX",
+		"GE_PERSPECTIVE_API_KEY",
+		"GE_PERSPECTIVE_HOST",
+		"GE_PERSPECTIVE_QPS",
+		"GE_PERSPECTIVE_ON_QUOTA",
+		"GE_PERSPECTIVE_TIMEOUT",
+		"GE_PERSPECTIVE_MAX_CONCURRENCY",
+		"GE_PERSPECTIVE_RETRY_MAX",
 		"PORT",
 	}
 
@@ -234,5 +241,83 @@ func TestLoadConfig_InferenceFromEnvironment(t *testing.T) {
 	}
 	if config.InferenceRetryMax != 5 {
 		t.Errorf("Expected InferenceRetryMax from env to be 5, got %d", config.InferenceRetryMax)
+	}
+}
+
+func TestLoadConfig_PerspectiveDefaults(t *testing.T) {
+	clearEnvVars()
+	defer clearEnvVars()
+
+	config := LoadConfig()
+
+	// No key, no scoring: this is the kill switch, and it must be the default
+	// so a service that has not been given a key does not start calling
+	// Google.
+	if config.PerspectiveAPIKey != "" {
+		t.Errorf("Expected empty PerspectiveAPIKey, got %s", config.PerspectiveAPIKey)
+	}
+	if config.PerspectiveEnabled() {
+		t.Error("PerspectiveEnabled() should be false without an API key")
+	}
+	// Ingest takes a slice of the 36 000 QPM (600 QPS) quota it shares with
+	// the api's serving path. The default deliberately leaves most of it for
+	// serving, which sees spikes ingest does not.
+	if config.PerspectiveQPS != 150 {
+		t.Errorf("Expected PerspectiveQPS default of 150, got %d", config.PerspectiveQPS)
+	}
+	// Throttling ingest is the safe default; skipping loses scores.
+	if config.PerspectiveOnQuota != "wait" {
+		t.Errorf("Expected PerspectiveOnQuota default of wait, got %s", config.PerspectiveOnQuota)
+	}
+	if config.PerspectiveTimeout != 2*time.Second {
+		t.Errorf("Expected PerspectiveTimeout default of 2s, got %v", config.PerspectiveTimeout)
+	}
+	if config.PerspectiveMaxConcurrency != 32 {
+		t.Errorf("Expected PerspectiveMaxConcurrency default of 32, got %d", config.PerspectiveMaxConcurrency)
+	}
+	if config.PerspectiveRetryMax != 2 {
+		t.Errorf("Expected PerspectiveRetryMax default of 2, got %d", config.PerspectiveRetryMax)
+	}
+	// Empty means "the real Google host"; the client fills it in. Defaulting
+	// it here instead would make the devenv override harder to spot.
+	if config.PerspectiveHost != "" {
+		t.Errorf("Expected empty PerspectiveHost, got %s", config.PerspectiveHost)
+	}
+}
+
+func TestLoadConfig_PerspectiveFromEnv(t *testing.T) {
+	clearEnvVars()
+	defer clearEnvVars()
+
+	setEnvForTest(t, "GE_PERSPECTIVE_API_KEY", "test-key")
+	setEnvForTest(t, "GE_PERSPECTIVE_HOST", "http://perspective-stub:8000")
+	setEnvForTest(t, "GE_PERSPECTIVE_QPS", "300")
+	setEnvForTest(t, "GE_PERSPECTIVE_ON_QUOTA", "skip")
+	setEnvForTest(t, "GE_PERSPECTIVE_TIMEOUT", "5s")
+	setEnvForTest(t, "GE_PERSPECTIVE_MAX_CONCURRENCY", "64")
+	setEnvForTest(t, "GE_PERSPECTIVE_RETRY_MAX", "4")
+
+	config := LoadConfig()
+
+	if !config.PerspectiveEnabled() {
+		t.Error("PerspectiveEnabled() should be true with an API key set")
+	}
+	if config.PerspectiveHost != "http://perspective-stub:8000" {
+		t.Errorf("Expected PerspectiveHost from env, got %s", config.PerspectiveHost)
+	}
+	if config.PerspectiveQPS != 300 {
+		t.Errorf("Expected PerspectiveQPS from env to be 300, got %d", config.PerspectiveQPS)
+	}
+	if config.PerspectiveOnQuota != "skip" {
+		t.Errorf("Expected PerspectiveOnQuota from env to be skip, got %s", config.PerspectiveOnQuota)
+	}
+	if config.PerspectiveTimeout != 5*time.Second {
+		t.Errorf("Expected PerspectiveTimeout from env to be 5s, got %v", config.PerspectiveTimeout)
+	}
+	if config.PerspectiveMaxConcurrency != 64 {
+		t.Errorf("Expected PerspectiveMaxConcurrency from env to be 64, got %d", config.PerspectiveMaxConcurrency)
+	}
+	if config.PerspectiveRetryMax != 4 {
+		t.Errorf("Expected PerspectiveRetryMax from env to be 4, got %d", config.PerspectiveRetryMax)
 	}
 }

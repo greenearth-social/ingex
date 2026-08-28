@@ -20,6 +20,7 @@ import (
 	"github.com/greenearth/ingest/internal/common"
 	"github.com/greenearth/ingest/internal/inference"
 	"github.com/greenearth/ingest/internal/megastream_ingest"
+	"github.com/greenearth/ingest/internal/perspective"
 )
 
 func main() {
@@ -32,10 +33,16 @@ func main() {
 	startupWithLastFile := flag.Bool("startup-with-last-file", false, "Process the most recent file on startup, even if before the default cursor")
 	maxRewindMinutes := flag.Int("max-rewind", 0, "Maximum number of minutes to rewind cursor on startup (0 = unlimited)")
 	debug := flag.Bool("debug", false, "Enable debug logging")
+	noPerspective := flag.Bool("no-perspective", false, "Skip Perspective API scoring of posts")
 	flag.Parse()
 
 	// Load configuration
 	config := common.LoadConfig()
+	if *noPerspective {
+		// The kill switch is an absent key, so the flag just clears it rather
+		// than threading a second disable signal through to indexDocuments.
+		config.PerspectiveAPIKey = ""
+	}
 	logger := common.NewLogger(config.LoggingEnabled)
 	logger.SetDebugEnabled(*debug)
 	otelCollector, otelErr := common.NewOTelMetricCollector("megastream-ingest", config.Environment, config.GCPProjectID, config.GCPRegion, config.MetricExportIntervalSec)
@@ -233,6 +240,30 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		logger.Info("Post-tower embeddings disabled (dry-run)")
 	}
 
+	// Perspective scoring (api#368). Unlike inference this is optional in
+	// every environment: an unset GE_PERSPECTIVE_API_KEY (or --no-perspective)
+	// leaves posts unscored and ingestion otherwise unchanged, which is the
+	// kill switch if scoring turns out to be a problem in production.
+	var scorer *perspective.BatchScorer
+	if config.PerspectiveEnabled() && !dryRun {
+		policy, err := perspective.ParseQuotaPolicy(config.PerspectiveOnQuota)
+		if err != nil {
+			return fmt.Errorf("GE_PERSPECTIVE_ON_QUOTA: %w", err)
+		}
+		perspectiveClient := perspective.NewClient(perspective.ClientConfig{
+			Host:       config.PerspectiveHost,
+			APIKey:     config.PerspectiveAPIKey,
+			Timeout:    config.PerspectiveTimeout,
+			MaxRetries: config.PerspectiveRetryMax,
+		}, logger)
+		scorer = perspective.NewBatchScorer(perspectiveClient, config.PerspectiveQPS, config.PerspectiveMaxConcurrency, policy, logger)
+		logger.Info("Perspective scoring enabled (%d qps of the shared quota, on-quota policy: %s)", config.PerspectiveQPS, policy)
+	} else if dryRun {
+		logger.Info("Perspective scoring disabled (dry-run)")
+	} else {
+		logger.Info("Perspective scoring disabled (GE_PERSPECTIVE_API_KEY is not set)")
+	}
+
 	// Ensure period-based indices exist and are the write target for posts and
 	// post_tombstones. Runs at startup and every minute so that period rollovers
 	// are detected promptly without waiting for the next batch flush.
@@ -347,7 +378,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				// Flush post creation batch
 				if len(msgs) > 0 {
 					batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
-					count := indexDocuments(batchCtx, msgs, esClient, embedder, dryRun, logger, "account deletion flush")
+					count := indexDocuments(batchCtx, msgs, esClient, embedder, scorer, dryRun, logger, "account deletion flush")
 					processedCount += count
 					// Check if a newer instance has started (every 1000 docs to avoid excessive GCS reads)
 					if processedCount%1000 == 0 {
@@ -475,7 +506,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					// fresh backing array so appends don't race with the goroutine.
 					batchMsgs := msgs
 					msgs = make([]common.MegaStreamMessage, 0, batchSize)
-					pendingFlush = dispatchIndexPosts(batchMsgs, esClient, embedder, dryRun, logger)
+					pendingFlush = dispatchIndexPosts(batchMsgs, esClient, embedder, scorer, dryRun, logger)
 
 					// Flush inferences and hashtags synchronously — they are fast
 					// (no inference service call) and should stay ordered with posts.
@@ -525,7 +556,7 @@ cleanup:
 
 	// Index remaining documents in batch
 	if len(msgs) > 0 {
-		count := indexDocuments(cleanupCtx, msgs, esClient, embedder, dryRun, logger, "cleanup")
+		count := indexDocuments(cleanupCtx, msgs, esClient, embedder, scorer, dryRun, logger, "cleanup")
 		processedCount += count
 		if dryRun {
 			logger.Debug("Dry-run: Would index final batch: %d documents", count)
@@ -593,7 +624,7 @@ func drainPendingFlush(pending *pendingPostFlush) (int, common.MegaStreamMessage
 	return r.count, r.lastMsg
 }
 
-func dispatchIndexPosts(msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, embedder *inference.BatchEmbedder, dryRun bool, logger *common.IngestLogger) *pendingPostFlush {
+func dispatchIndexPosts(msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, embedder *inference.BatchEmbedder, scorer *perspective.BatchScorer, dryRun bool, logger *common.IngestLogger) *pendingPostFlush {
 	batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
 	ch := make(chan postFlushResult, 1)
 	var lastMsg common.MegaStreamMessage
@@ -601,7 +632,7 @@ func dispatchIndexPosts(msgs []common.MegaStreamMessage, esClient *elasticsearch
 		lastMsg = msgs[len(msgs)-1]
 	}
 	go func() {
-		count := indexDocuments(batchCtx, msgs, esClient, embedder, dryRun, logger, "async batch")
+		count := indexDocuments(batchCtx, msgs, esClient, embedder, scorer, dryRun, logger, "async batch")
 		ch <- postFlushResult{count: count, lastMsg: lastMsg}
 	}()
 	return &pendingPostFlush{ch: ch, cancelCtx: cancelBatchCtx}
@@ -609,10 +640,10 @@ func dispatchIndexPosts(msgs []common.MegaStreamMessage, esClient *elasticsearch
 
 // indexDocuments creates Elasticsearch documents from messages and indexes them
 // concurrently — posts and replies are routed to their respective indices in parallel goroutines.
-// Post-tower embeddings are attached to posts before indexing.
+// Post-tower embeddings and Perspective scores are attached to posts before indexing.
 // Like counts start at 0 and are incremented by jetstream when likes arrive.
 // Returns the number of documents successfully indexed.
-func indexDocuments(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, embedder *inference.BatchEmbedder, dryRun bool, logger *common.IngestLogger, batchContext string) int {
+func indexDocuments(ctx context.Context, msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, embedder *inference.BatchEmbedder, scorer *perspective.BatchScorer, dryRun bool, logger *common.IngestLogger, batchContext string) int {
 	if len(msgs) == 0 {
 		return 0
 	}
@@ -628,7 +659,25 @@ func indexDocuments(ctx context.Context, msgs []common.MegaStreamMessage, esClie
 		}
 	}
 
-	inference.AttachPostTowerEmbeddings(ctx, embedder, postsBatch)
+	// The two enrichments hit different services and share no state, so
+	// running them concurrently costs the batch max(inference, perspective)
+	// rather than their sum. Both write disjoint fields of the same PostDoc
+	// slice, which is safe: neither resizes it or touches the other's fields.
+	var enrich sync.WaitGroup
+	enrich.Add(2)
+	go func() {
+		defer enrich.Done()
+		inference.AttachPostTowerEmbeddings(ctx, embedder, postsBatch)
+	}()
+	go func() {
+		defer enrich.Done()
+		scored, unscorable, skipped, failed := perspective.AttachPerspectiveScores(ctx, scorer, postsBatch)
+		if scorer != nil {
+			logger.Debug("[%s] Perspective: %d scored, %d unscorable, %d skipped, %d failed",
+				batchContext, scored, unscorable, skipped, failed)
+		}
+	}()
+	enrich.Wait()
 
 	var (
 		postsIndexed   int
