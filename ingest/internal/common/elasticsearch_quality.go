@@ -41,6 +41,14 @@ type QualityPostDoc struct {
 	ImageCount             int                     `json:"image_count"`
 	VideoCount             int                     `json:"video_count"`
 	ExternalEmbed          *ExternalEmbed          `json:"external_embed"`
+
+	// Perspective fields, carried because the api's perspective ranker reads
+	// them off a kNN hit like any other candidate field (api#368). The raw
+	// per-attribute perspective_scores map is deliberately *not* copied: the
+	// api only ever reads the combined score, and the raw attributes exist for
+	// training, which reads posts, not this corpus.
+	CombinedPerspectiveScore *float64 `json:"combined_perspective_score,omitempty"`
+	PerspectiveScoredAt      string   `json:"perspective_scored_at,omitempty"`
 }
 
 func (d QualityPostDoc) esAtURI() string     { return d.AtURI }
@@ -129,6 +137,9 @@ func qualityDocFromHit(hit Hit) (QualityPostDoc, bool) {
 		ImageCount:             src.ImageCount,
 		VideoCount:             src.VideoCount,
 		ExternalEmbed:          src.ExternalEmbed,
+
+		CombinedPerspectiveScore: src.CombinedPerspectiveScore,
+		PerspectiveScoredAt:      src.PerspectiveScoredAt,
 	}, true
 }
 

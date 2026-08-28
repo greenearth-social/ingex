@@ -261,6 +261,22 @@ create_secrets() {
         log_warn "Set this if you need megastream-ingest to access S3 data."
     fi
 
+    # Perspective API key (api#368). Unlike the secrets above, this one is
+    # created and populated by the api repo's gcp_setup.sh — ingest and serving
+    # share a single key because they share a single quota. All that is needed
+    # here is read access for the ingest runner.
+    PERSPECTIVE_SECRET_NAME="perspective-api-key${SECRET_SUFFIX}"
+    if gcloud secrets describe "$PERSPECTIVE_SECRET_NAME" > /dev/null 2>&1; then
+        gcloud secrets add-iam-policy-binding "$PERSPECTIVE_SECRET_NAME" \
+            --member="serviceAccount:$SA_EMAIL" \
+            --role="roles/secretmanager.secretAccessor" \
+            --condition=None
+        log_info "Granted ingest access to $PERSPECTIVE_SECRET_NAME"
+    else
+        log_warn "$PERSPECTIVE_SECRET_NAME does not exist. Skipping Perspective access grant."
+        log_warn "Create it from the api repo first, or megastream-ingest will start with scoring disabled."
+    fi
+
     log_info "Note: Non-secret configuration (Elasticsearch URL, S3 bucket, S3 prefix) is now stored in the deployment scripts."
 }
 
