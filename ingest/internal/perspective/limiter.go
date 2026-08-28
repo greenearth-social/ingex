@@ -46,7 +46,9 @@ var ErrQuotaExhausted = errors.New("perspective quota exhausted")
 // limiter caps requests to our share of the Perspective quota.
 //
 // The quota is 36 000 requests per minute, shared between this service and the
-// api's serving path, so ingest takes a configured slice of it. The limiter is
+// api's serving path, so ingest takes a configured slice of it — 9 000 RPM by
+// default, against serving's 26 700, which leaves a 300 RPM buffer for the
+// inexactness of two independent limiters. The limiter is
 // deliberately a smooth token bucket rather than the calendar-minute counter
 // the api uses: a minute bucket permits spending the entire allowance in the
 // first second of each minute, which is exactly the burst shape that would

@@ -120,8 +120,11 @@ Disabled in `--dry-run` mode and by `--no-perspective`.
 
 > **Quota is shared.** The Perspective quota is 36 000 requests/minute (600 QPS)
 > across *both* this service and the api's serving path. `GE_PERSPECTIVE_QPS` is
-> ingest's slice of it, so raising it takes budget away from serving — which
-> sees spikes ingest does not. `wait` keeps ingest inside its slice by slowing
+> ingest's slice of it — 9 000 RPM at the default, against serving's 26 700
+> (`GE_PERSPECTIVE_QPM` in the api), summing to 35 700 so that 300 RPM stays
+> unclaimed. That buffer covers the inexactness of two independent limiters in
+> separate processes; raising either slice without lowering the other spends it.
+> Serving also sees spikes ingest does not. `wait` keeps ingest inside its slice by slowing
 > it down; switch to `skip` when serving needs the budget more than the corpus
 > does, then recover the gap with `backfill_perspective`.
 

@@ -88,7 +88,14 @@ type Config struct {
 	//
 	// The 36 000 requests/minute quota is shared with the api's serving path,
 	// so PerspectiveQPS is ingest's *slice* of it, not the whole thing. The
-	// default leaves most of the budget for serving.
+	// default of 150 QPS is 9 000 RPM, against the api's 26 700
+	// (GE_PERSPECTIVE_QPM there): 35 700 together, leaving a 300 RPM buffer.
+	//
+	// The buffer is deliberate. Neither limiter is exact — this one is a token
+	// bucket in this process, the api's is a calendar-minute bucket in each of
+	// several processes — so the true combined ceiling sits above the sum of
+	// the two numbers. Raising either without lowering the other spends the
+	// buffer.
 	PerspectiveAPIKey         string        // GE_PERSPECTIVE_API_KEY; empty disables scoring entirely
 	PerspectiveHost           string        // GE_PERSPECTIVE_HOST, overridable for the devenv stub
 	PerspectiveQPS            int           // GE_PERSPECTIVE_QPS, this service's share of the shared quota
