@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.32
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.1
 	github.com/elastic/elastic-transport-go/v8 v8.9.0
-	github.com/elastic/go-elasticsearch/v9 v9.4.1
+	github.com/elastic/go-elasticsearch/v9 v9.4.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/parquet-go/parquet-go v0.29.0
 	go.opentelemetry.io/otel v1.44.0
