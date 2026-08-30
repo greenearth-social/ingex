@@ -113,6 +113,109 @@ func TestEmulator_InvalidateStampsWithoutTouchingFollows(t *testing.T) {
 	}
 }
 
+func TestEmulator_WriteFollowsThenReadEntry(t *testing.T) {
+	store, client := emulatorStore(t)
+	ctx := context.Background()
+	docID := fmt.Sprintf("test-write-%d", time.Now().UnixNano())
+	ref := client.Collection(followedUsersCacheCollection).Doc(docID)
+	t.Cleanup(func() { _, _ = ref.Delete(ctx) })
+
+	if err := store.WriteFollows(ctx, docID, []string{"did:plc:a", "did:plc:b"}, true, 30); err != nil {
+		t.Fatalf("WriteFollows: %v", err)
+	}
+
+	entry, err := store.ReadEntry(ctx, docID)
+	if err != nil {
+		t.Fatalf("ReadEntry: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected entry, got nil")
+	}
+	if len(entry.Follows) != 2 || !entry.Complete {
+		t.Errorf("unexpected entry: %+v", entry)
+	}
+	if entry.GeneratedAt == nil {
+		t.Error("expected GeneratedAt to be set")
+	}
+	if len(entry.PendingAdds) != 0 {
+		t.Errorf("expected pending_adds reset to empty, got %v", entry.PendingAdds)
+	}
+}
+
+func TestEmulator_ReadEntryMissingDocReturnsNil(t *testing.T) {
+	store, _ := emulatorStore(t)
+	entry, err := store.ReadEntry(context.Background(), "does-not-exist")
+	if err != nil {
+		t.Fatalf("ReadEntry: %v", err)
+	}
+	if entry != nil {
+		t.Errorf("expected nil entry, got %+v", entry)
+	}
+}
+
+func TestEmulator_WriteFollowsResetsPendingAddsAndInvalidatedAt(t *testing.T) {
+	store, client := emulatorStore(t)
+	ctx := context.Background()
+	docID := fmt.Sprintf("test-reset-%d", time.Now().UnixNano())
+	ref := client.Collection(followedUsersCacheCollection).Doc(docID)
+	t.Cleanup(func() { _, _ = ref.Delete(ctx) })
+
+	if _, err := ref.Set(ctx, map[string]interface{}{
+		"follows": []string{"did:plc:old"}, "complete": true,
+		"generated_at": time.Now().UTC(), "pending_adds": []string{"did:plc:new"},
+		"invalidated_at": time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := store.WriteFollows(ctx, docID, []string{"did:plc:old", "did:plc:new"}, true, 30); err != nil {
+		t.Fatalf("WriteFollows: %v", err)
+	}
+
+	entry, err := store.ReadEntry(ctx, docID)
+	if err != nil {
+		t.Fatalf("ReadEntry: %v", err)
+	}
+	if entry.InvalidatedAt != nil {
+		t.Error("expected invalidated_at cleared after a fresh walk")
+	}
+	if len(entry.PendingAdds) != 0 {
+		t.Errorf("expected pending_adds cleared, got %v", entry.PendingAdds)
+	}
+}
+
+// TestEmulator_ReadEntryWithMalformedFollowsReturnsNil covers the correction
+// applied to the brief: an unreadable document (wrong-typed field) is a miss,
+// not an error, mirroring api's FollowedUsersCache._read comment — "An
+// unreadable document is a miss, not an error: it will be overwritten by the
+// next refresh." Without this, a malformed document would get permanently
+// stuck in the batch job's read_error/failed outcome instead of being
+// refreshed.
+func TestEmulator_ReadEntryWithMalformedFollowsReturnsNil(t *testing.T) {
+	store, client := emulatorStore(t)
+	ctx := context.Background()
+	docID := fmt.Sprintf("test-malformed-%d", time.Now().UnixNano())
+	ref := client.Collection(followedUsersCacheCollection).Doc(docID)
+	t.Cleanup(func() { _, _ = ref.Delete(ctx) })
+
+	// `follows` should be an array; write it as a string to force a decode error.
+	if _, err := ref.Set(ctx, map[string]interface{}{
+		"follows":      "not-an-array",
+		"complete":     true,
+		"generated_at": time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	entry, err := store.ReadEntry(ctx, docID)
+	if err != nil {
+		t.Fatalf("ReadEntry: expected nil error for malformed document, got %v", err)
+	}
+	if entry != nil {
+		t.Errorf("expected nil entry for malformed document, got %+v", entry)
+	}
+}
+
 func TestEmulator_MissingDocumentIsTolerated(t *testing.T) {
 	store, _ := emulatorStore(t)
 	ctx := context.Background()
