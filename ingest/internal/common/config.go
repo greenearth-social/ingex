@@ -74,6 +74,9 @@ type Config struct {
 	QualityLikeThreshold int           // GE_QUALITY_LIKE_THRESHOLD, default 10
 	QualityRetentionAge  time.Duration // GE_QUALITY_RETENTION_AGE, default 336h (14d)
 
+	// Follows cache configuration
+	FollowsCacheTTLSec int // GE_FOLLOWS_CACHE_TTL_SEC — shared with api's ttl_seconds(); do not diverge
+
 	// Inference service configuration
 	InferenceBaseURL        string        // GE_INFERENCE_BASE_URL; empty disables post-tower embeddings
 	InferenceAPIKey         string        // GE_INFERENCE_API_KEY
@@ -139,6 +142,7 @@ func LoadConfig() *Config {
 		QualityIndexEnabled:        getEnvBool("GE_QUALITY_INDEX_ENABLED", true),
 		QualityLikeThreshold:       getEnvInt("GE_QUALITY_LIKE_THRESHOLD", 10),
 		QualityRetentionAge:        getEnvDuration("GE_QUALITY_RETENTION_AGE", 14*24*time.Hour),
+		FollowsCacheTTLSec:         getEnvInt("GE_FOLLOWS_CACHE_TTL_SEC", 21_600),
 		InferenceBaseURL:           getEnv("GE_INFERENCE_BASE_URL", ""),
 		InferenceAPIKey:            getEnv("GE_INFERENCE_API_KEY", ""),
 		InferenceTimeout:           getEnvDuration("GE_INFERENCE_TIMEOUT", 10*time.Second),
