@@ -74,8 +74,6 @@ type Config struct {
 	QualityLikeThreshold int           // GE_QUALITY_LIKE_THRESHOLD, default 10
 	QualityRetentionAge  time.Duration // GE_QUALITY_RETENTION_AGE, default 336h (14d)
 
-	// Follows cache configuration
-	FollowsCacheTTLSec int // GE_FOLLOWS_CACHE_TTL_SEC — shared with api's ttl_seconds(); do not diverge
 
 	// Inference service configuration
 	InferenceBaseURL        string        // GE_INFERENCE_BASE_URL; empty disables post-tower embeddings
@@ -94,6 +92,7 @@ type Config struct {
 	FirestoreEmulatorHost    string // GE_FIRESTORE_EMULATOR_HOST, for devenv
 	FollowsTrackedRefreshSec int    // GE_FOLLOWS_TRACKED_REFRESH_SEC, default 300
 	FollowsWriteBuffer       int    // GE_FOLLOWS_WRITE_BUFFER, default 1024
+	FollowsCacheTTLSec       int    // GE_FOLLOWS_CACHE_TTL_SEC — shared with api's ttl_seconds(); do not diverge
 }
 
 // FollowCacheEnabled reports whether follow deltas should be written.
@@ -142,7 +141,6 @@ func LoadConfig() *Config {
 		QualityIndexEnabled:        getEnvBool("GE_QUALITY_INDEX_ENABLED", true),
 		QualityLikeThreshold:       getEnvInt("GE_QUALITY_LIKE_THRESHOLD", 10),
 		QualityRetentionAge:        getEnvDuration("GE_QUALITY_RETENTION_AGE", 14*24*time.Hour),
-		FollowsCacheTTLSec:         getEnvInt("GE_FOLLOWS_CACHE_TTL_SEC", 21_600),
 		InferenceBaseURL:           getEnv("GE_INFERENCE_BASE_URL", ""),
 		InferenceAPIKey:            getEnv("GE_INFERENCE_API_KEY", ""),
 		InferenceTimeout:           getEnvDuration("GE_INFERENCE_TIMEOUT", 10*time.Second),
@@ -154,6 +152,7 @@ func LoadConfig() *Config {
 		FirestoreEmulatorHost:      getEnv("GE_FIRESTORE_EMULATOR_HOST", ""),
 		FollowsTrackedRefreshSec:   getEnvInt("GE_FOLLOWS_TRACKED_REFRESH_SEC", 300),
 		FollowsWriteBuffer:         getEnvInt("GE_FOLLOWS_WRITE_BUFFER", 1024),
+		FollowsCacheTTLSec:         getEnvInt("GE_FOLLOWS_CACHE_TTL_SEC", 21_600),
 	}
 }
 
