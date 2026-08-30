@@ -9,7 +9,9 @@ package followed_users_backfill
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -98,7 +100,18 @@ func (c *BskyClient) getPage(ctx context.Context, actorDID string, pageLimit int
 }
 
 func isRetryableTransportErr(ctx context.Context, err error) bool {
-	return ctx.Err() == nil // context cancellation/deadline is handled by the caller, not retried here
+	if ctx.Err() != nil {
+		return false // outer walk context already cancelled/expired — don't retry, let the caller handle it
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	// Check if the error wraps context.DeadlineExceeded (per-request context timeout)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return false
 }
 
 // FetchFollows walks actorDID's follows up to limit DIDs. Returns an error

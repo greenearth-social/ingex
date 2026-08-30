@@ -3,6 +3,7 @@ package followed_users_backfill
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -140,5 +141,45 @@ func TestFetchFollows_TimeoutReturnsPartial(t *testing.T) {
 	}
 	if result.Complete || len(result.DIDs) != 1 {
 		t.Errorf("expected partial result with 1 did, got %+v", result)
+	}
+}
+
+func TestFetchFollows_NoRetryOnConnectionError(t *testing.T) {
+	// Create a listener that immediately closes all connections (simulating connection refused)
+	ctx := context.Background()
+	lc := net.ListenConfig{}
+	listener, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+
+	connCount := 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connCount++
+			_ = conn.Close() // Close without sending HTTP response; ignore error in cleanup
+		}
+	}()
+
+	client := NewBskyClient(&http.Client{})
+	client.baseURL = "http://" + listener.Addr().String()
+	client.maxRetries = 1 // Set to 1 to verify it doesn't retry on connection error
+
+	_, err = client.FetchFollows(context.Background(), "did:plc:user", 1000)
+	if err == nil {
+		t.Error("expected error for connection failure")
+	}
+
+	_ = listener.Close() // Stop accepting connections; ignore error in cleanup
+	<-done               // Wait for goroutine to exit
+
+	if connCount != 1 {
+		t.Errorf("expected exactly 1 connection attempt (no retry on connection error), got %d", connCount)
 	}
 }
