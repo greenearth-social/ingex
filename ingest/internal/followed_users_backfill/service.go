@@ -2,6 +2,7 @@ package followed_users_backfill
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -84,16 +85,26 @@ type processOutcome struct{ refreshed, skipped, failed bool }
 // walk+write at a time (a user's DID never appears twice in one run, so no
 // synchronization is needed beyond the counters below).
 func (s *Service) Run(ctx context.Context) (processed, refreshed, skipped, failed int, err error) {
+	if s.cfg.MaxFollowedUsers <= 0 {
+		return 0, 0, 0, 0, fmt.Errorf("MaxFollowedUsers must be positive, got %d", s.cfg.MaxFollowedUsers)
+	}
+
+	concurrency := s.cfg.Concurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+
 	dids, err := s.lister.ListUserDIDs(ctx)
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
+	s.logger.Metric("followed_users_backfill.total_users", float64(len(dids)))
 
 	work := make(chan string)
 	results := make(chan processOutcome)
 
 	var wg sync.WaitGroup
-	for i := 0; i < s.cfg.Concurrency; i++ {
+	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -127,6 +138,9 @@ func (s *Service) Run(ctx context.Context) (processed, refreshed, skipped, faile
 		default:
 			skipped++
 		}
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return processed, refreshed, skipped, failed, fmt.Errorf("run cancelled after processing %d/%d users: %w", processed, len(dids), ctxErr)
 	}
 	return processed, refreshed, skipped, failed, nil
 }
