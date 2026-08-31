@@ -594,7 +594,7 @@ func drainPendingFlush(pending *pendingPostFlush) (int, common.MegaStreamMessage
 }
 
 func dispatchIndexPosts(msgs []common.MegaStreamMessage, esClient *elasticsearch.Client, embedder *inference.BatchEmbedder, dryRun bool, logger *common.IngestLogger) *pendingPostFlush {
-	batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second)
+	batchCtx, cancelBatchCtx := context.WithTimeout(context.Background(), 30*time.Second) //nolint:gosec // G118: cancelBatchCtx is stored in pendingPostFlush.cancelCtx and called by drainPendingFlush
 	ch := make(chan postFlushResult, 1)
 	var lastMsg common.MegaStreamMessage
 	if len(msgs) > 0 {
