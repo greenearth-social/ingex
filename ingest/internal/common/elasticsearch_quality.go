@@ -19,8 +19,7 @@ const GEPostEmbeddingField = "ge_post_embedding"
 // QualityPostDoc is the lean document written to the quality corpus. It carries
 // the fields two-tower kNN filters on (created_at, ge_post_embedding_model_uuid,
 // contains_video, like_count) plus the fields the api reads back off a kNN hit
-// (CANDIDATE_SOURCE_FIELDS in api's lib/candidates/utils.py) and the optional
-// topic ranking signals — and nothing else.
+// (CANDIDATE_SOURCE_FIELDS in api's lib/candidates/utils.py) — and nothing else.
 //
 // like_count is a point-in-time snapshot taken when the post crossed the
 // threshold, and is deliberately not maintained afterwards. It is never a
@@ -35,7 +34,6 @@ type QualityPostDoc struct {
 	CreatedAt              string                  `json:"created_at"`
 	Embeddings             map[string]Float32Array `json:"embeddings,omitempty"`
 	PostEmbeddingModelUUID string                  `json:"ge_post_embedding_model_uuid"`
-	TopicScores            map[string]float32      `json:"topic_scores,omitempty"`
 	IndexedAt              string                  `json:"indexed_at"`
 	LikeCount              int                     `json:"like_count"`
 	ContainsImages         bool                    `json:"contains_images"`
@@ -124,7 +122,6 @@ func qualityDocFromHit(hit Hit) (QualityPostDoc, bool) {
 		CreatedAt:              src.CreatedAt,
 		Embeddings:             map[string]Float32Array{GEPostEmbeddingField: Float32Array(vec)},
 		PostEmbeddingModelUUID: src.PostEmbeddingModelUUID,
-		TopicScores:            src.TopicScores,
 		IndexedAt:              src.IndexedAt,
 		LikeCount:              src.LikeCount,
 		ContainsImages:         src.ContainsImages,

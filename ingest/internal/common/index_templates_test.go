@@ -139,40 +139,53 @@ func TestIndexTemplatesDoNotExcludeEmbeddingsFromSource(t *testing.T) {
 	}
 }
 
-func TestPostIndexTemplatesStoreTopicScoresWithoutMappingLabels(t *testing.T) {
+func TestPostIndexTemplateStoresTopicScoresWithoutMappingLabels(t *testing.T) {
 	dir := templatesDir(t)
-	for _, name := range []string{
-		"posts-ilm-index-template.yaml",
-		"posts-quality-ilm-index-template.yaml",
-	} {
-		t.Run(name, func(t *testing.T) {
-			doc := loadTemplateJSON(t, filepath.Join(dir, name))
-			tmpl, ok := doc["template"].(map[string]any)
-			if !ok {
-				t.Fatal("template object is missing")
-			}
-			mappings, ok := tmpl["mappings"].(map[string]any)
-			if !ok {
-				t.Fatal("template.mappings object is missing")
-			}
-			properties, ok := mappings["properties"].(map[string]any)
-			if !ok {
-				t.Fatal("template.mappings.properties object is missing")
-			}
-			field, ok := properties["topic_scores"].(map[string]any)
-			if !ok {
-				t.Fatal("topic_scores mapping is missing")
-			}
+	doc := loadTemplateJSON(t, filepath.Join(dir, "posts-ilm-index-template.yaml"))
+	tmpl, ok := doc["template"].(map[string]any)
+	if !ok {
+		t.Fatal("template object is missing")
+	}
+	mappings, ok := tmpl["mappings"].(map[string]any)
+	if !ok {
+		t.Fatal("template.mappings object is missing")
+	}
+	properties, ok := mappings["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("template.mappings.properties object is missing")
+	}
+	field, ok := properties["topic_scores"].(map[string]any)
+	if !ok {
+		t.Fatal("topic_scores mapping is missing")
+	}
 
-			if got := field["type"]; got != "object" {
-				t.Errorf("type = %v, want object", got)
-			}
-			if got := field["enabled"]; got != false {
-				t.Errorf("enabled = %v, want false", got)
-			}
-			if _, ok := field["properties"]; ok {
-				t.Error("topic labels must not be mapped as properties")
-			}
-		})
+	if got := field["type"]; got != "object" {
+		t.Errorf("type = %v, want object", got)
+	}
+	if got := field["enabled"]; got != false {
+		t.Errorf("enabled = %v, want false", got)
+	}
+	if _, ok := field["properties"]; ok {
+		t.Error("topic labels must not be mapped as properties")
+	}
+}
+
+func TestQualityPostIndexTemplateDoesNotStoreTopicScores(t *testing.T) {
+	dir := templatesDir(t)
+	doc := loadTemplateJSON(t, filepath.Join(dir, "posts-quality-ilm-index-template.yaml"))
+	tmpl, ok := doc["template"].(map[string]any)
+	if !ok {
+		t.Fatal("template object is missing")
+	}
+	mappings, ok := tmpl["mappings"].(map[string]any)
+	if !ok {
+		t.Fatal("template.mappings object is missing")
+	}
+	properties, ok := mappings["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("template.mappings.properties object is missing")
+	}
+	if _, ok := properties["topic_scores"]; ok {
+		t.Error("topic_scores belongs only in the canonical posts index")
 	}
 }
