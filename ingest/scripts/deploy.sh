@@ -533,7 +533,7 @@ deploy_followed_users_backfill_job() {
         --labels="git-sha=$GIT_SHA" \
         --cpu=1 \
         --memory=512Mi \
-        --task-timeout=1800 \
+        --task-timeout=900 \
         --args="--concurrency,10"
 
 }

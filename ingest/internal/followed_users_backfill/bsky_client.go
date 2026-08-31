@@ -14,10 +14,20 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
 const followsPageLimit = 100
+
+// userAgent identifies this job to Bluesky's public API. No existing
+// User-Agent convention was found elsewhere in ingex, so this follows the
+// module's own path (github.com/greenearth/ingest) plus the binary name.
+const userAgent = "greenearth-ingex/followed-users-backfill"
+
+// defaultRateLimitBackoff is used on a 429 response with a missing or
+// unparseable Retry-After header.
+const defaultRateLimitBackoff = 2 * time.Second
 
 // FollowsResult is the outcome of one walk. Complete is true only when the
 // walk ended on its own terms (cursor exhausted or limit reached); false
@@ -30,10 +40,11 @@ type FollowsResult struct {
 
 // BskyClient walks the public Bluesky API for one actor's follows.
 type BskyClient struct {
-	httpClient *http.Client
-	baseURL    string // overridden in tests; production default set in NewBskyClient
-	maxRetries int
-	retryDelay time.Duration
+	httpClient       *http.Client
+	baseURL          string // overridden in tests; production default set in NewBskyClient
+	maxRetries       int
+	retryDelay       time.Duration
+	rateLimitBackoff time.Duration // fallback backoff when a 429 has no usable Retry-After; overridden in tests
 }
 
 // NewBskyClient returns a client using httpClient for transport (share one
@@ -41,10 +52,11 @@ type BskyClient struct {
 // internal/inference/client.go).
 func NewBskyClient(httpClient *http.Client) *BskyClient {
 	return &BskyClient{
-		httpClient: httpClient,
-		baseURL:    "https://public.api.bsky.app/xrpc/app.bsky.graph.getFollows",
-		maxRetries: 1,
-		retryDelay: 100 * time.Millisecond,
+		httpClient:       httpClient,
+		baseURL:          "https://public.api.bsky.app/xrpc/app.bsky.graph.getFollows",
+		maxRetries:       1,
+		retryDelay:       100 * time.Millisecond,
+		rateLimitBackoff: defaultRateLimitBackoff,
 	}
 }
 
@@ -69,6 +81,7 @@ func (c *BskyClient) getPage(ctx context.Context, actorDID string, pageLimit int
 		if err != nil {
 			return followsPageResponse{}, err
 		}
+		req.Header.Set("User-Agent", userAgent)
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = err
@@ -84,7 +97,11 @@ func (c *BskyClient) getPage(ctx context.Context, actorDID string, pageLimit int
 			if attempt >= c.maxRetries {
 				return followsPageResponse{}, lastErr
 			}
-			time.Sleep(c.retryDelay)
+			if resp.StatusCode == http.StatusTooManyRequests {
+				time.Sleep(c.retryAfterDelay(resp))
+			} else {
+				time.Sleep(c.retryDelay)
+			}
 			continue
 		}
 		if resp.StatusCode >= 400 {
@@ -97,6 +114,21 @@ func (c *BskyClient) getPage(ctx context.Context, actorDID string, pageLimit int
 		return page, nil
 	}
 	return followsPageResponse{}, lastErr
+}
+
+// retryAfterDelay returns how long to wait before retrying a 429 response.
+// Honors the Retry-After header in its seconds form (e.g. "2"); falls back
+// to c.rateLimitBackoff if the header is absent or in a form we don't parse
+// (e.g. an HTTP-date).
+func (c *BskyClient) retryAfterDelay(resp *http.Response) time.Duration {
+	raw := resp.Header.Get("Retry-After")
+	if raw == "" {
+		return c.rateLimitBackoff
+	}
+	if secs, err := strconv.Atoi(raw); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return c.rateLimitBackoff
 }
 
 func isRetryableTransportErr(ctx context.Context, err error) bool {

@@ -144,6 +144,80 @@ func TestFetchFollows_TimeoutReturnsPartial(t *testing.T) {
 	}
 }
 
+func TestGetPage_SetsUserAgentHeader(t *testing.T) {
+	var gotUserAgent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUserAgent = r.Header.Get("User-Agent")
+		_ = json.NewEncoder(w).Encode(followsPage(nil, ""))
+	}))
+	defer srv.Close()
+
+	client := NewBskyClient(srv.Client())
+	client.baseURL = srv.URL
+	if _, err := client.FetchFollows(context.Background(), "did:plc:user", 10); err != nil {
+		t.Fatalf("FetchFollows: %v", err)
+	}
+	if gotUserAgent == "" {
+		t.Error("expected a User-Agent header to be set, got empty string")
+	}
+}
+
+func TestFetchFollows_Honors429RetryAfterHeader(t *testing.T) {
+	calls := 0
+	var callTimes []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callTimes = append(callTimes, time.Now())
+		calls++
+		if calls == 1 {
+			w.Header().Set("Retry-After", "0") // 0s so the test stays fast but still exercises the header parse path
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(followsPage([]string{"did:plc:a"}, ""))
+	}))
+	defer srv.Close()
+
+	client := NewBskyClient(srv.Client())
+	client.baseURL = srv.URL
+	client.retryDelay = time.Hour // if the 429 falls back to the generic retryDelay instead of Retry-After, this test times out
+	result, err := client.FetchFollows(context.Background(), "did:plc:user", 1000)
+	if err != nil {
+		t.Fatalf("FetchFollows: %v", err)
+	}
+	if calls != 2 || !result.Complete || len(result.DIDs) != 1 {
+		t.Errorf("unexpected result after %d calls: %+v", calls, result)
+	}
+}
+
+func TestFetchFollows_429FallsBackToConfiguredBackoffWithoutRetryAfter(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusTooManyRequests) // no Retry-After header
+			return
+		}
+		_ = json.NewEncoder(w).Encode(followsPage([]string{"did:plc:a"}, ""))
+	}))
+	defer srv.Close()
+
+	client := NewBskyClient(srv.Client())
+	client.baseURL = srv.URL
+	client.rateLimitBackoff = time.Millisecond // keep the fallback backoff fast for the test
+	start := time.Now()
+	result, err := client.FetchFollows(context.Background(), "did:plc:user", 1000)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("FetchFollows: %v", err)
+	}
+	if calls != 2 || !result.Complete || len(result.DIDs) != 1 {
+		t.Errorf("unexpected result after %d calls: %+v", calls, result)
+	}
+	if elapsed >= time.Second {
+		t.Errorf("expected the configurable rateLimitBackoff to be used (fast), took %v", elapsed)
+	}
+}
+
 func TestFetchFollows_NoRetryOnConnectionError(t *testing.T) {
 	// Create a listener that immediately closes all connections (simulating connection refused)
 	ctx := context.Background()
