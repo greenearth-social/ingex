@@ -88,7 +88,7 @@ func (c *BskyClient) getPage(ctx context.Context, actorDID string, pageLimit int
 			return followsPageResponse{}, err
 		}
 		req.Header.Set("User-Agent", userAgent)
-		resp, err := c.httpClient.Do(req)
+		resp, err := c.httpClient.Do(req) //nolint:gosec // G704: baseURL is a fixed constant, not user input; only query params vary
 		if err != nil {
 			lastErr = err
 			if !isRetryableTransportErr(ctx, err) {
