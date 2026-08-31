@@ -60,11 +60,15 @@ func NewFirestoreFollowStore(client *firestore.Client, logger *IngestLogger) *Fi
 
 // ListUserDIDs returns the DIDs of every user the API serves.
 //
-// Projected to document IDs only — the documents themselves are large and
-// none of their fields matter here.
+// Projected to the user_did field only — the documents themselves are large
+// and no other field matters here. user_did is the real Bluesky DID (with
+// its did:plc: prefix intact); the Firestore document ID (doc.Ref.ID) is
+// that DID with the prefix stripped (see UserDocID) and is NOT usable as an
+// actor identifier against Bluesky's API, which rejects it with a 400. Falls
+// back to doc.Ref.ID only for a legacy/malformed document missing user_did.
 func (s *FirestoreFollowStore) ListUserDIDs(ctx context.Context) ([]string, error) {
 	var dids []string
-	iter := s.client.Collection(usersCollection).Select().Documents(ctx)
+	iter := s.client.Collection(usersCollection).Select("user_did").Documents(ctx)
 	defer iter.Stop()
 	for {
 		doc, err := iter.Next()
@@ -74,7 +78,11 @@ func (s *FirestoreFollowStore) ListUserDIDs(ctx context.Context) ([]string, erro
 		if err != nil {
 			return nil, fmt.Errorf("listing users: %w", err)
 		}
-		dids = append(dids, doc.Ref.ID)
+		did, _ := doc.Data()["user_did"].(string)
+		if did == "" {
+			did = doc.Ref.ID // legacy document missing user_did; best effort
+		}
+		dids = append(dids, did)
 	}
 	return dids, nil
 }

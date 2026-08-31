@@ -216,6 +216,65 @@ func TestEmulator_ReadEntryWithMalformedFollowsReturnsNil(t *testing.T) {
 	}
 }
 
+// TestEmulator_ListUserDIDsProjectsUserDIDField guards against the specific
+// bug found in the final whole-branch review: ListUserDIDs must return the
+// user_did field (a real Bluesky DID usable against Bluesky's public API),
+// not the Firestore document ID (which is that DID with its did:plc: prefix
+// already stripped, and gets rejected by Bluesky with a 400 if passed as an
+// actor identifier). It also verifies the fallback for a legacy document
+// that lacks user_did.
+func TestEmulator_ListUserDIDsProjectsUserDIDField(t *testing.T) {
+	store, client := emulatorStore(t)
+	ctx := context.Background()
+	suffix := time.Now().UnixNano()
+	withField := fmt.Sprintf("userwithfield%d", suffix)
+	legacyID := fmt.Sprintf("userlegacy%d", suffix)
+
+	refWithField := client.Collection(usersCollection).Doc(withField)
+	if _, err := refWithField.Set(ctx, map[string]interface{}{
+		"user_did": fmt.Sprintf("did:plc:%s", withField),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Cleanup(func() { _, _ = refWithField.Delete(ctx) })
+
+	// Legacy document missing user_did: ListUserDIDs must fall back to the
+	// document ID rather than dropping the user entirely.
+	refLegacy := client.Collection(usersCollection).Doc(legacyID)
+	if _, err := refLegacy.Set(ctx, map[string]interface{}{
+		"some_other_field": "irrelevant",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Cleanup(func() { _, _ = refLegacy.Delete(ctx) })
+
+	dids, err := store.ListUserDIDs(ctx)
+	if err != nil {
+		t.Fatalf("ListUserDIDs: %v", err)
+	}
+
+	wantWithField := fmt.Sprintf("did:plc:%s", withField)
+	foundWithField := false
+	foundLegacy := false
+	for _, did := range dids {
+		if did == wantWithField {
+			foundWithField = true
+		}
+		if did == legacyID {
+			foundLegacy = true
+		}
+		if did == withField {
+			t.Errorf("ListUserDIDs returned the bare Firestore document ID %q instead of the user_did field %q", withField, wantWithField)
+		}
+	}
+	if !foundWithField {
+		t.Errorf("expected ListUserDIDs to include %q, got %v", wantWithField, dids)
+	}
+	if !foundLegacy {
+		t.Errorf("expected ListUserDIDs to fall back to the document ID %q for a legacy document, got %v", legacyID, dids)
+	}
+}
+
 func TestEmulator_MissingDocumentIsTolerated(t *testing.T) {
 	store, _ := emulatorStore(t)
 	ctx := context.Background()
