@@ -17,7 +17,7 @@ func main() {
 	concurrency := flag.Int("concurrency", 10, "Concurrent Bluesky walks in flight")
 	maxFollowedUsers := flag.Int("max-followed-users", 1_000, "Cap on follows fetched and stored per user")
 	retentionDays := flag.Int("retention-days", 30, "Firestore native-TTL retention for cache entries")
-	perUserTimeoutSec := flag.Int("per-user-timeout-sec", 15, "Budget for one user's Bluesky walk")
+	perUserTimeoutSec := flag.Int("per-user-timeout-sec", 60, "Budget for one user's Bluesky walk (up to 10 sequential pages for a user near the 1000-follow cap; the per-page HTTP client timeout is 10s, so this must comfortably exceed that times the page count plus retries)")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
