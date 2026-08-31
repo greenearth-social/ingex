@@ -29,6 +29,12 @@ const userAgent = "greenearth-ingex/followed-users-backfill"
 // unparseable Retry-After header.
 const defaultRateLimitBackoff = 2 * time.Second
 
+// maxRetryAfterDelay caps how long we'll honor a server-provided Retry-After
+// value for. Bounds a single worker's wait regardless of what Bluesky sends,
+// so a pathological header value can't park a worker indefinitely and so the
+// wait stays short enough to be interrupted promptly by ctx cancellation.
+const maxRetryAfterDelay = 30 * time.Second
+
 // FollowsResult is the outcome of one walk. Complete is true only when the
 // walk ended on its own terms (cursor exhausted or limit reached); false
 // means a page error or a context deadline cut it short, and the caller must
@@ -97,10 +103,16 @@ func (c *BskyClient) getPage(ctx context.Context, actorDID string, pageLimit int
 			if attempt >= c.maxRetries {
 				return followsPageResponse{}, lastErr
 			}
+			var delay time.Duration
 			if resp.StatusCode == http.StatusTooManyRequests {
-				time.Sleep(c.retryAfterDelay(resp))
+				delay = c.retryAfterDelay(resp)
 			} else {
-				time.Sleep(c.retryDelay)
+				delay = c.retryDelay
+			}
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return followsPageResponse{}, ctx.Err()
 			}
 			continue
 		}
@@ -119,16 +131,25 @@ func (c *BskyClient) getPage(ctx context.Context, actorDID string, pageLimit int
 // retryAfterDelay returns how long to wait before retrying a 429 response.
 // Honors the Retry-After header in its seconds form (e.g. "2"); falls back
 // to c.rateLimitBackoff if the header is absent or in a form we don't parse
-// (e.g. an HTTP-date).
+// (e.g. an HTTP-date). Clamped to maxRetryAfterDelay so a large or hostile
+// header value can't park a worker for an arbitrarily long time.
 func (c *BskyClient) retryAfterDelay(resp *http.Response) time.Duration {
 	raw := resp.Header.Get("Retry-After")
 	if raw == "" {
 		return c.rateLimitBackoff
 	}
 	if secs, err := strconv.Atoi(raw); err == nil && secs >= 0 {
-		return time.Duration(secs) * time.Second
+		return clampRetryAfterDelay(time.Duration(secs) * time.Second)
 	}
 	return c.rateLimitBackoff
+}
+
+// clampRetryAfterDelay bounds a parsed Retry-After duration at maxRetryAfterDelay.
+func clampRetryAfterDelay(d time.Duration) time.Duration {
+	if d > maxRetryAfterDelay {
+		return maxRetryAfterDelay
+	}
+	return d
 }
 
 func isRetryableTransportErr(ctx context.Context, err error) bool {

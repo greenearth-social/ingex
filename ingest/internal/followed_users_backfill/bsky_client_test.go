@@ -157,8 +157,8 @@ func TestGetPage_SetsUserAgentHeader(t *testing.T) {
 	if _, err := client.FetchFollows(context.Background(), "did:plc:user", 10); err != nil {
 		t.Fatalf("FetchFollows: %v", err)
 	}
-	if gotUserAgent == "" {
-		t.Error("expected a User-Agent header to be set, got empty string")
+	if gotUserAgent != userAgent {
+		t.Errorf("User-Agent header = %q, want %q", gotUserAgent, userAgent)
 	}
 }
 
@@ -215,6 +215,65 @@ func TestFetchFollows_429FallsBackToConfiguredBackoffWithoutRetryAfter(t *testin
 	}
 	if elapsed >= time.Second {
 		t.Errorf("expected the configurable rateLimitBackoff to be used (fast), took %v", elapsed)
+	}
+}
+
+func TestClampRetryAfterDelay(t *testing.T) {
+	cases := []struct {
+		name string
+		in   time.Duration
+		want time.Duration
+	}{
+		{"under cap unchanged", 5 * time.Second, 5 * time.Second},
+		{"exactly at cap unchanged", maxRetryAfterDelay, maxRetryAfterDelay},
+		{"over cap clamped", 10 * time.Minute, maxRetryAfterDelay},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clampRetryAfterDelay(tc.in); got != tc.want {
+				t.Errorf("clampRetryAfterDelay(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRetryAfterDelay_ClampsHeaderValue(t *testing.T) {
+	client := NewBskyClient(&http.Client{})
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Retry-After", "3600") // far beyond the cap
+	if got := client.retryAfterDelay(resp); got != maxRetryAfterDelay {
+		t.Errorf("retryAfterDelay with Retry-After=3600 = %v, want clamped to %v", got, maxRetryAfterDelay)
+	}
+}
+
+func TestFetchFollows_ContextCancelledDuring429WaitReturnsPromptly(t *testing.T) {
+	reached429 := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3600") // would block ~forever if not clamped/cancelled
+		w.WriteHeader(http.StatusTooManyRequests)
+		close(reached429)
+	}))
+	defer srv.Close()
+
+	client := NewBskyClient(srv.Client())
+	client.baseURL = srv.URL
+	client.maxRetries = 1
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-reached429
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := client.FetchFollows(ctx, "did:plc:user", 1000)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an error when ctx is cancelled during the 429 wait")
+	}
+	if elapsed >= time.Second {
+		t.Errorf("expected prompt return on ctx cancellation, took %v", elapsed)
 	}
 }
 
