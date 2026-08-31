@@ -71,6 +71,7 @@ type PostDoc struct {
 	QuotePost               string                  `json:"quote_post"`
 	Embeddings              map[string]Float32Array `json:"embeddings,omitempty"`
 	PostEmbeddingModelUUID  string                  `json:"ge_post_embedding_model_uuid"`
+	TopicScores             map[string]float32      `json:"topic_scores,omitempty"`
 	IndexedAt               string                  `json:"indexed_at"`
 	LikeCount               int                     `json:"like_count"`
 	Media                   []MediaItem             `json:"media"`
@@ -535,6 +536,7 @@ func CreatePostDoc(msg MegaStreamMessage, likeCount int) PostDoc {
 		CreatedAt:               msg.GetCreatedAt(),
 		QuotePost:               msg.GetQuotePost(),
 		Embeddings:              msgEmbeddings(msg),
+		TopicScores:             msg.GetTopicScores(),
 		IndexedAt:               time.Now().UTC().Format(time.RFC3339),
 		LikeCount:               likeCount,
 		Media:                   media,
@@ -978,6 +980,7 @@ type PostData struct {
 	QuotePost              string               `json:"quote_post,omitempty"`
 	Embeddings             map[string][]float32 `json:"embeddings,omitempty"`
 	PostEmbeddingModelUUID string               `json:"ge_post_embedding_model_uuid,omitempty"`
+	TopicScores            map[string]float32   `json:"topic_scores,omitempty"`
 	IndexedAt              string               `json:"indexed_at"`
 	LikeCount              int                  `json:"like_count"`
 	Media                  []MediaItem          `json:"media,omitempty"`

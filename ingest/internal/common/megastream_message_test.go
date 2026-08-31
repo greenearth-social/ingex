@@ -1,7 +1,9 @@
 package common
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/greenearth/ingest/internal/embeddings"
@@ -890,6 +892,176 @@ func TestMegaStreamMessage_VideoTranscriptParsing(t *testing.T) {
 			t.Errorf("Expected VideoTranscriptLanguage 'es', got %q", doc.VideoTranscriptLanguage)
 		}
 	})
+}
+
+func TestMegaStreamMessage_TopicScoresParsing(t *testing.T) {
+	logger := NewLogger(false)
+	rawPostJSON := `{
+		"message": {
+			"commit": {
+				"operation": "create",
+				"record": {
+					"text": "A post about current events",
+					"createdAt": "2025-01-27T12:00:00Z"
+				}
+			}
+		}
+	}`
+
+	tests := []struct {
+		name       string
+		inferences string
+		want       map[string]float32
+	}{
+		{
+			name: "all valid post text topic scores",
+			inferences: `{
+				"text": {
+					"message.commit.record.text": {
+						"topic": {
+							"News & Social Concern": 0.73779296875,
+							"Sports": 0.00861358642578125,
+							"Science & Technology": 0.6943359375
+						}
+					}
+				}
+			}`,
+			want: map[string]float32{
+				"News & Social Concern": float32(0.73779296875),
+				"Sports":                float32(0.00861358642578125),
+				"Science & Technology":  float32(0.6943359375),
+			},
+		},
+		{
+			name: "invalid entries are skipped while zero is retained",
+			inferences: `{
+				"text": {
+					"message.commit.record.text": {
+						"topic": {
+							"Sports": 0,
+							"String Score": "0.7",
+							"Negative Score": -0.1,
+							"Score Above One": 1.1
+						}
+					}
+				}
+			}`,
+			want: map[string]float32{"Sports": 0},
+		},
+		{
+			name: "empty topic object",
+			inferences: `{
+				"text": {
+					"message.commit.record.text": {"topic": {}}
+				}
+			}`,
+		},
+		{
+			name:       "missing text analyses",
+			inferences: `{}`,
+		},
+		{
+			name: "topics on another analyzed field are ignored",
+			inferences: `{
+				"text": {
+					"message.commit.record.embed.external.title": {
+						"topic": {"Sports": 0.9}
+					}
+				}
+			}`,
+		},
+		{
+			name: "all invalid scores produce no map",
+			inferences: `{
+				"text": {
+					"message.commit.record.text": {
+						"topic": {
+							"String Score": "0.7",
+							"Score Above One": 1.1
+						}
+					}
+				}
+			}`,
+		},
+		{
+			name:       "malformed inference JSON",
+			inferences: `{"text":`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, tt.inferences, logger)
+			if got := msg.GetTopicScores(); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("GetTopicScores() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCreatePostDoc_TopicScoresJSON(t *testing.T) {
+	logger := NewLogger(false)
+	rawPostJSON := `{
+		"message": {
+			"commit": {
+				"operation": "create",
+				"record": {
+					"text": "A post",
+					"createdAt": "2025-01-27T12:00:00Z"
+				}
+			}
+		}
+	}`
+
+	withTopics := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, `{
+		"text": {
+			"message.commit.record.text": {
+				"topic": {
+					"News & Social Concern": 0.73779296875,
+					"Sports": 0
+				}
+			}
+		}
+	}`, logger)
+	want := map[string]float32{
+		"News & Social Concern": float32(0.73779296875),
+		"Sports":                0,
+	}
+	doc := CreatePostDoc(withTopics, 0)
+	if !reflect.DeepEqual(doc.TopicScores, want) {
+		t.Fatalf("CreatePostDoc topic scores = %v, want %v", doc.TopicScores, want)
+	}
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal post document: %v", err)
+	}
+	var encodedDoc map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &encodedDoc); err != nil {
+		t.Fatalf("unmarshal post document JSON: %v", err)
+	}
+	var encodedTopics map[string]float32
+	if err := json.Unmarshal(encodedDoc["topic_scores"], &encodedTopics); err != nil {
+		t.Fatalf("unmarshal topic_scores: %v", err)
+	}
+	if !reflect.DeepEqual(encodedTopics, want) {
+		t.Errorf("serialized topic_scores = %v, want %v", encodedTopics, want)
+	}
+
+	withoutTopics := CreatePostDoc(
+		NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, `{}`, logger),
+		0,
+	)
+	encoded, err = json.Marshal(withoutTopics)
+	if err != nil {
+		t.Fatalf("marshal post document without topics: %v", err)
+	}
+	encodedDoc = nil
+	if err := json.Unmarshal(encoded, &encodedDoc); err != nil {
+		t.Fatalf("unmarshal post document JSON without topics: %v", err)
+	}
+	if _, ok := encodedDoc["topic_scores"]; ok {
+		t.Errorf("missing topic scores were not omitted from post JSON: %s", encoded)
+	}
 }
 
 func TestMegaStreamMessage_CreatedAtNormalization(t *testing.T) {

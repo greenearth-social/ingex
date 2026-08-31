@@ -100,6 +100,10 @@ func TestPostsCrossingQualityThreshold(t *testing.T) {
 }
 
 func TestQualityDocFromHit(t *testing.T) {
+	topicScores := map[string]float32{
+		"News & Social Concern": 0.73,
+		"Sports":                0.12,
+	}
 	hit := Hit{
 		Source: PostData{
 			AtURI:                  "at://did:plc:abc/app.bsky.feed.post/1",
@@ -109,6 +113,7 @@ func TestQualityDocFromHit(t *testing.T) {
 			IndexedAt:              "2026-07-29T10:01:00Z",
 			LikeCount:              22,
 			PostEmbeddingModelUUID: "uuid-1",
+			TopicScores:            topicScores,
 			ContainsVideo:          true,
 			ContainsImages:         false,
 			VideoCount:             1,
@@ -129,6 +134,11 @@ func TestQualityDocFromHit(t *testing.T) {
 	}
 	if doc.LikeCount != 22 || doc.PostEmbeddingModelUUID != "uuid-1" {
 		t.Errorf("ranking/filter fields not carried: %+v", doc)
+	}
+	if len(doc.TopicScores) != len(topicScores) ||
+		doc.TopicScores["News & Social Concern"] != topicScores["News & Social Concern"] ||
+		doc.TopicScores["Sports"] != topicScores["Sports"] {
+		t.Errorf("topic scores not carried: %+v", doc)
 	}
 	if !doc.ContainsVideo || doc.VideoCount != 1 {
 		t.Errorf("media filter fields not carried: %+v", doc)

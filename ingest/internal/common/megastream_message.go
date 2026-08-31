@@ -3,6 +3,7 @@ package common
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/greenearth/ingest/internal/embeddings"
 )
@@ -21,6 +22,7 @@ type MegaStreamMessage interface {
 	GetExternalEmbed() *ExternalEmbed
 	GetVideoTranscript() string
 	GetVideoTranscriptLanguage() string
+	GetTopicScores() map[string]float32
 	GetTimeUs() int64
 	IsDelete() bool
 	IsAccountDeletion() bool
@@ -41,6 +43,7 @@ type megaStreamMessage struct {
 	externalEmbed           *ExternalEmbed
 	videoTranscript         string
 	videoTranscriptLanguage string
+	topicScores             map[string]float32
 	timeUs                  int64
 	isDelete                bool
 	accountStatus           string
@@ -264,7 +267,7 @@ func (m *megaStreamMessage) parseExternalEmbed(embed map[string]interface{}) {
 	m.externalEmbed.Description, _ = external["description"].(string)
 }
 
-// parseInferences parses the inferences JSON and extracts embeddings
+// parseInferences parses the inferences JSON and extracts selected values.
 func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *IngestLogger) {
 	var inferences map[string]interface{}
 	if err := json.Unmarshal([]byte(inferencesJSON), &inferences); err != nil {
@@ -278,6 +281,26 @@ func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *Inges
 				m.embeddings["all_MiniLM_L12_v2"] = decoded
 			} else {
 				logger.Debug("Failed to decode L12 embedding for %s: %v", m.atURI, err)
+			}
+		}
+	}
+
+	// Graze keys text analyses by the JSON path of the analyzed value. Read only
+	// the post body result: titles and descriptions can have their own topic
+	// scores and must not be confused with the post's scores.
+	if text, ok := inferences["text"].(map[string]interface{}); ok {
+		if postText, ok := text["message.commit.record.text"].(map[string]interface{}); ok {
+			if topics, ok := postText["topic"].(map[string]interface{}); ok {
+				for label, value := range topics {
+					rawScore, ok := value.(float64)
+					if !ok || math.IsNaN(rawScore) || math.IsInf(rawScore, 0) || rawScore < 0 || rawScore > 1 {
+						continue
+					}
+					if m.topicScores == nil {
+						m.topicScores = make(map[string]float32, len(topics))
+					}
+					m.topicScores[label] = float32(rawScore)
+				}
 			}
 		}
 	}
@@ -367,6 +390,13 @@ func (m *megaStreamMessage) GetVideoTranscript() string {
 
 func (m *megaStreamMessage) GetVideoTranscriptLanguage() string {
 	return m.videoTranscriptLanguage
+}
+
+func (m *megaStreamMessage) GetTopicScores() map[string]float32 {
+	if len(m.topicScores) == 0 {
+		return nil
+	}
+	return m.topicScores
 }
 
 func (m *megaStreamMessage) GetMedia() []MediaItem {

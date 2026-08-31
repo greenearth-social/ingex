@@ -73,6 +73,10 @@ data:
               "type": "keyword",
               "index": true
             },
+            "topic_scores": {
+              "type": "object",
+              "enabled": false
+            },
             "indexed_at": {
               "type": "date",
               "format": "iso8601",
