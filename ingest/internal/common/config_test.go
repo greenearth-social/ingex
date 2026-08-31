@@ -238,7 +238,7 @@ func TestLoadConfig_InferenceFromEnvironment(t *testing.T) {
 }
 
 func TestLoadConfig_FollowsCacheTTLSecDefault(t *testing.T) {
-	os.Unsetenv("GE_FOLLOWS_CACHE_TTL_SEC")
+	_ = os.Unsetenv("GE_FOLLOWS_CACHE_TTL_SEC")
 	cfg := LoadConfig()
 	if cfg.FollowsCacheTTLSec != 21600 {
 		t.Errorf("expected default 21600, got %d", cfg.FollowsCacheTTLSec)
