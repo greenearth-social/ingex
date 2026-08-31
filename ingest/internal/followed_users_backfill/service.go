@@ -98,7 +98,7 @@ func (s *Service) Run(ctx context.Context) (processed, refreshed, skipped, faile
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
-	s.logger.Metric("followed_users_backfill.total_users", float64(len(dids)))
+	s.logger.Metric("followed_users_backfill.total_users_rate", float64(len(dids)))
 
 	work := make(chan string)
 	results := make(chan processOutcome)
