@@ -534,7 +534,7 @@ deploy_followed_users_backfill_job() {
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=900 \
-        --args="--concurrency,10"
+        --args="--mode,full,--concurrency,10"
 
 }
 
