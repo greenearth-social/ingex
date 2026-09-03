@@ -2,6 +2,7 @@ package followed_users_backfill
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -74,10 +75,60 @@ type fakeStore struct {
 	mu      sync.Mutex
 	entries map[string]*common.CacheEntry
 	written map[string][]string
+
+	// Targeted-query fakes: tests seed these directly rather than deriving
+	// them from `entries`, since the real Firestore queries are independent
+	// per-field filters, not a computation over the cache-entry struct.
+	incompleteDocIDs  []string
+	invalidatedDocIDs []string
+	staleDocIDs       []string
+	queryErr          error
+
+	// userDIDs maps a followed-users-cache document ID to the real Bluesky
+	// DID LookupUserDID should resolve it to; lookupErrFor triggers an error
+	// for one specific docID so tests can exercise the "one bad lookup
+	// doesn't abort the run" behavior.
+	userDIDs     map[string]string
+	lookupErrFor map[string]bool
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{entries: map[string]*common.CacheEntry{}, written: map[string][]string{}}
+	return &fakeStore{
+		entries:      map[string]*common.CacheEntry{},
+		written:      map[string][]string{},
+		userDIDs:     map[string]string{},
+		lookupErrFor: map[string]bool{},
+	}
+}
+
+func (s *fakeStore) QueryIncompleteDocIDs(ctx context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.incompleteDocIDs, s.queryErr
+}
+
+func (s *fakeStore) QueryInvalidatedDocIDs(ctx context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.invalidatedDocIDs, s.queryErr
+}
+
+func (s *fakeStore) QueryStaleDocIDs(ctx context.Context, cutoff time.Time) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.staleDocIDs, s.queryErr
+}
+
+func (s *fakeStore) LookupUserDID(ctx context.Context, docID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lookupErrFor[docID] {
+		return "", fmt.Errorf("lookup failed for %s", docID)
+	}
+	if did, ok := s.userDIDs[docID]; ok {
+		return did, nil
+	}
+	return docID, nil
 }
 
 func (s *fakeStore) ReadEntry(ctx context.Context, userDocID string) (*common.CacheEntry, error) {
@@ -372,5 +423,96 @@ func TestService_Run_NeverShrinksACompleteEntryWithAPartialWalk(t *testing.T) {
 	}
 	if got := store.entries["user"].Follows; len(got) != 2 {
 		t.Errorf("expected the complete entry to survive untouched, got %v", got)
+	}
+}
+
+func TestService_RunTargeted_OnlyRefreshesEntriesMatchingATargetedCondition(t *testing.T) {
+	store := newFakeStore()
+	store.incompleteDocIDs = []string{"incomplete-user"}
+	store.userDIDs["incomplete-user"] = "did:plc:incomplete-user"
+	// A doc that would be "fresh" under NeedsRefresh is never returned by any
+	// of the three targeted queries, so RunTargeted must not touch it —
+	// mirrored here by simply not including it in any query result and
+	// confirming it's absent from what gets written.
+	store.entries["untouched-fresh-user"] = &common.CacheEntry{
+		Complete: true, GeneratedAt: ptrTime(time.Now().Add(-time.Minute)),
+	}
+	fetcher := &fakeFetcher{result: FollowsResult{DIDs: []string{"did:plc:x"}, Complete: true}}
+
+	svc := NewService(fetcher, store, &fakeLister{}, common.NewLogger(false), ServiceConfig{
+		TTL: time.Hour, MaxPendingAdds: 500, MaxFollowedUsers: 1000,
+		RetentionDays: 30, PerUserTimeout: time.Second, Concurrency: 2,
+	})
+
+	processed, refreshed, skipped, failed, err := svc.RunTargeted(context.Background())
+	if err != nil {
+		t.Fatalf("RunTargeted: %v", err)
+	}
+	if processed != 1 || refreshed != 1 || skipped != 0 || failed != 0 {
+		t.Errorf("got processed=%d refreshed=%d skipped=%d failed=%d", processed, refreshed, skipped, failed)
+	}
+	if _, ok := store.written["incomplete-user"]; !ok {
+		t.Error("expected the incomplete entry to be refreshed")
+	}
+	if _, ok := store.written["untouched-fresh-user"]; ok {
+		t.Error("expected the entry never matching a targeted query to be left alone")
+	}
+}
+
+func TestService_RunTargeted_LookupFailureCountsAsFailedButDoesNotAbortRun(t *testing.T) {
+	store := newFakeStore()
+	store.incompleteDocIDs = []string{"bad-lookup-user", "good-user"}
+	store.userDIDs["good-user"] = "did:plc:good-user"
+	store.lookupErrFor["bad-lookup-user"] = true
+	fetcher := &fakeFetcher{result: FollowsResult{DIDs: []string{"did:plc:x"}, Complete: true}}
+
+	svc := NewService(fetcher, store, &fakeLister{}, common.NewLogger(false), ServiceConfig{
+		TTL: time.Hour, MaxPendingAdds: 500, MaxFollowedUsers: 1000,
+		RetentionDays: 30, PerUserTimeout: time.Second, Concurrency: 2,
+	})
+
+	processed, refreshed, _, failed, err := svc.RunTargeted(context.Background())
+	if err != nil {
+		t.Fatalf("RunTargeted: %v", err)
+	}
+	if processed != 2 {
+		t.Errorf("expected both candidates counted as processed, got %d", processed)
+	}
+	if refreshed != 1 {
+		t.Errorf("expected the resolvable candidate to be refreshed, got %d", refreshed)
+	}
+	if failed != 1 {
+		t.Errorf("expected the lookup failure to count as failed, got %d", failed)
+	}
+	if _, ok := store.written["good-user"]; !ok {
+		t.Error("expected the resolvable candidate to still be processed")
+	}
+}
+
+func TestService_RunTargeted_DedupesAnEntryMatchingMultipleConditions(t *testing.T) {
+	store := newFakeStore()
+	// "both-user" matches both incomplete and stale; it must only be
+	// processed (and its fetcher called) once.
+	store.incompleteDocIDs = []string{"both-user"}
+	store.staleDocIDs = []string{"both-user"}
+	store.userDIDs["both-user"] = "did:plc:both-user"
+	fetcher := &fakeFetcher{result: FollowsResult{DIDs: []string{"did:plc:x"}, Complete: true}}
+
+	svc := NewService(fetcher, store, &fakeLister{}, common.NewLogger(false), ServiceConfig{
+		TTL: time.Hour, MaxPendingAdds: 500, MaxFollowedUsers: 1000,
+		RetentionDays: 30, PerUserTimeout: time.Second, Concurrency: 2,
+	})
+
+	processed, refreshed, _, _, err := svc.RunTargeted(context.Background())
+	if err != nil {
+		t.Fatalf("RunTargeted: %v", err)
+	}
+	if processed != 1 || refreshed != 1 {
+		t.Errorf("expected the duplicate candidate to be processed exactly once, got processed=%d refreshed=%d", processed, refreshed)
+	}
+	fetcher.mu.Lock()
+	defer fetcher.mu.Unlock()
+	if len(fetcher.calledWith) != 1 {
+		t.Errorf("expected the fetcher to be called exactly once for the deduped candidate, got %v", fetcher.calledWith)
 	}
 }
