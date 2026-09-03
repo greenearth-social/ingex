@@ -78,13 +78,71 @@ func (s *FirestoreFollowStore) ListUserDIDs(ctx context.Context) ([]string, erro
 		if err != nil {
 			return nil, fmt.Errorf("listing users: %w", err)
 		}
-		did, _ := doc.Data()["user_did"].(string)
-		if did == "" {
-			did = doc.Ref.ID // legacy document missing user_did; best effort
-		}
-		dids = append(dids, did)
+		dids = append(dids, didFromUserDoc(doc.Data(), doc.Ref.ID))
 	}
 	return dids, nil
+}
+
+// didFromUserDoc extracts the user_did field from a users/ document, falling
+// back to the Firestore document ID for a legacy/malformed document missing
+// user_did. Shared by ListUserDIDs and LookupUserDID so this fallback rule
+// has exactly one implementation.
+func didFromUserDoc(data map[string]interface{}, docID string) string {
+	did, _ := data["user_did"].(string)
+	if did == "" {
+		did = docID // legacy document missing user_did; best effort
+	}
+	return did
+}
+
+// LookupUserDID resolves a single users/{docID} document to its user_did
+// field, applying the same fallback as ListUserDIDs. Used by RunTargeted,
+// which only knows the followed-users-cache document ID (== the user doc ID)
+// of the entries it queried, not the full user list.
+func (s *FirestoreFollowStore) LookupUserDID(ctx context.Context, docID string) (string, error) {
+	snap, err := s.client.Collection(usersCollection).Doc(docID).Get(ctx)
+	if err != nil {
+		return "", fmt.Errorf("looking up user %s: %w", docID, err)
+	}
+	return didFromUserDoc(snap.Data(), docID), nil
+}
+
+// QueryIncompleteDocIDs returns the followed-users-cache document IDs of
+// every entry whose last walk did not finish (complete == false).
+func (s *FirestoreFollowStore) QueryIncompleteDocIDs(ctx context.Context) ([]string, error) {
+	return s.queryDocIDs(ctx, s.client.Collection(followedUsersCacheCollection).Where("complete", "==", false))
+}
+
+// QueryInvalidatedDocIDs returns the followed-users-cache document IDs of
+// every entry a jetstream delete has marked as needing a refresh.
+func (s *FirestoreFollowStore) QueryInvalidatedDocIDs(ctx context.Context) ([]string, error) {
+	return s.queryDocIDs(ctx, s.client.Collection(followedUsersCacheCollection).Where("invalidated_at", "!=", nil))
+}
+
+// QueryStaleDocIDs returns the followed-users-cache document IDs of every
+// entry generated before cutoff.
+func (s *FirestoreFollowStore) QueryStaleDocIDs(ctx context.Context, cutoff time.Time) ([]string, error) {
+	return s.queryDocIDs(ctx, s.client.Collection(followedUsersCacheCollection).Where("generated_at", "<", cutoff))
+}
+
+// queryDocIDs runs q and collects the document IDs of every match. Shared by
+// the three targeted-query methods above, which only need document IDs (not
+// document contents).
+func (s *FirestoreFollowStore) queryDocIDs(ctx context.Context, q firestore.Query) ([]string, error) {
+	var ids []string
+	iter := q.Documents(ctx)
+	defer iter.Stop()
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("querying followed-users cache: %w", err)
+		}
+		ids = append(ids, doc.Ref.ID)
+	}
+	return ids, nil
 }
 
 // AppendPendingFollow records a newly-followed DID for userDocID.

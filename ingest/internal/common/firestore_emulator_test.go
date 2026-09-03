@@ -275,6 +275,159 @@ func TestEmulator_ListUserDIDsProjectsUserDIDField(t *testing.T) {
 	}
 }
 
+func TestEmulator_QueryIncompleteDocIDsFindsOnlyIncompleteEntries(t *testing.T) {
+	store, client := emulatorStore(t)
+	ctx := context.Background()
+	completeID := fmt.Sprintf("test-complete-%d", time.Now().UnixNano())
+	incompleteID := fmt.Sprintf("test-incomplete-%d", time.Now().UnixNano())
+	for id, complete := range map[string]bool{completeID: true, incompleteID: false} {
+		ref := client.Collection(followedUsersCacheCollection).Doc(id)
+		if _, err := ref.Set(ctx, map[string]interface{}{
+			"follows": []string{}, "complete": complete, "generated_at": time.Now().UTC(), "pending_adds": []string{},
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+		t.Cleanup(func() { _, _ = ref.Delete(ctx) })
+	}
+
+	ids, err := store.QueryIncompleteDocIDs(ctx)
+	if err != nil {
+		t.Fatalf("QueryIncompleteDocIDs: %v", err)
+	}
+	found := map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if !found[incompleteID] {
+		t.Errorf("expected %s in results, got %v", incompleteID, ids)
+	}
+	if found[completeID] {
+		t.Errorf("did not expect %s (complete=true) in results", completeID)
+	}
+}
+
+func TestEmulator_QueryInvalidatedDocIDsFindsOnlyInvalidatedEntries(t *testing.T) {
+	store, client := emulatorStore(t)
+	ctx := context.Background()
+	invalidatedID := fmt.Sprintf("test-invalidated-%d", time.Now().UnixNano())
+	untouchedID := fmt.Sprintf("test-untouched-%d", time.Now().UnixNano())
+
+	refInvalidated := client.Collection(followedUsersCacheCollection).Doc(invalidatedID)
+	if _, err := refInvalidated.Set(ctx, map[string]interface{}{
+		"follows": []string{}, "complete": true, "generated_at": time.Now().UTC(),
+		"pending_adds": []string{}, "invalidated_at": time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed %s: %v", invalidatedID, err)
+	}
+	t.Cleanup(func() { _, _ = refInvalidated.Delete(ctx) })
+
+	refUntouched := client.Collection(followedUsersCacheCollection).Doc(untouchedID)
+	if _, err := refUntouched.Set(ctx, map[string]interface{}{
+		"follows": []string{}, "complete": true, "generated_at": time.Now().UTC(),
+		"pending_adds": []string{}, "invalidated_at": nil,
+	}); err != nil {
+		t.Fatalf("seed %s: %v", untouchedID, err)
+	}
+	t.Cleanup(func() { _, _ = refUntouched.Delete(ctx) })
+
+	ids, err := store.QueryInvalidatedDocIDs(ctx)
+	if err != nil {
+		t.Fatalf("QueryInvalidatedDocIDs: %v", err)
+	}
+	found := map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if !found[invalidatedID] {
+		t.Errorf("expected %s in results, got %v", invalidatedID, ids)
+	}
+	if found[untouchedID] {
+		t.Errorf("did not expect %s (invalidated_at=nil) in results", untouchedID)
+	}
+}
+
+func TestEmulator_QueryStaleDocIDsFindsOnlyEntriesOlderThanCutoff(t *testing.T) {
+	store, client := emulatorStore(t)
+	ctx := context.Background()
+	staleID := fmt.Sprintf("test-stale-%d", time.Now().UnixNano())
+	freshID := fmt.Sprintf("test-fresh-%d", time.Now().UnixNano())
+	cutoff := time.Now().UTC()
+
+	refStale := client.Collection(followedUsersCacheCollection).Doc(staleID)
+	if _, err := refStale.Set(ctx, map[string]interface{}{
+		"follows": []string{}, "complete": true, "generated_at": cutoff.Add(-time.Hour),
+		"pending_adds": []string{},
+	}); err != nil {
+		t.Fatalf("seed %s: %v", staleID, err)
+	}
+	t.Cleanup(func() { _, _ = refStale.Delete(ctx) })
+
+	refFresh := client.Collection(followedUsersCacheCollection).Doc(freshID)
+	if _, err := refFresh.Set(ctx, map[string]interface{}{
+		"follows": []string{}, "complete": true, "generated_at": cutoff.Add(time.Hour),
+		"pending_adds": []string{},
+	}); err != nil {
+		t.Fatalf("seed %s: %v", freshID, err)
+	}
+	t.Cleanup(func() { _, _ = refFresh.Delete(ctx) })
+
+	ids, err := store.QueryStaleDocIDs(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("QueryStaleDocIDs: %v", err)
+	}
+	found := map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if !found[staleID] {
+		t.Errorf("expected %s in results, got %v", staleID, ids)
+	}
+	if found[freshID] {
+		t.Errorf("did not expect %s (newer than cutoff) in results", freshID)
+	}
+}
+
+func TestEmulator_LookupUserDIDReturnsFieldOrFallsBackToDocID(t *testing.T) {
+	store, client := emulatorStore(t)
+	ctx := context.Background()
+	suffix := time.Now().UnixNano()
+	withField := fmt.Sprintf("lookupwithfield%d", suffix)
+	legacyID := fmt.Sprintf("lookuplegacy%d", suffix)
+
+	refWithField := client.Collection(usersCollection).Doc(withField)
+	if _, err := refWithField.Set(ctx, map[string]interface{}{
+		"user_did": fmt.Sprintf("did:plc:%s", withField),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Cleanup(func() { _, _ = refWithField.Delete(ctx) })
+
+	refLegacy := client.Collection(usersCollection).Doc(legacyID)
+	if _, err := refLegacy.Set(ctx, map[string]interface{}{
+		"some_other_field": "irrelevant",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Cleanup(func() { _, _ = refLegacy.Delete(ctx) })
+
+	did, err := store.LookupUserDID(ctx, withField)
+	if err != nil {
+		t.Fatalf("LookupUserDID: %v", err)
+	}
+	wantWithField := fmt.Sprintf("did:plc:%s", withField)
+	if did != wantWithField {
+		t.Errorf("LookupUserDID(%q) = %q, want %q", withField, did, wantWithField)
+	}
+
+	legacyDID, err := store.LookupUserDID(ctx, legacyID)
+	if err != nil {
+		t.Fatalf("LookupUserDID: %v", err)
+	}
+	if legacyDID != legacyID {
+		t.Errorf("LookupUserDID(%q) = %q, want fallback to doc ID %q", legacyID, legacyDID, legacyID)
+	}
+}
+
 func TestEmulator_MissingDocumentIsTolerated(t *testing.T) {
 	store, _ := emulatorStore(t)
 	ctx := context.Background()
