@@ -177,6 +177,8 @@ func (s *Service) processOne(ctx context.Context, userDID string) processOutcome
 		return processOutcome{failed: true}
 	}
 
+	s.noteDrift(entry, fetch, userDocID)
+
 	if err := s.store.WriteFollows(ctx, userDocID, fetch.DIDs, fetch.Complete, s.cfg.RetentionDays); err != nil {
 		s.logger.Error("Failed to write followed-users cache for %s: %v", userDocID, err)
 		s.logger.Metric("followed_users_backfill.refresh_count.write_error", 1)
@@ -189,6 +191,45 @@ func (s *Service) processOne(ctx context.Context, userDID string) processOutcome
 	}
 	s.logger.Metric("followed_users_backfill.refresh_count."+outcome, 1)
 	return processOutcome{refreshed: true}
+}
+
+// noteDrift compares what was being served (entry.Follows ∪ entry.PendingAdds)
+// against a fresh walk's result and records added/removed counts — ports
+// api's now-deleted FollowedUsersCache._note_drift, "the only correctness
+// signal in the system" for detecting silent jetstream drift. Only records
+// when entry is non-nil (there was something previously served to drift
+// from); a cold "missing" entry has nothing to compare against.
+func (s *Service) noteDrift(entry *common.CacheEntry, fetch FollowsResult, userDocID string) {
+	if entry == nil {
+		return
+	}
+	served := make(map[string]struct{}, len(entry.Follows)+len(entry.PendingAdds))
+	for _, did := range entry.Follows {
+		served[did] = struct{}{}
+	}
+	for _, did := range entry.PendingAdds {
+		served[did] = struct{}{}
+	}
+	refreshedSet := make(map[string]struct{}, len(fetch.DIDs))
+	for _, did := range fetch.DIDs {
+		refreshedSet[did] = struct{}{}
+	}
+	added, removed := 0, 0
+	for did := range refreshedSet {
+		if _, ok := served[did]; !ok {
+			added++
+		}
+	}
+	for did := range served {
+		if _, ok := refreshedSet[did]; !ok {
+			removed++
+		}
+	}
+	if added > 0 || removed > 0 {
+		s.logger.Info("Backfill refresh for %s moved the set: +%d -%d", userDocID, added, removed)
+	}
+	s.logger.Metric("followed_users_backfill.refresh_drift_added_rate", float64(added))
+	s.logger.Metric("followed_users_backfill.refresh_drift_removed_rate", float64(removed))
 }
 
 func stalenessOutcome(reason string, needs bool) string {

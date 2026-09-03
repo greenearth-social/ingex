@@ -263,6 +263,92 @@ func TestService_Run_RejectsNonPositiveMaxFollowedUsers(t *testing.T) {
 	}
 }
 
+// fakeMetricCollector implements common.MetricCollector so tests can observe
+// Service.Metric calls directly. common's own test file defines an
+// equivalent (mockMetricCollector) but it's unexported in package common, so
+// it can't be reused from here.
+type fakeMetricCollector struct {
+	records map[string][]float64
+}
+
+func newFakeMetricCollector() *fakeMetricCollector {
+	return &fakeMetricCollector{records: map[string][]float64{}}
+}
+
+func (f *fakeMetricCollector) Record(name string, value float64) {
+	f.records[name] = append(f.records[name], value)
+}
+
+func TestService_Run_RecordsDriftBetweenServedAndRefreshedSets(t *testing.T) {
+	lister := &fakeLister{dids: []string{"did:plc:user"}}
+	store := newFakeStore()
+	old := time.Now().Add(-2 * time.Hour)
+	store.entries["user"] = &common.CacheEntry{
+		Follows:     []string{"did:plc:a", "did:plc:b"},
+		PendingAdds: []string{"did:plc:c"}, // already being served, merged
+		Complete:    true,
+		GeneratedAt: &old,
+	}
+	// Fresh walk finds a and d — b and c are "removed" relative to what was served, d is "added"
+	fetcher := &fakeFetcher{result: FollowsResult{DIDs: []string{"did:plc:a", "did:plc:d"}, Complete: true}}
+
+	logger := common.NewLogger(true)
+	mc := newFakeMetricCollector()
+	logger.SetMetricCollector(mc)
+
+	svc := NewService(fetcher, store, lister, logger, ServiceConfig{
+		TTL: time.Hour, MaxPendingAdds: 500, MaxFollowedUsers: 1000,
+		RetentionDays: 30, PerUserTimeout: time.Second, Concurrency: 1,
+	})
+
+	_, refreshed, _, _, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if refreshed != 1 {
+		t.Fatalf("expected 1 refresh, got %d", refreshed)
+	}
+
+	added := mc.records["followed_users_backfill.refresh_drift_added_rate"]
+	if len(added) != 1 || added[0] != 1 {
+		t.Errorf("expected refresh_drift_added_rate=[1], got %v", added)
+	}
+	removed := mc.records["followed_users_backfill.refresh_drift_removed_rate"]
+	if len(removed) != 1 || removed[0] != 2 {
+		t.Errorf("expected refresh_drift_removed_rate=[2], got %v", removed)
+	}
+}
+
+func TestService_Run_NoDriftMetricOnFirstEverWrite(t *testing.T) {
+	lister := &fakeLister{dids: []string{"did:plc:user"}}
+	store := newFakeStore() // no pre-existing entry for "user" — entry will be nil
+	fetcher := &fakeFetcher{result: FollowsResult{DIDs: []string{"did:plc:a"}, Complete: true}}
+
+	logger := common.NewLogger(true)
+	mc := newFakeMetricCollector()
+	logger.SetMetricCollector(mc)
+
+	svc := NewService(fetcher, store, lister, logger, ServiceConfig{
+		TTL: time.Hour, MaxPendingAdds: 500, MaxFollowedUsers: 1000,
+		RetentionDays: 30, PerUserTimeout: time.Second, Concurrency: 1,
+	})
+
+	_, refreshed, _, _, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if refreshed != 1 {
+		t.Fatalf("expected 1 refresh, got %d", refreshed)
+	}
+
+	if got, ok := mc.records["followed_users_backfill.refresh_drift_added_rate"]; ok {
+		t.Errorf("expected no refresh_drift_added_rate metric on first-ever write, got %v", got)
+	}
+	if got, ok := mc.records["followed_users_backfill.refresh_drift_removed_rate"]; ok {
+		t.Errorf("expected no refresh_drift_removed_rate metric on first-ever write, got %v", got)
+	}
+}
+
 func TestService_Run_NeverShrinksACompleteEntryWithAPartialWalk(t *testing.T) {
 	lister := &fakeLister{dids: []string{"did:plc:user"}}
 	store := newFakeStore()
