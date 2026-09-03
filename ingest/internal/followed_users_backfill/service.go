@@ -120,6 +120,10 @@ func (s *Service) Run(ctx context.Context) (processed, refreshed, skipped, faile
 // not abort the run; the DID is simply excluded from the walk since a walk
 // needs the real Bluesky DID, not the Firestore document ID.
 func (s *Service) RunTargeted(ctx context.Context) (processed, refreshed, skipped, failed int, err error) {
+	if s.cfg.MaxFollowedUsers <= 0 {
+		return 0, 0, 0, 0, fmt.Errorf("MaxFollowedUsers must be positive, got %d", s.cfg.MaxFollowedUsers)
+	}
+
 	docIDs, err := s.collectTargetedDocIDs(ctx)
 	if err != nil {
 		return 0, 0, 0, 0, err

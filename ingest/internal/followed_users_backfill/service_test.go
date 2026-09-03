@@ -314,6 +314,27 @@ func TestService_Run_RejectsNonPositiveMaxFollowedUsers(t *testing.T) {
 	}
 }
 
+func TestService_RunTargeted_RejectsNonPositiveMaxFollowedUsers(t *testing.T) {
+	lister := &fakeLister{dids: []string{"did:plc:user"}}
+	store := newFakeStore()
+	fetcher := &fakeFetcher{result: FollowsResult{DIDs: []string{"did:plc:x"}, Complete: true}}
+
+	svc := NewService(fetcher, store, lister, common.NewLogger(false), ServiceConfig{
+		TTL: time.Hour, MaxPendingAdds: 500, MaxFollowedUsers: 0,
+		RetentionDays: 30, PerUserTimeout: time.Second, Concurrency: 1,
+	})
+
+	_, _, _, _, err := svc.RunTargeted(context.Background())
+	if err == nil {
+		t.Fatal("expected RunTargeted to reject MaxFollowedUsers<=0 with an error")
+	}
+	fetcher.mu.Lock()
+	defer fetcher.mu.Unlock()
+	if len(fetcher.calledWith) != 0 {
+		t.Errorf("expected RunTargeted to fail before calling the fetcher at all, got calls: %v", fetcher.calledWith)
+	}
+}
+
 // fakeMetricCollector implements common.MetricCollector so tests can observe
 // Service.Metric calls directly. common's own test file defines an
 // equivalent (mockMetricCollector) but it's unexported in package common, so
