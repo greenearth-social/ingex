@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var megastreamFilenameRegex = regexp.MustCompile(`^mega_jetstream_(\d{8})_(\d{6})\.db\.zip$`)
+var megastreamFilenameRegex = regexp.MustCompile(`^mega_jetstream_(\d{8})_(\d{6})(?:_[a-z0-9]+)?\.db\.zip$`)
 
 // ParseMegastreamFilenameTimestamp extracts a Unix timestamp in microseconds from a Megastream filename.
 // Expected format: mega_jetstream_YYYYMMDD_HHMMSS.db.zip
