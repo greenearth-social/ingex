@@ -291,9 +291,11 @@ func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *Inges
 	if text, ok := inferences["text"].(map[string]interface{}); ok {
 		if postText, ok := text["message.commit.record.text"].(map[string]interface{}); ok {
 			if topics, ok := postText["topic"].(map[string]interface{}); ok {
+				var rejected topicScoreRejections
 				for label, value := range topics {
 					rawScore, ok := value.(float64)
 					if !ok || math.IsNaN(rawScore) || math.IsInf(rawScore, 0) || rawScore < 0 || rawScore > 1 {
+						rejected.add(m.atURI, label, value)
 						continue
 					}
 					if m.topicScores == nil {
@@ -301,6 +303,7 @@ func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *Inges
 					}
 					m.topicScores[label] = float32(rawScore)
 				}
+				logger.reportInvalidTopicScores(rejected)
 			}
 		}
 	}
