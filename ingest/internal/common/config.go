@@ -82,6 +82,28 @@ type Config struct {
 	InferenceMaxConcurrency int           // GE_INFERENCE_MAX_CONCURRENCY, concurrent inference requests
 	InferenceRetryMax       int           // GE_INFERENCE_RETRY_MAX, retries beyond the first attempt
 
+	// Perspective API configuration (api#368). Scoring posts at ingest keeps
+	// the api off the serving path and builds the complete attribute-score
+	// corpus we need to train a replacement before the API sunsets.
+	//
+	// The 36 000 requests/minute quota is shared with the api's serving path,
+	// so PerspectiveQPS is ingest's *slice* of it, not the whole thing. The
+	// default of 150 QPS is 9 000 RPM, against the api's 26 700
+	// (GE_PERSPECTIVE_QPM there): 35 700 together, leaving a 300 RPM buffer.
+	//
+	// The buffer is deliberate. Neither limiter is exact — this one is a token
+	// bucket in this process, the api's is a calendar-minute bucket in each of
+	// several processes — so the true combined ceiling sits above the sum of
+	// the two numbers. Raising either without lowering the other spends the
+	// buffer.
+	PerspectiveAPIKey         string        // GE_PERSPECTIVE_API_KEY; empty disables scoring entirely
+	PerspectiveHost           string        // GE_PERSPECTIVE_HOST, overridable for the devenv stub
+	PerspectiveQPS            int           // GE_PERSPECTIVE_QPS, this service's share of the shared quota
+	PerspectiveOnQuota        string        // GE_PERSPECTIVE_ON_QUOTA, "wait" (throttle ingest) or "skip" (index unscored)
+	PerspectiveTimeout        time.Duration // GE_PERSPECTIVE_TIMEOUT, per-request HTTP timeout
+	PerspectiveMaxConcurrency int           // GE_PERSPECTIVE_MAX_CONCURRENCY, concurrent scoring requests
+	PerspectiveRetryMax       int           // GE_PERSPECTIVE_RETRY_MAX, retries beyond the first attempt
+
 	// Followed-users cache configuration (api#83). Jetstream is the only part
 	// of the system that sees follow and unfollow events as they happen, so it
 	// keeps the API's per-user follow cache current. Leaving FirestoreProject
@@ -91,6 +113,13 @@ type Config struct {
 	FirestoreEmulatorHost    string // GE_FIRESTORE_EMULATOR_HOST, for devenv
 	FollowsTrackedRefreshSec int    // GE_FOLLOWS_TRACKED_REFRESH_SEC, default 300
 	FollowsWriteBuffer       int    // GE_FOLLOWS_WRITE_BUFFER, default 1024
+}
+
+// PerspectiveEnabled reports whether posts should be scored at ingest. An
+// unset API key is the kill switch: no key, no scoring, and ingestion is
+// otherwise unchanged.
+func (c *Config) PerspectiveEnabled() bool {
+	return c.PerspectiveAPIKey != ""
 }
 
 // FollowCacheEnabled reports whether follow deltas should be written.
@@ -145,6 +174,13 @@ func LoadConfig() *Config {
 		InferenceChunkSize:         getEnvInt("GE_INFERENCE_CHUNK_SIZE", 64),
 		InferenceMaxConcurrency:    getEnvInt("GE_INFERENCE_MAX_CONCURRENCY", 8),
 		InferenceRetryMax:          getEnvInt("GE_INFERENCE_RETRY_MAX", 3),
+		PerspectiveAPIKey:          getEnv("GE_PERSPECTIVE_API_KEY", ""),
+		PerspectiveHost:            getEnv("GE_PERSPECTIVE_HOST", ""),
+		PerspectiveQPS:             getEnvInt("GE_PERSPECTIVE_QPS", 150),
+		PerspectiveOnQuota:         getEnv("GE_PERSPECTIVE_ON_QUOTA", "wait"),
+		PerspectiveTimeout:         getEnvDuration("GE_PERSPECTIVE_TIMEOUT", 2*time.Second),
+		PerspectiveMaxConcurrency:  getEnvInt("GE_PERSPECTIVE_MAX_CONCURRENCY", 32),
+		PerspectiveRetryMax:        getEnvInt("GE_PERSPECTIVE_RETRY_MAX", 2),
 		FirestoreProject:           getEnv("GE_FIRESTORE_PROJECT", ""),
 		FirestoreDatabase:          getEnv("GE_FIRESTORE_DATABASE", ""),
 		FirestoreEmulatorHost:      getEnv("GE_FIRESTORE_EMULATOR_HOST", ""),

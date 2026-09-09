@@ -82,6 +82,19 @@ type PostDoc struct {
 	ExternalEmbed           *ExternalEmbed          `json:"external_embed"`
 	VideoTranscript         string                  `json:"video_transcript"`
 	VideoTranscriptLanguage string                  `json:"video_transcript_language"`
+
+	// Perspective API conversational-quality scores, computed at ingest so the
+	// api does not have to score candidates on the serving path (api#368).
+	//
+	// All three are omitempty and travel together. CombinedPerspectiveScore is
+	// a pointer because 0.0 is a meaningful score (maximally toxic) that a
+	// plain float64 would omit. PerspectiveScoredAt set with no combined score
+	// means "attempted, unscorable" — nearly always non-English text the API
+	// declines to rate — and is what stops the api re-querying those posts
+	// forever. All three absent means "not scored yet".
+	PerspectiveScores        map[string]float64 `json:"perspective_scores,omitempty"`
+	CombinedPerspectiveScore *float64           `json:"combined_perspective_score,omitempty"`
+	PerspectiveScoredAt      string             `json:"perspective_scored_at,omitempty"`
 }
 
 func (d PostDoc) esAtURI() string     { return d.AtURI }
@@ -987,6 +1000,11 @@ type PostData struct {
 	VideoCount             int                  `json:"video_count"`
 	MediaCount             int                  `json:"media_count"`
 	ExternalEmbed          *ExternalEmbed       `json:"external_embed,omitempty"`
+
+	// See the matching fields on PostDoc for what the three states mean.
+	PerspectiveScores        map[string]float64 `json:"perspective_scores,omitempty"`
+	CombinedPerspectiveScore *float64           `json:"combined_perspective_score,omitempty"`
+	PerspectiveScoredAt      string             `json:"perspective_scored_at,omitempty"`
 }
 
 // LikeData represents the _source field of a like search hit

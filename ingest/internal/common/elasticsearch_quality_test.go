@@ -388,3 +388,74 @@ func TestBulkUpdateLikeCountsWithResults_ParsesUpdatedCounts(t *testing.T) {
 		t.Errorf("increment must be carried through so crossings can be detected: %+v", results[0])
 	}
 }
+
+// The quality corpus is what two_tower candidates come back from, so if it
+// does not carry the perspective fields every two_tower candidate arrives at
+// the api uncached and is scored live — defeating the point of scoring at
+// ingest (api#368). The struct doc records this as an invariant; this test is
+// what keeps it true.
+func TestQualityDocFromHitCarriesPerspectiveFields(t *testing.T) {
+	score := 0.42
+	hit := Hit{
+		Source: PostData{
+			AtURI:                    "at://did:plc:a/app.bsky.feed.post/1",
+			AuthorDID:                "did:plc:a",
+			CreatedAt:                "2026-07-22T10:00:00Z",
+			CombinedPerspectiveScore: &score,
+			PerspectiveScoredAt:      "2026-07-22T10:05:00Z",
+			// Present on the post, deliberately not copied: the corpus is
+			// lean, the api never reads the raw attributes, and training
+			// reads posts rather than this index.
+			PerspectiveScores: map[string]float64{"toxicity": 0.1},
+		},
+		Fields: map[string]json.RawMessage{
+			"embeddings.ge_post_embedding": json.RawMessage(`[[0.1,0.2]]`),
+		},
+	}
+
+	doc, ok := qualityDocFromHit(hit)
+	if !ok {
+		t.Fatal("qualityDocFromHit returned not-ok for a complete hit")
+	}
+	if doc.CombinedPerspectiveScore == nil || *doc.CombinedPerspectiveScore != 0.42 {
+		t.Errorf("combined score = %v, want 0.42", doc.CombinedPerspectiveScore)
+	}
+	if doc.PerspectiveScoredAt != "2026-07-22T10:05:00Z" {
+		t.Errorf("scored_at = %q", doc.PerspectiveScoredAt)
+	}
+
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "perspective_scores") {
+		t.Errorf("the lean corpus must not carry raw attribute scores: %s", encoded)
+	}
+}
+
+// An unscored post still belongs in the corpus; it just arrives at the api
+// uncached like it does today.
+func TestQualityDocFromHitOmitsAbsentPerspectiveFields(t *testing.T) {
+	hit := Hit{
+		Source: PostData{
+			AtURI:     "at://did:plc:a/app.bsky.feed.post/1",
+			AuthorDID: "did:plc:a",
+			CreatedAt: "2026-07-22T10:00:00Z",
+		},
+		Fields: map[string]json.RawMessage{
+			"embeddings.ge_post_embedding": json.RawMessage(`[[0.1,0.2]]`),
+		},
+	}
+
+	doc, ok := qualityDocFromHit(hit)
+	if !ok {
+		t.Fatal("an unscored post must still be promotable")
+	}
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "perspective") {
+		t.Errorf("absent perspective fields must be omitted entirely: %s", encoded)
+	}
+}

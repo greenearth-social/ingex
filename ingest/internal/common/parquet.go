@@ -30,6 +30,19 @@ type ExtractPost struct {
 	ReplyParentURI  string            `json:"reply_parent_uri,omitempty" parquet:"reply_parent_uri,optional"`
 	ReplyRootURI    string            `json:"reply_root_uri,omitempty" parquet:"reply_root_uri,optional"`
 	Embeddings      map[string]string `json:"embeddings,omitempty" parquet:"embeddings,optional"` // model name -> base85-encoded embedding string
+
+	// Perspective conversational-quality scores (api#368). Exported because
+	// the Perspective API sunsets in January and these are the labels for
+	// training a replacement classifier — the reason scoring moved to ingest
+	// in the first place.
+	//
+	// PerspectiveScores holds the raw per-attribute values; the combined score
+	// is a pointer so an absent score stays distinguishable from a genuine
+	// 0.0. PerspectiveScoredAt set with no combined score means "attempted,
+	// unscorable" — training must not read that as a missing row to retry.
+	PerspectiveScores        map[string]float64 `json:"perspective_scores,omitempty" parquet:"perspective_scores,optional"`
+	CombinedPerspectiveScore *float64           `json:"combined_perspective_score,omitempty" parquet:"combined_perspective_score,optional"`
+	PerspectiveScoredAt      string             `json:"perspective_scored_at,omitempty" parquet:"perspective_scored_at,optional"`
 }
 
 // HitToExtractPost converts an Elasticsearch Hit to an ExtractPost
@@ -43,6 +56,10 @@ func HitToExtractPost(hit Hit) ExtractPost {
 		RecordText:      hit.Source.Content,
 		ReplyParentURI:  hit.Source.ThreadParentPost,
 		ReplyRootURI:    hit.Source.ThreadRootPost,
+
+		PerspectiveScores:        hit.Source.PerspectiveScores,
+		CombinedPerspectiveScore: hit.Source.CombinedPerspectiveScore,
+		PerspectiveScoredAt:      hit.Source.PerspectiveScoredAt,
 	}
 
 	// Export only the families in ExportedEmbeddingFamilies; anything else a

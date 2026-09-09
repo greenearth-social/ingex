@@ -1,7 +1,10 @@
 package common
 
 import (
+	"path/filepath"
 	"testing"
+
+	"github.com/parquet-go/parquet-go"
 )
 
 // TestHitToExtractPost tests the conversion from Elasticsearch Hit to ExtractPost
@@ -320,5 +323,122 @@ func TestExtractPostAtURIRequired(t *testing.T) {
 
 	if result.AtURI != hit.Source.AtURI {
 		t.Errorf("AtURI = %q, expected %q", result.AtURI, hit.Source.AtURI)
+	}
+}
+
+// Perspective scores are exported because the API sunsets in January and these
+// are the training labels for its replacement — the reason for scoring at
+// ingest at all (api#368). An export that silently dropped them would leave us
+// with a corpus in Elasticsearch that ages out before anyone noticed.
+func TestHitToExtractPostCarriesPerspectiveScores(t *testing.T) {
+	score := 0.42
+	post := HitToExtractPost(Hit{
+		Source: PostData{
+			AtURI:                    "at://did:plc:a/app.bsky.feed.post/1",
+			AuthorDID:                "did:plc:a",
+			PerspectiveScores:        map[string]float64{"toxicity": 0.1, "insult": 0.2},
+			CombinedPerspectiveScore: &score,
+			PerspectiveScoredAt:      "2026-08-28T00:00:00Z",
+		},
+	})
+
+	if post.CombinedPerspectiveScore == nil || *post.CombinedPerspectiveScore != 0.42 {
+		t.Errorf("combined score = %v, want 0.42", post.CombinedPerspectiveScore)
+	}
+	if post.PerspectiveScores["toxicity"] != 0.1 || post.PerspectiveScores["insult"] != 0.2 {
+		t.Errorf("attribute scores = %v", post.PerspectiveScores)
+	}
+	if post.PerspectiveScoredAt != "2026-08-28T00:00:00Z" {
+		t.Errorf("scored_at = %q", post.PerspectiveScoredAt)
+	}
+}
+
+// An unscored post exports as absent, not as zero. Training has to be able to
+// tell "we never scored this" from "this scored 0.0", which is maximally
+// toxic — the two would otherwise be the same row.
+func TestHitToExtractPostOmitsAbsentPerspectiveScores(t *testing.T) {
+	post := HitToExtractPost(Hit{
+		Source: PostData{AtURI: "at://did:plc:a/app.bsky.feed.post/1", AuthorDID: "did:plc:a"},
+	})
+
+	if post.CombinedPerspectiveScore != nil {
+		t.Errorf("combined score = %v, want nil", *post.CombinedPerspectiveScore)
+	}
+	if post.PerspectiveScores != nil {
+		t.Errorf("attribute scores = %v, want nil", post.PerspectiveScores)
+	}
+	if post.PerspectiveScoredAt != "" {
+		t.Errorf("scored_at = %q, want empty", post.PerspectiveScoredAt)
+	}
+}
+
+// A round trip through an actual Parquet file, because the struct tags are the
+// part most likely to be wrong in a way unit tests on HitToExtractPost cannot
+// see: parquet-go has to be able to represent a map[string]float64 and an
+// optional float64 at all, and a schema error here would only surface when the
+// extract job next ran in production.
+func TestExtractPostPerspectiveRoundTripsThroughParquet(t *testing.T) {
+	score := 0.42
+	original := []ExtractPost{
+		{
+			DID:                      "did:plc:a",
+			AtURI:                    "at://did:plc:a/app.bsky.feed.post/1",
+			RecordText:               "scored",
+			PerspectiveScores:        map[string]float64{"toxicity": 0.125, "insult": 0.25},
+			CombinedPerspectiveScore: &score,
+			PerspectiveScoredAt:      "2026-08-28T00:00:00Z",
+		},
+		{
+			// Attempted but unscorable: stamped, no scores.
+			DID:                 "did:plc:b",
+			AtURI:               "at://did:plc:b/app.bsky.feed.post/2",
+			RecordText:          "日本語",
+			PerspectiveScoredAt: "2026-08-28T00:00:00Z",
+		},
+		{
+			// Never attempted: nothing at all.
+			DID:        "did:plc:c",
+			AtURI:      "at://did:plc:c/app.bsky.feed.post/3",
+			RecordText: "unscored",
+		},
+	}
+
+	path := filepath.Join(t.TempDir(), "posts.parquet")
+	if err := parquet.WriteFile(path, original); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	readBack, err := parquet.ReadFile[ExtractPost](path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(readBack) != len(original) {
+		t.Fatalf("read %d rows, wrote %d", len(readBack), len(original))
+	}
+
+	if got := readBack[0].PerspectiveScores; got["toxicity"] != 0.125 || got["insult"] != 0.25 {
+		t.Errorf("attribute scores round-tripped as %v", got)
+	}
+	if readBack[0].CombinedPerspectiveScore == nil || *readBack[0].CombinedPerspectiveScore != 0.42 {
+		t.Errorf("combined score round-tripped as %v", readBack[0].CombinedPerspectiveScore)
+	}
+	if readBack[0].PerspectiveScoredAt != "2026-08-28T00:00:00Z" {
+		t.Errorf("scored_at round-tripped as %q", readBack[0].PerspectiveScoredAt)
+	}
+
+	// The unscorable row keeps its stamp and gains no score.
+	if readBack[1].PerspectiveScoredAt == "" {
+		t.Error("the unscorable row lost its stamp")
+	}
+	if readBack[1].CombinedPerspectiveScore != nil {
+		t.Errorf("the unscorable row gained a score: %v", *readBack[1].CombinedPerspectiveScore)
+	}
+
+	// The never-attempted row must stay distinguishable from a genuine 0.0.
+	if readBack[2].CombinedPerspectiveScore != nil {
+		t.Errorf("an unscored row read back as %v, not absent", *readBack[2].CombinedPerspectiveScore)
+	}
+	if readBack[2].PerspectiveScoredAt != "" {
+		t.Errorf("an unscored row gained a stamp: %q", readBack[2].PerspectiveScoredAt)
 	}
 }

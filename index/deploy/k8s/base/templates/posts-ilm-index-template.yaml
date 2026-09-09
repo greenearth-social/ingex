@@ -108,6 +108,36 @@ data:
                 "description": {"type": "text", "index": false}
               }
             },
+            "perspective_scores": {
+              "type": "object",
+              "dynamic": false,
+              "properties": {
+                "affinity_experimental": {"type": "float", "index": false},
+                "alienation_experimental": {"type": "float", "index": false},
+                "compassion_experimental": {"type": "float", "index": false},
+                "curiosity_experimental": {"type": "float", "index": false},
+                "fearmongering_experimental": {"type": "float", "index": false},
+                "generalization_experimental": {"type": "float", "index": false},
+                "identity_attack": {"type": "float", "index": false},
+                "insult": {"type": "float", "index": false},
+                "moral_outrage_experimental": {"type": "float", "index": false},
+                "personal_story_experimental": {"type": "float", "index": false},
+                "reasoning_experimental": {"type": "float", "index": false},
+                "respect_experimental": {"type": "float", "index": false},
+                "scapegoating_experimental": {"type": "float", "index": false},
+                "threat": {"type": "float", "index": false},
+                "toxicity": {"type": "float", "index": false}
+              }
+            },
+            "combined_perspective_score": {
+              "type": "float",
+              "index": true
+            },
+            "perspective_scored_at": {
+              "type": "date",
+              "format": "iso8601",
+              "index": true
+            },
             "video_transcript": {
               "type": "text",
               "index": false
