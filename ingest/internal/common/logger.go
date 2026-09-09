@@ -15,6 +15,7 @@ type IngestLogger struct {
 	enabled         bool
 	debugEnabled    bool
 	gitSHA          string
+	topicScoreLog   topicScoreRejectionLog
 }
 
 // NewLogger creates a new logger with configurable output destinations
@@ -26,12 +27,12 @@ func NewLogger(enabled bool) *IngestLogger {
 	}
 
 	return &IngestLogger{
-		infoLogger:  log.New(os.Stdout, prefix+"[INFO] ", 0),
-		errorLogger: log.New(os.Stderr, prefix+"[ERROR] ", 0),
-		debugLogger: log.New(os.Stdout, prefix+"[DEBUG] ", 0),
-		enabled:     enabled,
+		infoLogger:   log.New(os.Stdout, prefix+"[INFO] ", 0),
+		errorLogger:  log.New(os.Stderr, prefix+"[ERROR] ", 0),
+		debugLogger:  log.New(os.Stdout, prefix+"[DEBUG] ", 0),
+		enabled:      enabled,
 		debugEnabled: false,
-		gitSHA:      gitSHA,
+		gitSHA:       gitSHA,
 	}
 }
 
