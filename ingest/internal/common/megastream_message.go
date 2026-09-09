@@ -285,6 +285,10 @@ func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *Inges
 		}
 	}
 
+	// Topic scores are computed upstream by Graze, whose topic-analysis docs name
+	// cardiffnlp/twitter-roberta-base-dec2021-tweet-topic-multi-all. Ingex does not
+	// run or pin that model; see ingest/cmd/megastream_ingest/README.md#topic-scores
+	// for documentation links and provenance caveats.
 	// Graze keys text analyses by the JSON path of the analyzed value. Read only
 	// the post body result: titles and descriptions can have their own topic
 	// scores and must not be confused with the post's scores.

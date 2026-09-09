@@ -14,6 +14,37 @@ The `megastream_ingest` command:
 - Tracks processed files to avoid duplicates
 - Provides graceful shutdown handling
 
+## Topic scores
+
+`topic_scores` contains topic-classification scores computed upstream by Graze,
+not by ingex. We extract them from the Megastream inference JSON at:
+
+```text
+inferences["text"]["message.commit.record.text"]["topic"]
+```
+
+Only the post-body analysis is used. Embedded-link titles and descriptions can
+have their own topic analyses, but those are not substituted for body scores.
+
+Model documentation (checked September 9, 2026):
+
+- [Graze editor documentation](https://www.graze.social/docs/editor-documentation),
+  under **Topic Analysis**, lists the 19 topic categories, including
+  `News & Social Concern`, and links to the model below.
+- [CardiffNLP tweet-topic model card](https://huggingface.co/cardiffnlp/twitter-roberta-base-dec2021-tweet-topic-multi-all)
+  documents `cardiffnlp/twitter-roberta-base-dec2021-tweet-topic-multi-all`,
+  including its training data and multilabel classification usage.
+
+These links identify Graze's documented topic-analysis model, not a guaranteed
+model revision for every Megastream record. Ingex consumes the supplied scores
+and does not run, pin, or verify the upstream model version.
+
+Ingex retains all supplied finite numeric scores in `[0, 1]`, without applying a
+positive-label threshold. Invalid entries (including explicit `null` values) are
+dropped and counted, with rate-limited error summaries. An absent body-topic
+analysis is not an error; for example, an empty-body post containing only an
+image or link may have no body scores. Missing scores are not replaced with zero.
+
 ## Configuration
 
 Configuration is done through environment variables and command line flags.
