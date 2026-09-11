@@ -470,7 +470,7 @@ setup_followed_users_backfill_cloud_scheduler() {
     JOB_URI="https://run.googleapis.com/v2/projects/$GE_GCP_PROJECT_ID/locations/$GE_GCP_REGION/jobs/followed-users-backfill-$GE_ENVIRONMENT:run"
 
     # Configure schedules based on environment: a frequent targeted sweep
-    # (incomplete/invalidated/stale entries only, cheap) and a daily full
+    # (incomplete/invalidated/stale entries only, cheap) and a weekly full
     # sweep (enumerates every tracked user, catches missing/pending_overflow)
     local targeted_schedule
     local targeted_job_name
@@ -480,9 +480,9 @@ setup_followed_users_backfill_cloud_scheduler() {
     if [ "$GE_ENVIRONMENT" = "stage" ]; then
         targeted_schedule="*/15 * * * *"  # Every 15 minutes
         targeted_job_name="followed-users-backfill-targeted-stage"
-        full_schedule="0 3 * * *"  # Daily at 3 AM UTC
+        full_schedule="0 3 * * 0"  # Weekly, Sunday at 3 AM UTC
         full_job_name="followed-users-backfill-full-stage"
-        log_info "Stage environment: Configuring 15-minute targeted + daily full followed-users-backfill schedules"
+        log_info "Stage environment: Configuring 15-minute targeted + weekly full followed-users-backfill schedules"
     elif [ "$GE_ENVIRONMENT" = "prod" ]; then
         # Widened from every 15 minutes to hourly: paired with the 50-minute
         # task-timeout in deploy_followed_users_backfill_job, this leaves a
@@ -490,9 +490,9 @@ setup_followed_users_backfill_cloud_scheduler() {
         # of the targeted job can't overlap even in the worst case.
         targeted_schedule="0 * * * *"  # Every hour
         targeted_job_name="followed-users-backfill-targeted-prod"
-        full_schedule="0 3 * * *"  # Daily at 3 AM UTC
+        full_schedule="0 3 * * 0"  # Weekly, Sunday at 3 AM UTC
         full_job_name="followed-users-backfill-full-prod"
-        log_info "Production environment: Configuring hourly targeted + daily full followed-users-backfill schedules"
+        log_info "Production environment: Configuring hourly targeted + weekly full followed-users-backfill schedules"
     else
         log_info "Skipping Cloud Scheduler setup for $GE_ENVIRONMENT (only stage and prod are configured)"
         return 0
@@ -545,7 +545,7 @@ setup_followed_users_backfill_cloud_scheduler() {
         "Frequent targeted followed-users-backfill sweep (incomplete/invalidated/stale) for $GE_ENVIRONMENT"
     create_or_update_backfill_scheduler_job "$full_job_name" "$full_schedule" \
         '["--mode","full","--concurrency","20"]' \
-        "Daily full followed-users-backfill sweep (missing/pending_overflow backstop) for $GE_ENVIRONMENT"
+        "Weekly full followed-users-backfill sweep (missing/pending_overflow backstop) for $GE_ENVIRONMENT"
 }
 
 setup_extract_cloud_scheduler() {
@@ -641,7 +641,11 @@ main() {
     echo
     echo "Important notes:"
     echo "- Elasticsearch expiry runs daily at 2 AM UTC"
-    echo "- Followed-users-backfill runs targeted every 15 minutes, full daily at 3 AM UTC"
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        echo "- Followed-users-backfill runs targeted hourly, full weekly (Sunday 3 AM UTC)"
+    else
+        echo "- Followed-users-backfill runs targeted every 15 minutes, full weekly (Sunday 3 AM UTC)"
+    fi
     echo "- State files are stored in: gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT"
     echo "- Service account: ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
     echo

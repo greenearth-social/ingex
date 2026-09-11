@@ -631,7 +631,7 @@ show_service_status() {
 
     echo
     echo "=== Cloud Run Jobs ==="
-    gcloud run jobs list --region="$GE_GCP_REGION" --filter="metadata.name:(elasticsearch-expiry-$GE_ENVIRONMENT OR extract-$GE_ENVIRONMENT)"
+    gcloud run jobs list --region="$GE_GCP_REGION" --filter="metadata.name:(elasticsearch-expiry-$GE_ENVIRONMENT OR followed-users-backfill-$GE_ENVIRONMENT OR extract-$GE_ENVIRONMENT)"
 
     echo
     echo "=== Service URLs ==="
@@ -644,6 +644,7 @@ show_service_status() {
 
     log_info "Use 'gcloud run services logs read SERVICE_NAME --region=$GE_GCP_REGION' to view logs"
     log_info "Use 'gcloud run jobs execute elasticsearch-expiry-$GE_ENVIRONMENT --region=$GE_GCP_REGION' to manually run expiry"
+    log_info "Use 'gcloud run jobs execute followed-users-backfill-$GE_ENVIRONMENT --region=$GE_GCP_REGION --args=--mode,targeted,--concurrency,20' to manually run followed-users-backfill"
     log_info "Use 'gcloud run jobs execute extract-$GE_ENVIRONMENT --region=$GE_GCP_REGION' to manually run extract"
 }
 
