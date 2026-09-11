@@ -1,4 +1,4 @@
-# Green Earth Ingex
+# Green Earth Ingex - test
 
 A data ingestion and indexing system for BlueSky content. This project provides real-time streaming or batch processing capabilities to capture, process, and search BlueSky posts and likes in an ElasticSearch backend.
 
