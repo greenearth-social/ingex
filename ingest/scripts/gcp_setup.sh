@@ -629,7 +629,13 @@ main() {
     create_vpc_connector
     setup_firewall_rules
     setup_expiry_cloud_scheduler
-    setup_followed_users_backfill_cloud_scheduler
+    # Disabled: targeted-mode Firestore queries against followed_users_cache
+    # time out in prod without an index change we don't want to make just for
+    # this caching feature, and the full-sweep mode is too expensive to run
+    # on any frequent cadence. See api#453 for the full postmortem and the
+    # planned replacement (ingex#496). The scheduled jobs this created in
+    # stage/prod have already been deleted manually via ingestctl.sh.
+    # setup_followed_users_backfill_cloud_scheduler
     setup_extract_cloud_scheduler
 
     log_info "Environment setup complete!"
@@ -641,11 +647,7 @@ main() {
     echo
     echo "Important notes:"
     echo "- Elasticsearch expiry runs daily at 2 AM UTC"
-    if [ "$GE_ENVIRONMENT" = "prod" ]; then
-        echo "- Followed-users-backfill runs targeted hourly, full weekly (Sunday 3 AM UTC)"
-    else
-        echo "- Followed-users-backfill runs targeted every 15 minutes, full weekly (Sunday 3 AM UTC)"
-    fi
+    echo "- Followed-users-backfill scheduling is disabled (see api#453) — no scheduled jobs are created"
     echo "- State files are stored in: gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT"
     echo "- Service account: ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
     echo
