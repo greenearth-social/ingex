@@ -462,30 +462,37 @@ setup_expiry_cloud_scheduler() {
 }
 
 setup_followed_users_backfill_cloud_scheduler() {
-    log_info "Setting up Cloud Scheduler for followed-users-backfill..."
+    log_info "Setting up Cloud Scheduler for followed-users-backfill (targeted + full)..."
 
-    # Get project number for default compute service account
-    PROJECT_NUMBER=$(gcloud projects describe "$GE_GCP_PROJECT_ID" --format="value(projectNumber)")
     COMPUTE_SERVICE_ACCOUNT="21637448064-compute@developer.gserviceaccount.com"
 
     # Use Cloud Run v2 API endpoint format with environment-specific job name
     JOB_URI="https://run.googleapis.com/v2/projects/$GE_GCP_PROJECT_ID/locations/$GE_GCP_REGION/jobs/followed-users-backfill-$GE_ENVIRONMENT:run"
 
-    # Configure schedule based on environment
-    local schedule
-    local job_name
-    local description
+    # Configure schedules based on environment: a frequent targeted sweep
+    # (incomplete/invalidated/stale entries only, cheap) and a weekly full
+    # sweep (enumerates every tracked user, catches missing/pending_overflow)
+    local targeted_schedule
+    local targeted_job_name
+    local full_schedule
+    local full_job_name
 
     if [ "$GE_ENVIRONMENT" = "stage" ]; then
-        schedule="*/15 * * * *"  # Every 15 minutes
-        job_name="followed-users-backfill-stage"
-        description="Refresh the Bluesky followed-users cache for stage users"
-        log_info "Stage environment: Configuring 15-minute followed-users-backfill schedule"
+        targeted_schedule="*/15 * * * *"  # Every 15 minutes
+        targeted_job_name="followed-users-backfill-targeted-stage"
+        full_schedule="0 3 * * 0"  # Weekly, Sunday at 3 AM UTC
+        full_job_name="followed-users-backfill-full-stage"
+        log_info "Stage environment: Configuring 15-minute targeted + weekly full followed-users-backfill schedules"
     elif [ "$GE_ENVIRONMENT" = "prod" ]; then
-        schedule="*/15 * * * *"  # Every 15 minutes
-        job_name="followed-users-backfill-prod"
-        description="Refresh the Bluesky followed-users cache for prod users"
-        log_info "Production environment: Configuring 15-minute followed-users-backfill schedule"
+        # Widened from every 15 minutes to hourly: paired with the 50-minute
+        # task-timeout in deploy_followed_users_backfill_job, this leaves a
+        # 10-minute buffer before the next trigger fires, so two executions
+        # of the targeted job can't overlap even in the worst case.
+        targeted_schedule="0 * * * *"  # Every hour
+        targeted_job_name="followed-users-backfill-targeted-prod"
+        full_schedule="0 3 * * 0"  # Weekly, Sunday at 3 AM UTC
+        full_job_name="followed-users-backfill-full-prod"
+        log_info "Production environment: Configuring hourly targeted + weekly full followed-users-backfill schedules"
     else
         log_info "Skipping Cloud Scheduler setup for $GE_ENVIRONMENT (only stage and prod are configured)"
         return 0
@@ -499,28 +506,46 @@ setup_followed_users_backfill_cloud_scheduler() {
         --role="roles/run.invoker" \
         2>/dev/null || log_info "Service account already has run.invoker permission"
 
-    # Create or update the scheduler job
-    # Note: Uses OAuth (not OIDC) as documented in https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule#command-line
-    if ! gcloud scheduler jobs describe "$job_name" --location="$GE_GCP_REGION" > /dev/null 2>&1; then
-        gcloud scheduler jobs create http "$job_name" \
-            --location="$GE_GCP_REGION" \
-            --schedule="$schedule" \
-            --uri="$JOB_URI" \
-            --http-method=POST \
-            --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
-            --description="$description"
-        log_info "Cloud Scheduler job created: $job_name"
-    else
-        # Update existing job to ensure schedule and other settings are current
-        gcloud scheduler jobs update http "$job_name" \
-            --location="$GE_GCP_REGION" \
-            --schedule="$schedule" \
-            --uri="$JOB_URI" \
-            --http-method=POST \
-            --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
-            --description="$description"
-        log_info "Cloud Scheduler job updated: $job_name"
-    fi
+    # Create or update one HTTP scheduler job that triggers the Cloud Run
+    # job's :run endpoint with a container args override (see
+    # https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule#command-line
+    # for the OAuth-based invocation pattern; the args override uses the
+    # Cloud Run Jobs v2 execution-override request body).
+    create_or_update_backfill_scheduler_job() {
+        local job_name="$1" schedule="$2" args_json="$3" description="$4"
+        local body="{\"overrides\":{\"containerOverrides\":[{\"args\":$args_json}]}}"
+        if ! gcloud scheduler jobs describe "$job_name" --location="$GE_GCP_REGION" > /dev/null 2>&1; then
+            gcloud scheduler jobs create http "$job_name" \
+                --location="$GE_GCP_REGION" \
+                --schedule="$schedule" \
+                --uri="$JOB_URI" \
+                --http-method=POST \
+                --headers="Content-Type=application/json" \
+                --message-body="$body" \
+                --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
+                --description="$description"
+            log_info "Cloud Scheduler job created: $job_name"
+        else
+            # Update existing job to ensure schedule and other settings are current
+            gcloud scheduler jobs update http "$job_name" \
+                --location="$GE_GCP_REGION" \
+                --schedule="$schedule" \
+                --uri="$JOB_URI" \
+                --http-method=POST \
+                --headers="Content-Type=application/json" \
+                --message-body="$body" \
+                --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
+                --description="$description"
+            log_info "Cloud Scheduler job updated: $job_name"
+        fi
+    }
+
+    create_or_update_backfill_scheduler_job "$targeted_job_name" "$targeted_schedule" \
+        '["--mode","targeted","--concurrency","20"]' \
+        "Frequent targeted followed-users-backfill sweep (incomplete/invalidated/stale) for $GE_ENVIRONMENT"
+    create_or_update_backfill_scheduler_job "$full_job_name" "$full_schedule" \
+        '["--mode","full","--concurrency","20"]' \
+        "Weekly full followed-users-backfill sweep (missing/pending_overflow backstop) for $GE_ENVIRONMENT"
 }
 
 setup_extract_cloud_scheduler() {
@@ -616,7 +641,11 @@ main() {
     echo
     echo "Important notes:"
     echo "- Elasticsearch expiry runs daily at 2 AM UTC"
-    echo "- Followed-users-backfill runs every 15 minutes"
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        echo "- Followed-users-backfill runs targeted hourly, full weekly (Sunday 3 AM UTC)"
+    else
+        echo "- Followed-users-backfill runs targeted every 15 minutes, full weekly (Sunday 3 AM UTC)"
+    fi
     echo "- State files are stored in: gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT"
     echo "- Service account: ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
     echo

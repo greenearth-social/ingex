@@ -515,6 +515,20 @@ deploy_followed_users_backfill_job() {
 
     log_info "Deploying followed-users-backfill job with buildpacks..."
 
+    # Task timeout bounds a single execution regardless of --mode. Prod's
+    # targeted sweep now runs hourly (see setup_followed_users_backfill_cloud_scheduler),
+    # so 50 minutes leaves a 10-minute buffer before the next trigger fires —
+    # short enough that two executions of the same job can't overlap even in
+    # the worst case. Stage's targeted sweep stays on its original 15-minute
+    # cadence, so its timeout stays at 15 minutes to preserve the same
+    # no-overlap property there.
+    local task_timeout
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        task_timeout=3000
+    else
+        task_timeout=900
+    fi
+
     gcloud run jobs deploy "followed-users-backfill-$GE_ENVIRONMENT" \
         --source="$temp_dir" \
         --region="$GE_GCP_REGION" \
@@ -533,8 +547,8 @@ deploy_followed_users_backfill_job() {
         --labels="git-sha=$GIT_SHA" \
         --cpu=1 \
         --memory=512Mi \
-        --task-timeout=900 \
-        --args="--concurrency,10"
+        --task-timeout=$task_timeout \
+        --args="--mode,full,--concurrency,20"
 
 }
 
@@ -617,7 +631,7 @@ show_service_status() {
 
     echo
     echo "=== Cloud Run Jobs ==="
-    gcloud run jobs list --region="$GE_GCP_REGION" --filter="metadata.name:(elasticsearch-expiry-$GE_ENVIRONMENT OR extract-$GE_ENVIRONMENT)"
+    gcloud run jobs list --region="$GE_GCP_REGION" --filter="metadata.name:(elasticsearch-expiry-$GE_ENVIRONMENT OR followed-users-backfill-$GE_ENVIRONMENT OR extract-$GE_ENVIRONMENT)"
 
     echo
     echo "=== Service URLs ==="
@@ -630,6 +644,7 @@ show_service_status() {
 
     log_info "Use 'gcloud run services logs read SERVICE_NAME --region=$GE_GCP_REGION' to view logs"
     log_info "Use 'gcloud run jobs execute elasticsearch-expiry-$GE_ENVIRONMENT --region=$GE_GCP_REGION' to manually run expiry"
+    log_info "Use 'gcloud run jobs execute followed-users-backfill-$GE_ENVIRONMENT --region=$GE_GCP_REGION --args=--mode,targeted,--concurrency,20' to manually run followed-users-backfill"
     log_info "Use 'gcloud run jobs execute extract-$GE_ENVIRONMENT --region=$GE_GCP_REGION' to manually run extract"
 }
 

@@ -18,6 +18,7 @@ func main() {
 	maxFollowedUsers := flag.Int("max-followed-users", 1_000, "Cap on follows fetched and stored per user")
 	retentionDays := flag.Int("retention-days", 30, "Firestore native-TTL retention for cache entries")
 	perUserTimeoutSec := flag.Int("per-user-timeout-sec", 60, "Budget for one user's Bluesky walk (up to 10 sequential pages for a user near the 1000-follow cap; the per-page HTTP client timeout is 10s, so this must comfortably exceed that times the page count plus retries)")
+	mode := flag.String("mode", "full", "Sweep mode: 'full' (enumerate every tracked user; catches all staleness reasons, run infrequently) or 'targeted' (query only entries needing attention; catches incomplete/invalidated/stale cheaply, safe to run frequently)")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
@@ -37,7 +38,12 @@ func main() {
 		}()
 	}
 
-	logger.Info("Green Earth Ingex - Followed-Users Backfill")
+	logger.Info("Green Earth Ingex - Followed-Users Backfill (mode=%s)", *mode)
+
+	if *mode != "full" && *mode != "targeted" {
+		logger.Error("Unknown --mode %q; must be 'full' or 'targeted'", *mode)
+		os.Exit(1)
+	}
 
 	if !config.FollowCacheEnabled() {
 		logger.Error("GE_FIRESTORE_PROJECT is required")
@@ -93,7 +99,14 @@ func main() {
 
 	runStart := time.Now()
 	logger.Metric("followed_users_backfill.run_attempted_count", 1)
-	processed, refreshed, skipped, failed, err := service.Run(ctx)
+
+	var processed, refreshed, skipped, failed int
+	switch *mode {
+	case "targeted":
+		processed, refreshed, skipped, failed, err = service.RunTargeted(ctx)
+	case "full":
+		processed, refreshed, skipped, failed, err = service.Run(ctx)
+	}
 	if err != nil {
 		logger.Error("Backfill run failed: %v", err)
 		logger.Metric("followed_users_backfill.run_error_count", 1)
@@ -102,5 +115,5 @@ func main() {
 
 	logger.Metric("followed_users_backfill.run_duration_ms", float64(time.Since(runStart).Milliseconds()))
 	logger.Metric("followed_users_backfill.run_success_count", 1)
-	logger.Info("Backfill complete: processed=%d refreshed=%d skipped=%d failed=%d", processed, refreshed, skipped, failed)
+	logger.Info("Backfill complete: mode=%s processed=%d refreshed=%d skipped=%d failed=%d", *mode, processed, refreshed, skipped, failed)
 }
