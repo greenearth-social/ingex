@@ -515,6 +515,20 @@ deploy_followed_users_backfill_job() {
 
     log_info "Deploying followed-users-backfill job with buildpacks..."
 
+    # Task timeout bounds a single execution regardless of --mode. Prod's
+    # targeted sweep now runs hourly (see setup_followed_users_backfill_cloud_scheduler),
+    # so 50 minutes leaves a 10-minute buffer before the next trigger fires —
+    # short enough that two executions of the same job can't overlap even in
+    # the worst case. Stage's targeted sweep stays on its original 15-minute
+    # cadence, so its timeout stays at 15 minutes to preserve the same
+    # no-overlap property there.
+    local task_timeout
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        task_timeout=3000
+    else
+        task_timeout=900
+    fi
+
     gcloud run jobs deploy "followed-users-backfill-$GE_ENVIRONMENT" \
         --source="$temp_dir" \
         --region="$GE_GCP_REGION" \
@@ -533,8 +547,8 @@ deploy_followed_users_backfill_job() {
         --labels="git-sha=$GIT_SHA" \
         --cpu=1 \
         --memory=512Mi \
-        --task-timeout=900 \
-        --args="--mode,full,--concurrency,10"
+        --task-timeout=$task_timeout \
+        --args="--mode,full,--concurrency,20"
 
 }
 

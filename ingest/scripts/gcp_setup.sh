@@ -484,11 +484,15 @@ setup_followed_users_backfill_cloud_scheduler() {
         full_job_name="followed-users-backfill-full-stage"
         log_info "Stage environment: Configuring 15-minute targeted + daily full followed-users-backfill schedules"
     elif [ "$GE_ENVIRONMENT" = "prod" ]; then
-        targeted_schedule="*/15 * * * *"  # Every 15 minutes
+        # Widened from every 15 minutes to hourly: paired with the 50-minute
+        # task-timeout in deploy_followed_users_backfill_job, this leaves a
+        # 10-minute buffer before the next trigger fires, so two executions
+        # of the targeted job can't overlap even in the worst case.
+        targeted_schedule="0 * * * *"  # Every hour
         targeted_job_name="followed-users-backfill-targeted-prod"
         full_schedule="0 3 * * *"  # Daily at 3 AM UTC
         full_job_name="followed-users-backfill-full-prod"
-        log_info "Production environment: Configuring 15-minute targeted + daily full followed-users-backfill schedules"
+        log_info "Production environment: Configuring hourly targeted + daily full followed-users-backfill schedules"
     else
         log_info "Skipping Cloud Scheduler setup for $GE_ENVIRONMENT (only stage and prod are configured)"
         return 0
@@ -537,10 +541,10 @@ setup_followed_users_backfill_cloud_scheduler() {
     }
 
     create_or_update_backfill_scheduler_job "$targeted_job_name" "$targeted_schedule" \
-        '["--mode","targeted","--concurrency","10"]' \
+        '["--mode","targeted","--concurrency","20"]' \
         "Frequent targeted followed-users-backfill sweep (incomplete/invalidated/stale) for $GE_ENVIRONMENT"
     create_or_update_backfill_scheduler_job "$full_job_name" "$full_schedule" \
-        '["--mode","full","--concurrency","10"]' \
+        '["--mode","full","--concurrency","20"]' \
         "Daily full followed-users-backfill sweep (missing/pending_overflow backstop) for $GE_ENVIRONMENT"
 }
 
