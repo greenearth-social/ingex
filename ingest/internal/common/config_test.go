@@ -236,3 +236,19 @@ func TestLoadConfig_InferenceFromEnvironment(t *testing.T) {
 		t.Errorf("Expected InferenceRetryMax from env to be 5, got %d", config.InferenceRetryMax)
 	}
 }
+
+func TestLoadConfig_FollowsCacheTTLSecDefault(t *testing.T) {
+	_ = os.Unsetenv("GE_FOLLOWS_CACHE_TTL_SEC")
+	cfg := LoadConfig()
+	if cfg.FollowsCacheTTLSec != 21600 {
+		t.Errorf("expected default 21600, got %d", cfg.FollowsCacheTTLSec)
+	}
+}
+
+func TestLoadConfig_FollowsCacheTTLSecOverride(t *testing.T) {
+	t.Setenv("GE_FOLLOWS_CACHE_TTL_SEC", "3600")
+	cfg := LoadConfig()
+	if cfg.FollowsCacheTTLSec != 3600 {
+		t.Errorf("expected 3600, got %d", cfg.FollowsCacheTTLSec)
+	}
+}
