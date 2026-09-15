@@ -328,7 +328,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 
 	var fileNum = 1
 	var totalRecords int64 = 0
-	var afterCreatedAt, afterIndexedAt string
+	var afterCreatedAt, afterIndexedAt, afterAtURI string
 	var currentFileBatch []common.ExtractLike
 
 	for {
@@ -343,7 +343,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 		default:
 		}
 
-		response, err := common.FetchLikes(ctx, esClient, logger, indexName, startTime, endTime, afterCreatedAt, afterIndexedAt, fetchSize)
+		response, err := common.FetchLikes(ctx, esClient, logger, indexName, startTime, endTime, afterCreatedAt, afterIndexedAt, afterAtURI, fetchSize)
 		if err != nil {
 			return fmt.Errorf("failed to fetch likes: %w", err)
 		}
@@ -377,6 +377,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 		lastHit := response.Hits.Hits[len(response.Hits.Hits)-1]
 		afterCreatedAt = lastHit.Source.CreatedAt
 		afterIndexedAt = lastHit.Source.IndexedAt
+		afterAtURI = lastHit.Source.AtURI
 	}
 
 	if len(currentFileBatch) > 0 {

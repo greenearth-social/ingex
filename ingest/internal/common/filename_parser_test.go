@@ -31,6 +31,16 @@ func TestParseMegastreamFilenameTimestamp_Valid(t *testing.T) {
 			filename: "/path/to/mega_jetstream_20250605_153045.db.zip",
 			want:     time.Date(2025, 6, 5, 15, 30, 45, 0, time.UTC).UnixMicro(),
 		},
+		{
+			name:     "with hash suffix",
+			filename: "mega_jetstream_20260903_141835_wb77e6151.db.zip",
+			want:     time.Date(2026, 9, 3, 14, 18, 35, 0, time.UTC).UnixMicro(),
+		},
+		{
+			name:     "with hash suffix and full path",
+			filename: "/path/to/mega_jetstream_20260903_141835_wb77e6151.db.zip",
+			want:     time.Date(2026, 9, 3, 14, 18, 35, 0, time.UTC).UnixMicro(),
+		},
 	}
 
 	for _, tt := range tests {

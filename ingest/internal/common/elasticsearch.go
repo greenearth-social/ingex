@@ -71,6 +71,7 @@ type PostDoc struct {
 	QuotePost               string                  `json:"quote_post"`
 	Embeddings              map[string]Float32Array `json:"embeddings,omitempty"`
 	PostEmbeddingModelUUID  string                  `json:"ge_post_embedding_model_uuid"`
+	TopicScores             map[string]float32      `json:"topic_scores,omitempty"`
 	IndexedAt               string                  `json:"indexed_at"`
 	LikeCount               int                     `json:"like_count"`
 	Media                   []MediaItem             `json:"media"`
@@ -548,6 +549,7 @@ func CreatePostDoc(msg MegaStreamMessage, likeCount int) PostDoc {
 		CreatedAt:               msg.GetCreatedAt(),
 		QuotePost:               msg.GetQuotePost(),
 		Embeddings:              msgEmbeddings(msg),
+		TopicScores:             msg.GetTopicScores(),
 		IndexedAt:               time.Now().UTC().Format(time.RFC3339),
 		LikeCount:               likeCount,
 		Media:                   media,
@@ -1160,9 +1162,11 @@ func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *Inges
 	return response, nil
 }
 
-// FetchLikes queries Elasticsearch for likes with pagination using search_after
-// Parameters mirror FetchPosts but return LikeSearchResponse
-func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, size int) (LikeSearchResponse, error) {
+// FetchLikes queries Elasticsearch for likes with pagination using search_after.
+// The at_uri cursor is a unique tie-breaker for likes that share created_at and
+// indexed_at; without it, Elasticsearch can skip the remainder of a timestamp
+// tie when a page ends in the middle of that tie.
+func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, afterAtURI string, size int) (LikeSearchResponse, error) {
 	var response LikeSearchResponse
 
 	if size <= 0 {
@@ -1195,12 +1199,13 @@ func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *Inges
 		"sort": []interface{}{
 			map[string]interface{}{"created_at": "asc"},
 			map[string]interface{}{"indexed_at": "asc"},
+			map[string]interface{}{"at_uri": "asc"},
 		},
 		"size": size,
 	}
 
-	if afterCreatedAt != "" && afterIndexedAt != "" {
-		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt}
+	if afterCreatedAt != "" && afterIndexedAt != "" && afterAtURI != "" {
+		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt, afterAtURI}
 	}
 
 	queryJSON, err := json.Marshal(query)

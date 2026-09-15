@@ -512,6 +512,62 @@ EOF
 
 }
 
+deploy_followed_users_backfill_job() {
+    log_info "Deploying followed-users-backfill job from source..."
+
+    # Create a temporary directory structure for buildpacks
+    # Buildpacks expect a go.mod at the root with the main package
+    log_info "Preparing source directory for buildpack..."
+
+    local temp_dir=$(mktemp -d)
+    trap "rm -rf $temp_dir" EXIT
+
+    # Copy the necessary files for building just this binary
+    cp go.mod go.sum "$temp_dir/"
+    cp -r internal "$temp_dir/"
+    mkdir -p "$temp_dir/cmd/followed_users_backfill"
+    cp cmd/followed_users_backfill/main.go "$temp_dir/cmd/followed_users_backfill/"
+    cp cmd/followed_users_backfill/main.go "$temp_dir/"
+
+    log_info "Deploying followed-users-backfill job with buildpacks..."
+
+    # Task timeout bounds a single execution regardless of --mode. Prod's
+    # targeted sweep now runs hourly (see setup_followed_users_backfill_cloud_scheduler),
+    # so 50 minutes leaves a 10-minute buffer before the next trigger fires —
+    # short enough that two executions of the same job can't overlap even in
+    # the worst case. Stage's targeted sweep stays on its original 15-minute
+    # cadence, so its timeout stays at 15 minutes to preserve the same
+    # no-overlap property there.
+    local task_timeout
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        task_timeout=3000
+    else
+        task_timeout=900
+    fi
+
+    gcloud run jobs deploy "followed-users-backfill-$GE_ENVIRONMENT" \
+        --source="$temp_dir" \
+        --region="$GE_GCP_REGION" \
+        --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
+        --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
+        --vpc-egress=private-ranges-only \
+        --set-env-vars="GE_LOGGING_ENABLED=true" \
+        --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
+        --set-env-vars="GE_GCP_PROJECT_ID=$GE_GCP_PROJECT_ID" \
+        --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
+        --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
+        --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
+        --set-env-vars="GE_FIRESTORE_PROJECT=$GE_GCP_PROJECT_ID" \
+        --set-env-vars="GE_FIRESTORE_DATABASE=greenearth-$GE_ENVIRONMENT" \
+        --set-env-vars="GE_FOLLOWS_CACHE_TTL_SEC=21600" \
+        --labels="git-sha=$GIT_SHA" \
+        --cpu=1 \
+        --memory=512Mi \
+        --task-timeout=$task_timeout \
+        --args="--mode,full,--concurrency,20"
+
+}
+
 deploy_extract_job() {
     log_info "Deploying extract job from source..."
 
@@ -576,6 +632,7 @@ deploy_all_services() {
     deploy_jetstream_service
     deploy_megastream_service
     deploy_expiry_job
+    deploy_followed_users_backfill_job
     deploy_extract_job
 
     log_info "All services deployed successfully!"
@@ -590,7 +647,7 @@ show_service_status() {
 
     echo
     echo "=== Cloud Run Jobs ==="
-    gcloud run jobs list --region="$GE_GCP_REGION" --filter="metadata.name:(elasticsearch-expiry-$GE_ENVIRONMENT OR extract-$GE_ENVIRONMENT)"
+    gcloud run jobs list --region="$GE_GCP_REGION" --filter="metadata.name:(elasticsearch-expiry-$GE_ENVIRONMENT OR followed-users-backfill-$GE_ENVIRONMENT OR extract-$GE_ENVIRONMENT)"
 
     echo
     echo "=== Service URLs ==="
@@ -603,6 +660,7 @@ show_service_status() {
 
     log_info "Use 'gcloud run services logs read SERVICE_NAME --region=$GE_GCP_REGION' to view logs"
     log_info "Use 'gcloud run jobs execute elasticsearch-expiry-$GE_ENVIRONMENT --region=$GE_GCP_REGION' to manually run expiry"
+    log_info "Use 'gcloud run jobs execute followed-users-backfill-$GE_ENVIRONMENT --region=$GE_GCP_REGION --args=--mode,targeted,--concurrency,20' to manually run followed-users-backfill"
     log_info "Use 'gcloud run jobs execute extract-$GE_ENVIRONMENT --region=$GE_GCP_REGION' to manually run extract"
 }
 
@@ -658,6 +716,10 @@ main() {
             log_info "Deploying elasticsearch-expiry job..."
             deploy_expiry_job
             ;;
+        followed-users-backfill|follows-backfill)
+            log_info "Deploying followed-users-backfill job..."
+            deploy_followed_users_backfill_job
+            ;;
         extract|extract-job)
             log_info "Deploying extract job..."
             deploy_extract_job
@@ -667,7 +729,7 @@ main() {
             ;;
         *)
             log_error "Unknown service: $service"
-            echo "Valid services: jetstream, megastream, expiry, extract, all"
+            echo "Valid services: jetstream, megastream, expiry, followed-users-backfill, extract, all"
             exit 1
             ;;
     esac
@@ -713,6 +775,7 @@ while [[ $# -gt 0 ]]; do
             echo "  jetstream                   Deploy jetstream-ingest service only"
             echo "  megastream                  Deploy megastream-ingest service only"
             echo "  expiry                      Deploy elasticsearch-expiry job only"
+            echo "  followed-users-backfill     Deploy followed-users-backfill job only"
             echo "  extract                     Deploy extract job only"
             echo "  all                         Deploy all services (default)"
             echo
@@ -745,7 +808,7 @@ while [[ $# -gt 0 ]]; do
             echo
             exit 0
             ;;
-        jetstream|megastream|expiry|extract|all)
+        jetstream|megastream|expiry|followed-users-backfill|extract|all)
             # Handle service as first positional argument
             break
             ;;

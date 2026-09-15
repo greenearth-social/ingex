@@ -18,7 +18,7 @@ const (
 // a use case appears, and exporting them only inflates every extract.
 var ExportedEmbeddingFamilies = []string{GEPostEmbeddingFamily, ContentEmbeddingFamily}
 
-// ExtractPost represents the Post document structure for Parquet serialization
+// ExtractPost represents the shared post and reply structure for Parquet serialization.
 // Field names match the expected parquet output format
 type ExtractPost struct {
 	DID             string            `json:"did" parquet:"did"`
@@ -27,6 +27,8 @@ type ExtractPost struct {
 	InsertedAt      string            `json:"inserted_at" parquet:"inserted_at"`
 	RecordCreatedAt string            `json:"record_created_at" parquet:"record_created_at"`
 	RecordText      string            `json:"record_text" parquet:"record_text"`
+	ContainsImages  bool              `json:"contains_images" parquet:"contains_images"`
+	ContainsVideo   bool              `json:"contains_video" parquet:"contains_video"`
 	ReplyParentURI  string            `json:"reply_parent_uri,omitempty" parquet:"reply_parent_uri,optional"`
 	ReplyRootURI    string            `json:"reply_root_uri,omitempty" parquet:"reply_root_uri,optional"`
 	Embeddings      map[string]string `json:"embeddings,omitempty" parquet:"embeddings,optional"` // model name -> base85-encoded embedding string
@@ -54,6 +56,8 @@ func HitToExtractPost(hit Hit) ExtractPost {
 		InsertedAt:      hit.Source.IndexedAt,
 		RecordCreatedAt: hit.Source.CreatedAt,
 		RecordText:      hit.Source.Content,
+		ContainsImages:  hit.Source.ContainsImages,
+		ContainsVideo:   hit.Source.ContainsVideo,
 		ReplyParentURI:  hit.Source.ThreadParentPost,
 		ReplyRootURI:    hit.Source.ThreadRootPost,
 

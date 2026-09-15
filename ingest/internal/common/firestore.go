@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/iterator"
@@ -59,11 +60,15 @@ func NewFirestoreFollowStore(client *firestore.Client, logger *IngestLogger) *Fi
 
 // ListUserDIDs returns the DIDs of every user the API serves.
 //
-// Projected to document IDs only — the documents themselves are large and
-// none of their fields matter here.
+// Projected to the user_did field only — the documents themselves are large
+// and no other field matters here. user_did is the real Bluesky DID (with
+// its did:plc: prefix intact); the Firestore document ID (doc.Ref.ID) is
+// that DID with the prefix stripped (see UserDocID) and is NOT usable as an
+// actor identifier against Bluesky's API, which rejects it with a 400. Falls
+// back to doc.Ref.ID only for a legacy/malformed document missing user_did.
 func (s *FirestoreFollowStore) ListUserDIDs(ctx context.Context) ([]string, error) {
 	var dids []string
-	iter := s.client.Collection(usersCollection).Select().Documents(ctx)
+	iter := s.client.Collection(usersCollection).Select("user_did").Documents(ctx)
 	defer iter.Stop()
 	for {
 		doc, err := iter.Next()
@@ -73,9 +78,71 @@ func (s *FirestoreFollowStore) ListUserDIDs(ctx context.Context) ([]string, erro
 		if err != nil {
 			return nil, fmt.Errorf("listing users: %w", err)
 		}
-		dids = append(dids, doc.Ref.ID)
+		dids = append(dids, didFromUserDoc(doc.Data(), doc.Ref.ID))
 	}
 	return dids, nil
+}
+
+// didFromUserDoc extracts the user_did field from a users/ document, falling
+// back to the Firestore document ID for a legacy/malformed document missing
+// user_did. Shared by ListUserDIDs and LookupUserDID so this fallback rule
+// has exactly one implementation.
+func didFromUserDoc(data map[string]interface{}, docID string) string {
+	did, _ := data["user_did"].(string)
+	if did == "" {
+		did = docID // legacy document missing user_did; best effort
+	}
+	return did
+}
+
+// LookupUserDID resolves a single users/{docID} document to its user_did
+// field, applying the same fallback as ListUserDIDs. Used by RunTargeted,
+// which only knows the followed-users-cache document ID (== the user doc ID)
+// of the entries it queried, not the full user list.
+func (s *FirestoreFollowStore) LookupUserDID(ctx context.Context, docID string) (string, error) {
+	snap, err := s.client.Collection(usersCollection).Doc(docID).Get(ctx)
+	if err != nil {
+		return "", fmt.Errorf("looking up user %s: %w", docID, err)
+	}
+	return didFromUserDoc(snap.Data(), docID), nil
+}
+
+// QueryIncompleteDocIDs returns the followed-users-cache document IDs of
+// every entry whose last walk did not finish (complete == false).
+func (s *FirestoreFollowStore) QueryIncompleteDocIDs(ctx context.Context) ([]string, error) {
+	return s.queryDocIDs(ctx, s.client.Collection(followedUsersCacheCollection).Where("complete", "==", false))
+}
+
+// QueryInvalidatedDocIDs returns the followed-users-cache document IDs of
+// every entry a jetstream delete has marked as needing a refresh.
+func (s *FirestoreFollowStore) QueryInvalidatedDocIDs(ctx context.Context) ([]string, error) {
+	return s.queryDocIDs(ctx, s.client.Collection(followedUsersCacheCollection).Where("invalidated_at", "!=", nil))
+}
+
+// QueryStaleDocIDs returns the followed-users-cache document IDs of every
+// entry generated before cutoff.
+func (s *FirestoreFollowStore) QueryStaleDocIDs(ctx context.Context, cutoff time.Time) ([]string, error) {
+	return s.queryDocIDs(ctx, s.client.Collection(followedUsersCacheCollection).Where("generated_at", "<", cutoff))
+}
+
+// queryDocIDs runs q and collects the document IDs of every match. Shared by
+// the three targeted-query methods above, which only need document IDs (not
+// document contents).
+func (s *FirestoreFollowStore) queryDocIDs(ctx context.Context, q firestore.Query) ([]string, error) {
+	var ids []string
+	iter := q.Documents(ctx)
+	defer iter.Stop()
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("querying followed-users cache: %w", err)
+		}
+		ids = append(ids, doc.Ref.ID)
+	}
+	return ids, nil
 }
 
 // AppendPendingFollow records a newly-followed DID for userDocID.
@@ -100,6 +167,75 @@ func (s *FirestoreFollowStore) InvalidateFollows(ctx context.Context, userDocID 
 		{Path: "invalidated_at", Value: firestore.ServerTimestamp},
 	})
 	return s.tolerateMissing(err, userDocID)
+}
+
+// CacheEntry is the subset of the API's FollowedUsersCacheDocument the
+// backfill job needs to decide whether a user's follows need re-walking.
+// Lease fields (refresh_started_at/refresh_failed_at) are omitted: the job
+// runs as one serial process per invocation, not many racing API instances,
+// so it has nothing to lease against.
+type CacheEntry struct {
+	Follows       []string
+	Complete      bool
+	GeneratedAt   *time.Time
+	PendingAdds   []string
+	InvalidatedAt *time.Time
+}
+
+// ReadEntry returns userDocID's cached follows, or nil if no walk has ever
+// populated the document (matches api's FollowedUsersCache._read: a document
+// holding only a lease or a delta has no generated_at and is not a real entry).
+func (s *FirestoreFollowStore) ReadEntry(ctx context.Context, userDocID string) (*CacheEntry, error) {
+	snap, err := s.doc(userDocID).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading followed-users cache for %s: %w", userDocID, err)
+	}
+	var raw struct {
+		Follows       []string   `firestore:"follows"`
+		Complete      bool       `firestore:"complete"`
+		GeneratedAt   *time.Time `firestore:"generated_at"`
+		PendingAdds   []string   `firestore:"pending_adds"`
+		InvalidatedAt *time.Time `firestore:"invalidated_at"`
+	}
+	// An unreadable document is a miss, not an error: it will be overwritten
+	// by the next walk. Mirrors api's FollowedUsersCache._read, which treats a
+	// decode failure the same way rather than surfacing it up as an error that
+	// would otherwise get the caller permanently stuck on this document.
+	if err := snap.DataTo(&raw); err != nil {
+		s.logger.Error("Invalid followed-users cache document for %s: %v", userDocID, err)
+		return nil, nil
+	}
+	if raw.GeneratedAt == nil {
+		return nil, nil
+	}
+	return &CacheEntry{
+		Follows: raw.Follows, Complete: raw.Complete, GeneratedAt: raw.GeneratedAt,
+		PendingAdds: raw.PendingAdds, InvalidatedAt: raw.InvalidatedAt,
+	}, nil
+}
+
+// WriteFollows persists a completed (or deliberately-partial) Bluesky walk.
+// Pending deltas and any invalidation are cleared: a fresh walk supersedes
+// them by construction. Unlike AppendPendingFollow/InvalidateFollows this is
+// a full Set, safe because only this job and api's now-removed refresh path
+// ever touch `follows`/`complete`/`generated_at` — jetstream never does.
+func (s *FirestoreFollowStore) WriteFollows(ctx context.Context, userDocID string, follows []string, complete bool, retentionDays int) error {
+	now := time.Now().UTC()
+	_, err := s.doc(userDocID).Set(ctx, map[string]interface{}{
+		"follows":        follows,
+		"complete":       complete,
+		"generated_at":   firestore.ServerTimestamp,
+		"pending_adds":   []string{},
+		"invalidated_at": nil,
+		"expires_at":     now.AddDate(0, 0, retentionDays),
+	})
+	if err != nil {
+		return fmt.Errorf("writing followed-users cache for %s: %w", userDocID, err)
+	}
+	return nil
 }
 
 func (s *FirestoreFollowStore) doc(userDocID string) *firestore.DocumentRef {

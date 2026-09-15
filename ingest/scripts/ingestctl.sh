@@ -17,9 +17,24 @@ SERVICES=(
 SCHEDULED_JOBS=(
     "expiry"
     "extract"
+    "followed-users-backfill-targeted"
+    "followed-users-backfill-full"
 )
 
 COMPUTE_SERVICE_ACCOUNT="21637448064-compute@developer.gserviceaccount.com"
+
+# Check if a name refers to one of the logical scheduled jobs (as opposed to
+# a Cloud Run service)
+is_scheduled_job() {
+    local name=$1
+    local job
+    for job in "${SCHEDULED_JOBS[@]}"; do
+        if [[ "$job" == "$name" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 # Colors for output
 RED='\033[0;31m'
@@ -115,7 +130,7 @@ stop_service() {
     echo -e "${YELLOW}Service $service stopped (manual scaling: 0 instances)${NC}"
 }
 
-# Get the Cloud Scheduler job name for a logical job (expiry or extract)
+# Get the Cloud Scheduler job name for a logical job
 get_scheduler_job_name() {
     local job=$1
     case "$job" in
@@ -129,23 +144,38 @@ get_scheduler_job_name() {
         extract)
             echo "extract-halfhourly-${GE_ENVIRONMENT}"
             ;;
+        followed-users-backfill-targeted)
+            echo "followed-users-backfill-targeted-${GE_ENVIRONMENT}"
+            ;;
+        followed-users-backfill-full)
+            echo "followed-users-backfill-full-${GE_ENVIRONMENT}"
+            ;;
         *)
             echo ""
             ;;
     esac
 }
 
-# Get the Cloud Run job name for a logical job
+# Get the Cloud Run job name for a logical job. The two followed-users-backfill
+# logical jobs are two Cloud Scheduler triggers for the *same* underlying
+# Cloud Run job, distinguished only by the --mode arg override at trigger time
+# (see get_scheduler_job_args) — mirrors gcp_setup.sh's
+# setup_followed_users_backfill_cloud_scheduler.
 get_cloudrun_job_name() {
     local job=$1
     case "$job" in
         expiry) echo "elasticsearch-expiry-${GE_ENVIRONMENT}" ;;
         extract) echo "extract-${GE_ENVIRONMENT}" ;;
+        followed-users-backfill-targeted|followed-users-backfill-full)
+            echo "followed-users-backfill-${GE_ENVIRONMENT}"
+            ;;
         *) echo "" ;;
     esac
 }
 
-# Get the cron schedule and description for a logical job (pipe-separated)
+# Get the cron schedule and description for a logical job (pipe-separated).
+# Schedules here must stay in sync with gcp_setup.sh's
+# setup_followed_users_backfill_cloud_scheduler.
 get_scheduler_job_config() {
     local job=$1
     case "$job" in
@@ -158,6 +188,34 @@ get_scheduler_job_config() {
             ;;
         extract)
             echo "*/30 * * * *|Half hourly extract job for ${GE_ENVIRONMENT}"
+            ;;
+        followed-users-backfill-targeted)
+            if [ "$GE_ENVIRONMENT" = "prod" ]; then
+                echo "0 * * * *|Frequent targeted followed-users-backfill sweep (incomplete/invalidated/stale) for ${GE_ENVIRONMENT}"
+            else
+                echo "*/15 * * * *|Frequent targeted followed-users-backfill sweep (incomplete/invalidated/stale) for ${GE_ENVIRONMENT}"
+            fi
+            ;;
+        followed-users-backfill-full)
+            echo "0 3 * * 0|Weekly full followed-users-backfill sweep (missing/pending_overflow backstop) for ${GE_ENVIRONMENT}"
+            ;;
+    esac
+}
+
+# Get the Cloud Run Jobs v2 container args override (JSON array), if any, for
+# a logical job. Empty output means no override is needed (the job's
+# deploy-time default args apply).
+get_scheduler_job_args() {
+    local job=$1
+    case "$job" in
+        followed-users-backfill-targeted)
+            echo '["--mode","targeted","--concurrency","20"]'
+            ;;
+        followed-users-backfill-full)
+            echo '["--mode","full","--concurrency","20"]'
+            ;;
+        *)
+            echo ""
             ;;
     esac
 }
@@ -197,7 +255,7 @@ start_scheduled_job() {
     cloudrun_job_name=$(get_cloudrun_job_name "$job")
 
     if [[ -z "$scheduler_job_name" ]]; then
-        echo -e "${RED}Error: Unknown job '$job'. Valid jobs: expiry, extract${NC}"
+        echo -e "${RED}Error: Unknown job '$job'. Valid jobs: ${SCHEDULED_JOBS[*]}${NC}"
         return 1
     fi
 
@@ -206,6 +264,19 @@ start_scheduled_job() {
     local schedule="${config%%|*}"
     local description="${config##*|}"
     local job_uri="https://run.googleapis.com/v2/projects/${GE_GCP_PROJECT_ID}/locations/${GE_GCP_REGION}/jobs/${cloudrun_job_name}:run"
+
+    # followed-users-backfill's two logical jobs share one Cloud Run job and
+    # are distinguished by a container args override at trigger time (see
+    # gcp_setup.sh's create_or_update_backfill_scheduler_job for the same
+    # pattern). Other jobs have no override and run with their deploy-time
+    # default args.
+    local args_json
+    args_json=$(get_scheduler_job_args "$job")
+    local extra_flags=()
+    if [[ -n "$args_json" ]]; then
+        local body="{\"overrides\":{\"containerOverrides\":[{\"args\":${args_json}}]}}"
+        extra_flags=(--headers="Content-Type=application/json" --message-body="$body")
+    fi
 
     echo -e "${BLUE}Starting scheduled job $scheduler_job_name...${NC}"
 
@@ -216,6 +287,7 @@ start_scheduled_job() {
             --schedule="$schedule" \
             --uri="$job_uri" \
             --http-method=POST \
+            "${extra_flags[@]}" \
             --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
             --description="$description" \
             --quiet
@@ -227,6 +299,7 @@ start_scheduled_job() {
             --schedule="$schedule" \
             --uri="$job_uri" \
             --http-method=POST \
+            "${extra_flags[@]}" \
             --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
             --description="$description"
         echo -e "${GREEN}Scheduled job $scheduler_job_name created (schedule: $schedule)${NC}"
@@ -240,7 +313,7 @@ stop_scheduled_job() {
     scheduler_job_name=$(get_scheduler_job_name "$job")
 
     if [[ -z "$scheduler_job_name" ]]; then
-        echo -e "${RED}Error: Unknown job '$job'. Valid jobs: expiry, extract${NC}"
+        echo -e "${RED}Error: Unknown job '$job'. Valid jobs: ${SCHEDULED_JOBS[*]}${NC}"
         return 1
     fi
 
@@ -337,7 +410,7 @@ main() {
     case "$command" in
         "start")
             if [[ -n "$target" ]]; then
-                if [[ "$target" == "expiry" || "$target" == "extract" ]]; then
+                if is_scheduled_job "$target"; then
                     start_scheduled_job "$target"
                 else
                     start_service "$target"
@@ -354,7 +427,7 @@ main() {
             ;;
         "stop")
             if [[ -n "$target" ]]; then
-                if [[ "$target" == "expiry" || "$target" == "extract" ]]; then
+                if is_scheduled_job "$target"; then
                     stop_scheduled_job "$target"
                 else
                     stop_service "$target"
@@ -397,7 +470,7 @@ main() {
             echo "  restart <service> - Restart a specific service"
             echo ""
             echo "Available services: ${SERVICES[*]}"
-            echo "Available scheduled jobs: expiry, extract"
+            echo "Available scheduled jobs: ${SCHEDULED_JOBS[*]}"
             return 1
             ;;
     esac
