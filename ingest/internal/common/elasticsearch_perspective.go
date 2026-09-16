@@ -16,6 +16,12 @@ import (
 // ScoredAt is still set, which is what marks it permanently unscorable rather
 // than merely not-yet-scored.
 type PerspectiveUpdate struct {
+	// Index is the concrete index holding the document, as the scan reported
+	// it in _index — never an alias. A bulk update addressed to an alias is
+	// routed to that alias's *write* index, so with posts_recent spanning a
+	// weekly index per retention period, every document outside the current
+	// period would come back document_missing. Empty is a programming error.
+	Index         string
 	AtURI         string
 	Scores        map[string]float64
 	CombinedScore *float64
@@ -35,8 +41,15 @@ type PerspectiveUpdate struct {
 // the author DID comes out of the AT-URI, so no extra read is needed. Posts
 // whose URI yields no DID are skipped rather than failing the batch.
 //
+// Each update names its own index rather than the batch sharing one. The bulk
+// API takes _index per action, so one request still covers every period index
+// a page spans — and there is deliberately no batch-level index to fall back
+// on, because the value that looks most natural to pass ("posts_recent", the
+// index the scan was given) is an alias, and that is exactly the bug: the
+// update lands on the alias's write index, where the document is not.
+//
 // Returns the number of documents successfully updated.
-func BulkUpdatePerspectiveScores(ctx context.Context, client *elasticsearch.Client, index string, updates []PerspectiveUpdate, dryRun bool, logger *IngestLogger) (int, error) {
+func BulkUpdatePerspectiveScores(ctx context.Context, client *elasticsearch.Client, updates []PerspectiveUpdate, dryRun bool, logger *IngestLogger) (int, error) {
 	if len(updates) == 0 {
 		return 0, nil
 	}
@@ -49,6 +62,7 @@ func BulkUpdatePerspectiveScores(ctx context.Context, client *elasticsearch.Clie
 	var buf bytes.Buffer
 	queued := 0
 	skippedNoRouting := 0
+	skippedNoIndex := 0
 
 	for _, update := range updates {
 		authorDID := ExtractDIDFromATURI(update.AtURI)
@@ -56,10 +70,14 @@ func BulkUpdatePerspectiveScores(ctx context.Context, client *elasticsearch.Clie
 			skippedNoRouting++
 			continue
 		}
+		if update.Index == "" {
+			skippedNoIndex++
+			continue
+		}
 
 		meta := map[string]interface{}{
 			"update": map[string]interface{}{
-				"_index":  index,
+				"_index":  update.Index,
 				"_id":     update.AtURI,
 				"routing": authorDID,
 			},
@@ -90,6 +108,11 @@ func BulkUpdatePerspectiveScores(ctx context.Context, client *elasticsearch.Clie
 
 	if skippedNoRouting > 0 {
 		logger.Debug("Skipped %d perspective updates with unparseable AT-URIs", skippedNoRouting)
+	}
+	// Unlike an unparseable AT-URI, this is a caller bug rather than bad data.
+	if skippedNoIndex > 0 {
+		logger.Error("Skipped %d perspective updates with no index set; the scan must "+
+			"carry each hit's _index through to the update", skippedNoIndex)
 	}
 	if queued == 0 {
 		return 0, nil
@@ -133,13 +156,17 @@ func BulkUpdatePerspectiveScores(ctx context.Context, client *elasticsearch.Clie
 	logger.Metric("es.update_perspective_scores.took_ms", float64(bulkResponse.Took))
 
 	updated := 0
+	missing := 0
 	firstError := ""
 	for _, item := range bulkResponse.Items {
 		for _, details := range item {
 			if details.Error != nil {
-				// A 404 is routine: posts age out of the index between the
-				// scan and the write. Anything else is worth surfacing.
-				if details.Status != 404 && firstError == "" {
+				// A 404 is routine *per document*: posts age out of the index
+				// between the scan and the write. Anything else is worth
+				// surfacing.
+				if details.Status == 404 {
+					missing++
+				} else if firstError == "" {
 					firstError = fmt.Sprintf("%s: %s", details.Error.Type, details.Error.Reason)
 				}
 				continue
@@ -152,15 +179,33 @@ func BulkUpdatePerspectiveScores(ctx context.Context, client *elasticsearch.Clie
 		logger.Error("Some perspective updates failed (first error: %s)", firstError)
 	}
 
+	// Routine one at a time, a symptom in bulk: a whole batch coming back
+	// missing is what a misrouted write looks like, and suppressing 404s as
+	// expected is what let exactly that go unnoticed. Counted so the ratio to
+	// updated_count is visible rather than inferred from a low update count.
+	if missing > 0 {
+		logger.Metric("es.update_perspective_scores.missing_count", float64(missing))
+		if missing == queued {
+			logger.Error("All %d perspective updates in this batch reported document_missing; "+
+				"if this repeats, the writes are going to the wrong index", missing)
+		} else {
+			logger.Debug("%d of %d perspective updates reported document_missing (aged out)", missing, queued)
+		}
+	}
+
 	logger.Metric("es.update_perspective_scores.updated_count", float64(updated))
 	return updated, nil
 }
 
 // UnscoredPost is a post the backfill needs to score: the text to send, and
-// the URI to write the result back to.
+// the URI and concrete index to write the result back to.
 type UnscoredPost struct {
 	AtURI   string
 	Content string
+	// Index is the hit's _index. The scan is normally given the posts_recent
+	// alias, which spans one index per retention period, so the index a
+	// document lives in has to travel with it — see PerspectiveUpdate.Index.
+	Index string
 }
 
 // PostScanCursor carries a page's paging state. HitCount is the number of hits
@@ -273,6 +318,7 @@ func FetchUnscoredPosts(
 	var response struct {
 		Hits struct {
 			Hits []struct {
+				Index  string `json:"_index"`
 				Source struct {
 					AtURI     string `json:"at_uri"`
 					Content   string `json:"content"`
@@ -295,7 +341,11 @@ func FetchUnscoredPosts(
 		if hit.Source.AtURI == "" {
 			continue
 		}
-		posts = append(posts, UnscoredPost{AtURI: hit.Source.AtURI, Content: hit.Source.Content})
+		posts = append(posts, UnscoredPost{
+			AtURI:   hit.Source.AtURI,
+			Content: hit.Source.Content,
+			Index:   hit.Index,
+		})
 	}
 
 	return posts, cursor, nil

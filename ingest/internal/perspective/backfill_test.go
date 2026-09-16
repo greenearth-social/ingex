@@ -23,8 +23,11 @@ type fakeES struct {
 	pages [][]string
 	// emptyContent serves hits with no text, standing in for image-only posts.
 	emptyContent bool
-	pageIndex    int
-	bulkBodies   []string
+	// omitIndex serves hits with no _index, which should never happen from a
+	// real search and must not result in a write.
+	omitIndex  bool
+	pageIndex  int
+	bulkBodies []string
 }
 
 func (f *fakeES) client(t *testing.T) *elasticsearch.Client {
@@ -64,7 +67,11 @@ func (f *fakeES) client(t *testing.T) *elasticsearch.Client {
 		if f.emptyContent {
 			content = ""
 		}
-		_, _ = w.Write([]byte(searchPage(content, uris...)))
+		page := searchPage(content, uris...)
+		if f.omitIndex {
+			page = stripHitIndices(page)
+		}
+		_, _ = w.Write([]byte(page))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -75,14 +82,34 @@ func (f *fakeES) client(t *testing.T) *elasticsearch.Client {
 	return client
 }
 
+// searchPage builds a scan page. Each hit reports a different concrete
+// _index, because that is the shape prod has: the scan is given the
+// posts_recent alias, which spans one index per retention period, so a single
+// page routinely straddles several. A page whose hits all share one index —
+// which is all the devenv can produce, having one posts index — cannot show
+// whether the writes are routed per document.
 func searchPage(content string, atURIs ...string) string {
 	hits := make([]string, len(atURIs))
 	for i, uri := range atURIs {
-		hits[i] = `{"_source":{"at_uri":"` + uri + `","content":"` + content + `",` +
+		hits[i] = `{"_index":"` + hitIndex(i) + `","_source":{"at_uri":"` + uri + `","content":"` + content + `",` +
 			`"created_at":"2026-08-0` + string(rune('1'+i)) + `T00:00:00Z",` +
 			`"indexed_at":"2026-08-0` + string(rune('1'+i)) + `T00:00:01Z"}}`
 	}
 	return `{"hits":{"hits":[` + strings.Join(hits, ",") + `]}}`
+}
+
+// hitIndex names the weekly index the i-th hit of a page lives in.
+func hitIndex(i int) string {
+	return `posts-2026-w3` + string(rune('1'+i))
+}
+
+// stripHitIndices removes the _index from every hit, for the case a search
+// somehow reports none.
+func stripHitIndices(page string) string {
+	for i := 0; i < 10; i++ {
+		page = strings.ReplaceAll(page, `{"_index":"`+hitIndex(i)+`",`, `{`)
+	}
+	return page
 }
 
 func alwaysScores(t *testing.T) *httptest.Server {
@@ -92,6 +119,84 @@ func alwaysScores(t *testing.T) *httptest.Server {
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// The backfill scans through the posts_recent alias but must write to the
+// concrete index each document lives in. A bulk update addressed to an alias
+// is routed to that alias's *write* index, so passing the alias meant every
+// document outside the current period came back document_missing — and since
+// the write path counts a 404 as routine ("aged out between scan and write"),
+// nothing surfaced. In prod, with a weekly index over 60 days of retention,
+// that is roughly eight of every nine posts scored and then dropped.
+func TestBackfillWritesToEachDocumentsOwnIndex(t *testing.T) {
+	es := &fakeES{pages: [][]string{
+		{"at://did:plc:a/app.bsky.feed.post/1", "at://did:plc:b/app.bsky.feed.post/2"},
+	}}
+	scoring := alwaysScores(t)
+
+	stats, err := Backfill(t.Context(), es.client(t), common.NewLogger(false),
+		testScorer(scoring.URL, 1000, QuotaWait),
+		BackfillConfig{SourceIndex: "posts_recent", PageSize: 2}, false)
+	if err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+	if stats.Updated != 2 {
+		t.Fatalf("updated %d of 2 posts; stats = %+v", stats.Updated, stats)
+	}
+	if len(es.bulkBodies) != 1 {
+		t.Fatalf("wrote %d bulk requests, want 1", len(es.bulkBodies))
+	}
+
+	// One request, but a distinct _index per action — the bulk API takes
+	// _index per action, so spanning periods needs no extra round trips.
+	var gotIndices []string
+	for _, line := range strings.Split(strings.TrimSpace(es.bulkBodies[0]), "\n") {
+		var action map[string]map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &action); err != nil {
+			continue
+		}
+		meta, ok := action["update"]
+		if !ok {
+			continue
+		}
+		idx, _ := meta["_index"].(string)
+		gotIndices = append(gotIndices, idx)
+	}
+
+	want := []string{hitIndex(0), hitIndex(1)}
+	if len(gotIndices) != len(want) {
+		t.Fatalf("got %d update actions %v, want %d", len(gotIndices), gotIndices, len(want))
+	}
+	for i := range want {
+		if gotIndices[i] != want[i] {
+			t.Errorf("action %d wrote to %q, want %q", i, gotIndices[i], want[i])
+		}
+	}
+	for _, idx := range gotIndices {
+		if idx == "posts_recent" {
+			t.Error("wrote to the alias; the update would land on its write index, not the document's")
+		}
+	}
+}
+
+// An update with no index is a caller bug, not bad data: it must be dropped
+// rather than sent somewhere arbitrary.
+func TestBackfillSkipsHitsWithNoIndex(t *testing.T) {
+	es := &fakeES{
+		pages:     [][]string{{"at://did:plc:a/app.bsky.feed.post/1"}},
+		omitIndex: true,
+	}
+	scoring := alwaysScores(t)
+
+	stats, err := Backfill(t.Context(), es.client(t), common.NewLogger(false),
+		testScorer(scoring.URL, 1000, QuotaWait),
+		BackfillConfig{SourceIndex: "posts_recent", PageSize: 1}, false)
+	if err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+	if stats.Updated != 0 {
+		t.Errorf("updated %d posts from hits with no _index, want 0", stats.Updated)
+	}
 }
 
 func TestBackfillScoresAndWrites(t *testing.T) {

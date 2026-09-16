@@ -30,13 +30,14 @@ func TestBulkUpdatePerspectiveScoresUsesPartialUpdate(t *testing.T) {
 	defer srv.Close()
 
 	updates := []PerspectiveUpdate{{
+		Index:         "posts-2026-w35",
 		AtURI:         "at://did:plc:a/app.bsky.feed.post/1",
 		Scores:        map[string]float64{"toxicity": 0.25},
 		CombinedScore: float64Ptr(0.75),
 		ScoredAt:      "2026-08-28T00:00:00Z",
 	}}
 
-	updated, err := BulkUpdatePerspectiveScores(t.Context(), client, "posts_recent", updates, false, NewLogger(false))
+	updated, err := BulkUpdatePerspectiveScores(t.Context(), client, updates, false, NewLogger(false))
 	if err != nil {
 		t.Fatalf("BulkUpdatePerspectiveScores: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestBulkUpdatePerspectiveScoresUsesPartialUpdate(t *testing.T) {
 	if !ok {
 		t.Fatalf("action is %v, want an update (an index action would replace the document)", action)
 	}
-	if meta["_index"] != "posts_recent" || meta["_id"] != "at://did:plc:a/app.bsky.feed.post/1" {
+	if meta["_index"] != "posts-2026-w35" || meta["_id"] != "at://did:plc:a/app.bsky.feed.post/1" {
 		t.Errorf("action metadata = %v", meta)
 	}
 	// The posts mapping requires routing; without it the update lands on the
@@ -94,10 +95,11 @@ func TestBulkUpdatePerspectiveScoresWritesStampOnlyForUnscorable(t *testing.T) {
 	defer srv.Close()
 
 	updates := []PerspectiveUpdate{{
+		Index:    "posts-2026-w35",
 		AtURI:    "at://did:plc:a/app.bsky.feed.post/1",
 		ScoredAt: "2026-08-28T00:00:00Z",
 	}}
-	if _, err := BulkUpdatePerspectiveScores(t.Context(), client, "posts_recent", updates, false, NewLogger(false)); err != nil {
+	if _, err := BulkUpdatePerspectiveScores(t.Context(), client, updates, false, NewLogger(false)); err != nil {
 		t.Fatalf("BulkUpdatePerspectiveScores: %v", err)
 	}
 
@@ -124,11 +126,12 @@ func TestBulkUpdatePerspectiveScoresWritesZeroScore(t *testing.T) {
 	defer srv.Close()
 
 	updates := []PerspectiveUpdate{{
+		Index:         "posts-2026-w35",
 		AtURI:         "at://did:plc:a/app.bsky.feed.post/1",
 		CombinedScore: float64Ptr(0),
 		ScoredAt:      "2026-08-28T00:00:00Z",
 	}}
-	if _, err := BulkUpdatePerspectiveScores(t.Context(), client, "posts_recent", updates, false, NewLogger(false)); err != nil {
+	if _, err := BulkUpdatePerspectiveScores(t.Context(), client, updates, false, NewLogger(false)); err != nil {
 		t.Fatalf("BulkUpdatePerspectiveScores: %v", err)
 	}
 	if !strings.Contains(bulkBody, `"combined_perspective_score":0`) {
@@ -144,8 +147,8 @@ func TestBulkUpdatePerspectiveScoresSkipsUnroutablePosts(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	updates := []PerspectiveUpdate{{AtURI: "not-an-at-uri", ScoredAt: "2026-08-28T00:00:00Z"}}
-	updated, err := BulkUpdatePerspectiveScores(t.Context(), client, "posts_recent", updates, false, NewLogger(false))
+	updates := []PerspectiveUpdate{{Index: "posts-2026-w35", AtURI: "not-an-at-uri", ScoredAt: "2026-08-28T00:00:00Z"}}
+	updated, err := BulkUpdatePerspectiveScores(t.Context(), client, updates, false, NewLogger(false))
 	if err != nil {
 		t.Fatalf("BulkUpdatePerspectiveScores: %v", err)
 	}
@@ -169,10 +172,10 @@ func TestBulkUpdatePerspectiveScoresTolerates404(t *testing.T) {
 	defer srv.Close()
 
 	updates := []PerspectiveUpdate{
-		{AtURI: "at://did:plc:a/app.bsky.feed.post/1", ScoredAt: "t"},
-		{AtURI: "at://did:plc:b/app.bsky.feed.post/2", ScoredAt: "t"},
+		{Index: "posts-2026-w35", AtURI: "at://did:plc:a/app.bsky.feed.post/1", ScoredAt: "t"},
+		{Index: "posts-2026-w35", AtURI: "at://did:plc:b/app.bsky.feed.post/2", ScoredAt: "t"},
 	}
-	updated, err := BulkUpdatePerspectiveScores(t.Context(), client, "posts_recent", updates, false, NewLogger(false))
+	updated, err := BulkUpdatePerspectiveScores(t.Context(), client, updates, false, NewLogger(false))
 	if err != nil {
 		t.Fatalf("a missing document must not fail the batch: %v", err)
 	}
@@ -182,8 +185,8 @@ func TestBulkUpdatePerspectiveScoresTolerates404(t *testing.T) {
 }
 
 func TestBulkUpdatePerspectiveScoresDryRunWritesNothing(t *testing.T) {
-	updates := []PerspectiveUpdate{{AtURI: "at://did:plc:a/app.bsky.feed.post/1", ScoredAt: "t"}}
-	updated, err := BulkUpdatePerspectiveScores(t.Context(), nil, "posts_recent", updates, true, NewLogger(false))
+	updates := []PerspectiveUpdate{{Index: "posts-2026-w35", AtURI: "at://did:plc:a/app.bsky.feed.post/1", ScoredAt: "t"}}
+	updated, err := BulkUpdatePerspectiveScores(t.Context(), nil, updates, true, NewLogger(false))
 	if err != nil {
 		t.Fatalf("dry run error: %v", err)
 	}

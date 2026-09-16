@@ -134,6 +134,14 @@ Three states are meaningful, and the api distinguishes all three:
 | `perspective_scored_at` only | permanently unscorable — no text at all (an image-only post), or a language the API declines to rate. Never retried. |
 | no fields | not scored yet. The api scores it live; `backfill_perspective` fills it in. |
 
+`backfill_perspective` writes to the concrete index each post lives in, taken
+from the scan's `_index`, not to `--source-index`. That flag is normally the
+`posts_recent` alias, and a bulk update addressed to an alias is routed to the
+alias's *write* index — so with a weekly index per retention period, every post
+outside the current week would come back `document_missing`, which the write
+path counts as routine. Watch `es.update_perspective_scores.missing_count`
+against `updated_count`: routine one at a time, a misroute in bulk.
+
 The middle state matters more than it looks: without it, every image-only and
 non-English post would be re-submitted on every backfill run and re-queried by
 the api on every feed request, forever.

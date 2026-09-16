@@ -106,8 +106,16 @@ func Backfill(
 		stats.Scanned += cursor.HitCount
 
 		inputs := make([]ScoreInput, len(posts))
+		// The write has to go to the concrete index the document lives in, not
+		// to cfg.SourceIndex — that is normally the posts_recent alias, and an
+		// update addressed to an alias lands on its write index, which for any
+		// document outside the current period is the wrong one. Keyed by AT-URI
+		// rather than by position so it does not depend on Score preserving
+		// input order; URIs are unique within a page.
+		indexByURI := make(map[string]string, len(posts))
 		for i, post := range posts {
 			inputs[i] = ScoreInput{AtURI: post.AtURI, Content: post.Content}
+			indexByURI[post.AtURI] = post.Index
 		}
 
 		scoredAt := time.Now().UTC().Format(time.RFC3339)
@@ -117,6 +125,7 @@ func Backfill(
 			case OutcomeScored:
 				combined := result.Combined
 				updates = append(updates, common.PerspectiveUpdate{
+					Index:         indexByURI[result.AtURI],
 					AtURI:         result.AtURI,
 					Scores:        result.Scores,
 					CombinedScore: &combined,
@@ -125,6 +134,7 @@ func Backfill(
 				stats.Scored++
 			case OutcomeUnsupportedLanguage, OutcomeNoContent:
 				updates = append(updates, common.PerspectiveUpdate{
+					Index:    indexByURI[result.AtURI],
 					AtURI:    result.AtURI,
 					ScoredAt: scoredAt,
 				})
@@ -136,7 +146,7 @@ func Backfill(
 			}
 		}
 
-		updated, err := common.BulkUpdatePerspectiveScores(ctx, client, cfg.SourceIndex, updates, dryRun, logger)
+		updated, err := common.BulkUpdatePerspectiveScores(ctx, client, updates, dryRun, logger)
 		if err != nil {
 			return stats, fmt.Errorf("write perspective scores: %w", err)
 		}
