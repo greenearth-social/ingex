@@ -139,7 +139,8 @@ non-English post would be re-submitted on every backfill run and re-queried by
 the api on every feed request, forever.
 
 Failures are fail-open: posts are still indexed with no perspective fields.
-Disabled in `--dry-run` mode and by `--no-perspective`.
+Disabled in `--dry-run` mode and by `--no-perspective`, and gated on the
+destination index mapping the fields (below).
 
 - `GE_PERSPECTIVE_API_KEY` - Perspective API key (GSM secret `perspective-api-key-{env}`); unset disables scoring
 - `GE_PERSPECTIVE_HOST` - API host override (default: `https://commentanalyzer.googleapis.com`); the devenv points this at its local stub
@@ -160,13 +161,38 @@ Disabled in `--dry-run` mode and by `--no-perspective`.
 > does, then recover the gap with `backfill_perspective`.
 
 > **Rollout ordering:** as with `ge_post_embedding`, deploy the posts index
-> template first. Elasticsearch would otherwise dynamically map
-> `perspective_scores` and admit any attribute name the API ever returns.
+> template first — but the service enforces this rather than trusting it.
+>
+> An index template applies only when an index is *created*, so the period
+> index already being written to when the template lands does not have the new
+> fields, and the template alone cannot give them to it. Writing anyway would
+> let Elasticsearch infer the types from whichever document arrives first, and
+> Go renders `float64(0)` as the JSON integer `0`: a maximally toxic post
+> arriving first maps `combined_perspective_score` as a `long`, after which
+> every fractional score is silently truncated to `0` in the index — accepted,
+> not rejected — and a field's type cannot be changed in place. `_source` keeps
+> the true value so serving still reads the right number, but the field is
+> mapped `index: true` so that it can be queried and aggregated, and that would
+> quietly return nonsense.
+>
+> So scoring is **gated on the mapping**: before writing, the service checks
+> that the current period index maps `combined_perspective_score`,
+> `perspective_scored_at` and `perspective_scores.*` as the template declares
+> them. While it does not, posts are indexed unscored — the same state as never
+> having been scored, so the api scores them live and `backfill_perspective`
+> can collect them later. The check re-runs each minute alongside `EnsureIndex`,
+> so a deploy landing mid-period needs no intervention: the next period index is
+> created from the current template and scoring starts at the boundary.
+>
+> `perspective.index_gate.ready` is `1` when scoring is live and `0` while
+> gated. Expect `0` for the remainder of the period after a mid-period deploy;
+> `0` past the following boundary means the template never landed.
 
 **Metrics.** `perspective.rate_limit.wait_ms` rises first when the budget starts
 binding; `perspective.rate_limit.throttled.count` shows how often. A non-zero
 `perspective.rate_limit.skipped.count` means posts were indexed unscored and a
-`backfill_perspective` run is owed.
+`backfill_perspective` run is owed. `perspective.index_gate.ready` at `0` means
+nothing is being scored at all — see rollout ordering above.
 
 ## Usage
 

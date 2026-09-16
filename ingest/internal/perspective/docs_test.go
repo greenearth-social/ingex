@@ -31,9 +31,14 @@ func scoringServer(t *testing.T, respond func(text string, w http.ResponseWriter
 	return server
 }
 
+// testScorer returns a scorer with the index-mapping gate already open. The
+// gate defaults closed, so every test that exercises scoring itself has to
+// open it; the gate's own behaviour is covered in index_ready_test.go.
 func testScorer(host string, qps int, policy QuotaPolicy) *BatchScorer {
 	logger := common.NewLogger(false)
-	return NewBatchScorer(testClient(host, 0), qps, 8, policy, logger)
+	scorer := NewBatchScorer(testClient(host, 0), qps, 8, policy, logger)
+	scorer.SetIndexReady(true)
+	return scorer
 }
 
 func postDoc(atURI, content string) common.PostDoc {

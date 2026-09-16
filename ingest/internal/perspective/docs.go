@@ -21,9 +21,14 @@ import (
 // unstamped post is retried forever, which for the permanently unscorable is
 // pure waste.
 //
+// Also a no-op while the destination index has not been confirmed to map the
+// Perspective fields — see IndexMappingReady. That case is indistinguishable
+// from the kill switch on purpose: no fields written, posts indexed as before,
+// the api scores them live, and the backfill can collect them later.
+//
 // Returns per-outcome counts for the caller to log.
 func AttachPerspectiveScores(ctx context.Context, b *BatchScorer, docs []common.PostDoc) (scored, unscorable, skipped, failed int) {
-	if b == nil || len(docs) == 0 {
+	if b == nil || !b.IndexReady() || len(docs) == 0 {
 		return 0, 0, 0, 0
 	}
 

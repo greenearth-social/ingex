@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -63,6 +64,25 @@ type BatchScorer struct {
 	limiter        *limiter
 	maxConcurrency int
 	logger         *common.IngestLogger
+
+	// indexReady gates scoring on the destination index mapping the
+	// Perspective fields explicitly. It starts closed: a scorer does not know
+	// which index its results are bound for, so the caller that does has to
+	// say so. See IndexMappingReady for why writing into an index without
+	// those mappings is worse than not writing at all.
+	indexReady atomic.Bool
+}
+
+// SetIndexReady opens or closes the mapping gate. Safe to call from a
+// different goroutine than the one scoring — megastream re-evaluates it on a
+// ticker, so the gate opens by itself when the period index rolls over.
+func (b *BatchScorer) SetIndexReady(ready bool) {
+	b.indexReady.Store(ready)
+}
+
+// IndexReady reports whether the mapping gate is open.
+func (b *BatchScorer) IndexReady() bool {
+	return b.indexReady.Load()
 }
 
 // NewBatchScorer creates a BatchScorer. qps is this process's share of the

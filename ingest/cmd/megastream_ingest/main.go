@@ -277,6 +277,11 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					return fmt.Errorf("failed to ensure index for %s: %w", alias, err)
 				}
 			}
+			// Re-checked on every tick, after EnsureIndex has created the
+			// current period index, so the gate opens on its own at the
+			// boundary when a fresh index picks up the template.
+			refreshPerspectiveGate(indexCtx, esClient, scorer,
+				common.CurrentIndexName("posts", config.IndexPeriod), logger)
 			return nil
 		}
 
@@ -606,6 +611,75 @@ cleanup:
 
 	logger.Info("Spooler ingestion complete. Processed: %d, Deleted: %d, Skipped: %d, Hashtag updates: %d", processedCount, deletedCount, skippedCount, hashtagCount)
 	return nil
+}
+
+// refreshPerspectiveGate opens or closes the scorer's mapping gate for index.
+//
+// Called on the same ticker as EnsureIndex, so a deploy landing mid-period
+// runs unscored and starts scoring by itself once the next period index is
+// created from the current template. Logs only on transition: this runs every
+// minute, and the closed state can legitimately persist for a whole period.
+//
+// A failed check leaves the gate where it was. A transient Elasticsearch error
+// should not stop scoring that is already running, nor start scoring whose
+// safety has not been established.
+func refreshPerspectiveGate(
+	ctx context.Context,
+	esClient *elasticsearch.Client,
+	scorer *perspective.BatchScorer,
+	index string,
+	logger *common.IngestLogger,
+) {
+	if scorer == nil {
+		return
+	}
+
+	fields := make([]string, 0, len(perspective.RequiredIndexFields))
+	for field := range perspective.RequiredIndexFields {
+		fields = append(fields, field)
+	}
+
+	types, err := common.FieldMappingTypes(ctx, esClient, index, fields)
+	if err != nil {
+		logger.Error("Perspective mapping check on %s failed, leaving scoring %s: %v",
+			index, gateState(scorer.IndexReady()), err)
+		return
+	}
+
+	ready, reason := perspective.IndexMappingReady(types)
+	was := scorer.IndexReady()
+	scorer.SetIndexReady(ready)
+
+	// A 0/1 gauge rather than a log line is what to alert on: the closed state
+	// is legitimate for a whole period after a mid-period deploy, but closed
+	// for longer than that means the template never landed.
+	gauge := 0.0
+	if ready {
+		gauge = 1.0
+	}
+	logger.Metric("perspective.index_gate.ready", gauge)
+
+	if ready == was {
+		return
+	}
+	if ready {
+		logger.Info("Perspective scoring enabled for %s: the index maps the score fields", index)
+		return
+	}
+	// Info, not Error: for a deploy that lands mid-period this is the expected
+	// state and it clears itself at the boundary. perspective.index_gate.ready
+	// staying 0 past that is the real signal.
+	logger.Info("Perspective scoring suspended: %s does not map the score fields (%s). "+
+		"Posts are indexed unscored and the api scores them live; deploy the posts "+
+		"index template, and this clears when the next period index is created. "+
+		"Recover the gap with cmd/backfill_perspective.", index, reason)
+}
+
+func gateState(open bool) string {
+	if open {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 type postFlushResult struct {
