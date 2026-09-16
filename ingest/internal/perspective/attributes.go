@@ -52,6 +52,11 @@ var RequestedAttributes = sortedAttributeNames()
 // HTTP response works in storage keys.
 var prcWeightsByStorageKey = weightsByStorageKey()
 
+// storageKeysOrdered is StorageKeys() evaluated once, in RequestedAttributes
+// order. PRCScore runs per post, so it wants a fixed iteration order without
+// re-deriving the keys or allocating on every call.
+var storageKeysOrdered = StorageKeys()
+
 // storageKey converts an API attribute name to the key the score is stored
 // under in Elasticsearch and Parquet. Lower case only: SCREAMING_CASE field
 // names are legal in ES but read badly everywhere they surface, and the
@@ -102,11 +107,23 @@ func sortedAttributeNames() []string {
 // Every attribute score is in [0, 1], so the sum is minimised when each
 // negatively-weighted attribute is at 1.0 and each positively-weighted one at
 // 0.0 — the sum of the negative weights — and maximised by the mirror image.
-// For these weights that is exactly (-1.0, +1.0): the positive weights sum to
-// 1.0 (6 * 1/6) and the negative to -1.0 (2*(-1/6) + 3*(-1/18) + 4*(-1/8)).
+// For these weights that is (-1.0, +1.0) in exact arithmetic: 6 * 1/6 and
+// 2*(-1/6) + 3*(-1/18) + 4*(-1/8). In float64 it is (-1.0,
+// 0.9999999999999999), since six float64 1.0/6 values do not sum to 1.0 in
+// any order. That costs nothing, because hi only ever reaches the score as
+// (hi - lo), which rounds to exactly 2.0 -- and the api's Python copy sums to
+// the same pair, so the two repos rescale identically.
+//
+// The order, however, must be fixed. Float addition is not associative and Go
+// randomises map iteration order, so accumulating straight off prcWeights gave
+// -1.0 for lo on most runs and -0.9999999999999999 on others, which rescaled a
+// maximally toxic post to 0.0 or to 5.55e-17 depending on the order the runtime
+// happened to pick. Iterating RequestedAttributes (sorted) makes the bounds and
+// the score reproducible; see TestScoreIsBitReproducible.
 func rawScoreBounds() (float64, float64) {
 	var lo, hi float64
-	for _, w := range prcWeights {
+	for _, name := range RequestedAttributes {
+		w := prcWeights[name]
 		if w < 0 {
 			lo += w
 		} else {
@@ -123,10 +140,13 @@ func rawScoreBounds() (float64, float64) {
 // attrs contributes zero — indistinguishable from a genuine 0.0, which for a
 // negatively weighted attribute would read as "not toxic" — so Client.Score
 // rejects partial responses rather than letting them reach here.
+// Summed over storageKeysOrdered rather than by ranging prcWeightsByStorageKey,
+// for the reproducibility reason in rawScoreBounds: identical inputs must give
+// a bit-identical score, in this process and in the api's Python copy.
 func PRCScore(attrs map[string]float64) float64 {
 	var raw float64
-	for key, weight := range prcWeightsByStorageKey {
-		raw += weight * attrs[key]
+	for _, key := range storageKeysOrdered {
+		raw += prcWeightsByStorageKey[key] * attrs[key]
 	}
 	lo, hi := rawScoreBounds()
 	return ScoreBounds[0] + (raw-lo)*(ScoreBounds[1]-ScoreBounds[0])/(hi-lo)

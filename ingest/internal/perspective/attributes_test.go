@@ -89,6 +89,57 @@ func TestRawScoreBoundsAreSymmetric(t *testing.T) {
 	assertClose(t, hi, 1.0)
 }
 
+// Float addition is not associative, and Go randomises map iteration order, so
+// summing the weights straight off a map produced -1.0 on most runs and
+// -0.9999999999999999 on others -- rescaling a maximally toxic post to 0.0 or
+// to 5.55e-17 depending on which order the runtime happened to pick. It
+// surfaced as a ~5% flake in TestZeroCombinedScoreSurvivesMarshalling and as a
+// 5.55e-17 disagreement between a stored score and the api's live one.
+//
+// assertClose cannot see a 1e-17 wobble, which is the point of this test: the
+// assertions here are exact. Each PRCScore call re-derives the bounds, and Go
+// randomises each range independently, so an order-dependent sum shows up as
+// calls within one process disagreeing with each other.
+//
+// Detection is good but not certain -- most map orders happen to produce the
+// same float sum, so a reintroduced `range prcWeights` fails this roughly half
+// the time rather than always. That is still far better than the ~6% flake it
+// replaces, and it fails with a message that names the cause.
+func TestScoreIsBitReproducible(t *testing.T) {
+	// Six float64 1.0/6 values sum to 0.9999999999999999, not 1.0, in any
+	// order -- so hi is not exactly +1 and never can be. It only ever reaches
+	// the score as (hi - lo), which rounds to exactly 2.0, so assert the span
+	// the rescale actually divides by rather than the endpoint.
+	lo, hi := rawScoreBounds()
+	if hi-lo != 2.0 {
+		t.Errorf("rawScoreBounds() span = %v (%v..%v), want exactly 2.0", hi-lo, lo, hi)
+	}
+
+	attrs := zeroAttrs()
+	withValues(attrs, outrageSixthAttrs, 1.0)
+	withValues(attrs, outrageEighteenthAttrs, 1.0)
+	withValues(attrs, toxicEighthAttrs, 1.0)
+
+	if got := PRCScore(attrs); got != 0.0 {
+		t.Errorf("maximally toxic post scored %v, want exactly 0.0", got)
+	}
+
+	// rawScoreBounds takes no input, so any variation between calls is pure
+	// iteration order. It is the most direct detector of the defect.
+	wantLo, wantHi := rawScoreBounds()
+	first := PRCScore(attrs)
+	for i := range 5000 {
+		lo, hi := rawScoreBounds()
+		if lo != wantLo || hi != wantHi {
+			t.Fatalf("call %d: rawScoreBounds() = (%v, %v), first call gave (%v, %v) -- the weight sum depends on iteration order",
+				i, lo, hi, wantLo, wantHi)
+		}
+		if got := PRCScore(attrs); got != first {
+			t.Fatalf("call %d scored %v, first call scored %v -- PRCScore is not reproducible", i, got, first)
+		}
+	}
+}
+
 func TestRequestedAttributesCoverEveryWeight(t *testing.T) {
 	if len(RequestedAttributes) != len(prcWeights) {
 		t.Fatalf("requesting %d attributes for %d weights", len(RequestedAttributes), len(prcWeights))
