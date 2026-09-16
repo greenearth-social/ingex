@@ -23,8 +23,8 @@ const GEPostEmbeddingField = "ge_post_embedding"
 //
 // like_count is a point-in-time snapshot taken when the post crossed the
 // threshold, and is deliberately not maintained afterwards. It is never a
-// ranking input: both rankers refetch like_count from posts_recent
-// (api's lib/rankers/{heavy_ranker,two_tower}.py). As a filter it is safe to
+// ranking input: the heavy ranker refetches like_count from posts_recent
+// (api's lib/rankers/heavy_ranker.py). As a filter it is safe to
 // leave stale, because a post's like count only grows in the common case, so a
 // stale value at or above the threshold implies the live value is too.
 type QualityPostDoc struct {
