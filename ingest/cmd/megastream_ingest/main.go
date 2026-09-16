@@ -615,6 +615,9 @@ cleanup:
 
 // refreshPerspectiveGate opens or closes the scorer's mapping gate for index.
 //
+// TODO(greenearth-social/ingex#510): delete this along with the rest of the
+// gate once no posts index in the retention window predates the template.
+//
 // Called on the same ticker as EnsureIndex, so a deploy landing mid-period
 // runs unscored and starts scoring by itself once the next period index is
 // created from the current template. Logs only on transition: this runs every

@@ -5,6 +5,12 @@ import (
 	"sort"
 )
 
+// TODO(greenearth-social/ingex#510): remove this gate once every posts index
+// in the retention window was created from a template declaring these fields —
+// 60 days after the template reaches prod, plus one week boundary. After that
+// the gate can never close and it is pure cruft. #510 carries the removal
+// checklist and the mapping query to confirm it first.
+
 // RequiredIndexFields are the mappings a destination index must already have
 // before this service writes Perspective fields into it, as field name ->
 // Elasticsearch type.
