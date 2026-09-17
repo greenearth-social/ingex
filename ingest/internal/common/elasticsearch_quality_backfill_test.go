@@ -21,7 +21,7 @@ func TestFetchQualityCandidates_QueryShape(t *testing.T) {
 	defer srv.Close()
 
 	_, err := FetchQualityCandidates(t.Context(), client, NewLogger(false),
-		"posts_recent", 20, "2026-07-15T00:00:00Z", "", "", 500)
+		"posts_recent", 20, "2026-07-15T00:00:00Z", "", "", "", 500)
 	if err != nil {
 		t.Fatalf("FetchQualityCandidates: %v", err)
 	}
@@ -62,10 +62,18 @@ func TestFetchQualityCandidates_QueryShape(t *testing.T) {
 		t.Errorf("expected both like_count and created_at filters, got %v", filters)
 	}
 
-	// Deterministic pagination: search_after needs a total sort order.
+	// Deterministic pagination: search_after needs a total sort order, and
+	// (created_at, indexed_at) is not one -- ties at a page boundary drop the
+	// rest of the tie group. at_uri is the unique third key.
 	sort, ok := body["sort"].([]interface{})
-	if !ok || len(sort) != 2 {
-		t.Fatalf("expected a two-key sort for search_after, got %v", body["sort"])
+	if !ok || len(sort) != 3 {
+		t.Fatalf("expected a three-key sort for search_after, got %v", body["sort"])
+	}
+	for i, field := range []string{"created_at", "indexed_at", "at_uri"} {
+		clause, ok := sort[i].(map[string]interface{})
+		if !ok || clause[field] != "asc" {
+			t.Errorf("sort[%d] = %v, want %s ascending", i, sort[i], field)
+		}
 	}
 }
 
@@ -80,15 +88,43 @@ func TestFetchQualityCandidates_PassesSearchAfterCursor(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	const cursorAtURI = "at://did:plc:a/app.bsky.feed.post/9"
 	_, err := FetchQualityCandidates(t.Context(), client, NewLogger(false),
-		"posts_recent", 20, "2026-07-15T00:00:00Z", "2026-07-20T00:00:00Z", "2026-07-20T01:00:00Z", 500)
+		"posts_recent", 20, "2026-07-15T00:00:00Z", "2026-07-20T00:00:00Z", "2026-07-20T01:00:00Z",
+		cursorAtURI, 500)
 	if err != nil {
 		t.Fatalf("FetchQualityCandidates: %v", err)
 	}
 
 	after, ok := body["search_after"].([]interface{})
-	if !ok || len(after) != 2 || after[0] != "2026-07-20T00:00:00Z" {
-		t.Fatalf("expected search_after cursor, got %v", body["search_after"])
+	if !ok || len(after) != 3 {
+		t.Fatalf("expected a three-value search_after cursor, got %v", body["search_after"])
+	}
+	if after[0] != "2026-07-20T00:00:00Z" || after[1] != "2026-07-20T01:00:00Z" || after[2] != cursorAtURI {
+		t.Errorf("search_after = %v, want the created_at/indexed_at/at_uri triple", after)
+	}
+}
+
+// A cursor missing at_uri must not silently fall back to an unpaged query --
+// that would restart the scan from the window start on every page.
+func TestFetchQualityCandidates_IncompleteCursorSendsNoSearchAfter(t *testing.T) {
+	var body map[string]interface{}
+	client, srv := newMockESClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"took":1,"hits":{"total":{"value":0,"relation":"eq"},"hits":[]}}`))
+	}))
+	defer srv.Close()
+
+	_, err := FetchQualityCandidates(t.Context(), client, NewLogger(false),
+		"posts_recent", 20, "2026-07-15T00:00:00Z", "2026-07-20T00:00:00Z", "2026-07-20T01:00:00Z", "", 500)
+	if err != nil {
+		t.Fatalf("FetchQualityCandidates: %v", err)
+	}
+	if _, present := body["search_after"]; present {
+		t.Errorf("an incomplete cursor sent search_after = %v; BackfillQualityPosts guards against reaching here", body["search_after"])
 	}
 }
 
@@ -101,7 +137,7 @@ func TestBackfillQualityPosts(t *testing.T) {
 			`"at_uri":"at://did:plc:a/app.bsky.feed.post/` + n + `","author_did":"did:plc:a",` +
 			`"created_at":"` + createdAt + `","indexed_at":"` + createdAt + `","like_count":25,` +
 			`"ge_post_embedding_model_uuid":"uuid-1"},` +
-			`"sort":["` + createdAt + `","` + createdAt + `"],` +
+			`"sort":["` + createdAt + `","` + createdAt + `","at://did:plc:a/app.bsky.feed.post/` + n + `"],` +
 			`"fields":{"embeddings.ge_post_embedding":[[0.1,0.2]]}}`
 	}
 
