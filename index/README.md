@@ -181,12 +181,18 @@ kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o json
 
 # View last resource update timestamp
 kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.last-resource-update}'
+
+# View deployment history (rollback targets, newest first)
+kubectl get configmap elasticsearch-deployment-state -n greenearth-local -o jsonpath='{.data.deployment-history}'
 ```
 
 The ConfigMap tracks:
 - **last-schema-update**: Timestamp of last schema (template) update
 - **last-resource-update**: Timestamp of last resource (CPU/memory) update
 - **deployment-git-sha**: Git SHA of manifest at deployment time
+- **deployment-history**: The last 20 deployments as `<timestamp> <git-sha> <ctypes>`,
+  newest first. `deployment-git-sha` says what is deployed now; this says what came
+  before it, which is what [rolling back](#rollback-procedures) needs.
 - **index-types**: Comma-separated list of index types
 
 ### Deploying Non-Breaking Schema Changes
@@ -275,64 +281,129 @@ kubectl get elasticsearch greenearth -n greenearth-local -o jsonpath='{.status.h
 
 ### Rollback Procedures
 
-#### Rolling Back Schema Changes (Non-Breaking)
+Elasticsearch does not roll back the way the Cloud Run services do. There is no
+image to swap: the cluster is described by manifests that the ECK operator
+reconciles, so rolling back means re-applying an earlier revision's manifests
+and letting the operator converge on them.
 
-Since non-breaking schema changes only affect future documents, rollback is straightforward:
+`rollback.sh` does that without hand-managing a detached checkout mid-incident.
+It reads the previous deployment's git sha from the cluster's own state
+ConfigMap, materializes that revision's manifests in a temporary git worktree
+(your working tree is never touched), and applies them through the *current*
+`deploy.sh` via `--manifests-dir` — so the rollback runs on reviewed deploy
+logic rather than re-executing whatever `deploy.sh` looked like at that sha.
 
 ```bash
-# 1. Revert the template change in git
-git revert <commit-hash>
-
-# 2. Redeploy
-./deploy.sh local --ctypes schema
-
-# Result:
-# - Template reverted to previous version
-# - Future documents will use old schema
-# - Existing documents are unaffected (they already have whatever fields they have)
+./rollback.sh stage --list                    # deployment history, newest first
+./rollback.sh stage                           # undo the last deployment
+./rollback.sh prod --to a1b2c3d --ctypes schema
 ```
 
-**Note**: If your application is already using new fields, you may need to handle `null` values gracefully when querying older documents that don't have those fields.
+`--dry-run` shows the manifests that would be applied and changes nothing;
+`--yes` skips the confirmation prompt. With no `--to`, the target is the newest
+history entry whose sha differs from what is deployed, and the change types
+default to the ones the deployment being undone applied.
 
-#### Rolling Back Resource Changes
+#### Finding a rollback target
+
+`deploy.sh` records every deployment in the `elasticsearch-deployment-state`
+ConfigMap as `deployment-history` — newline-separated `<timestamp> <git-sha>
+<ctypes>` entries, newest first, capped at 20. The older `deployment-git-sha`
+key holds only what is deployed *now*, which is not enough to roll back from.
 
 ```bash
-# 1. Revert the resource change in git
-git revert <commit-hash>
-
-# 2. Redeploy
-./deploy.sh local --ctypes resource
-
-# Result:
-# - ECK operator performs rolling update back to previous spec
-# - Cluster remains available during rollback
+kubectl get configmap elasticsearch-deployment-state -n greenearth-prod \
+  -o jsonpath='{.data.deployment-history}'
 ```
 
-#### Emergency Rollback (Manual)
+History accumulates from the change that introduced it onward. For deployments
+made before that, pick a target from `git log --oneline -- deploy/k8s`.
 
-If the automated rollback doesn't work, you can manually intervene:
+#### What a rollback does and does not undo
 
-**For schema changes**:
+| Change | Rolls back? | Notes |
+| --- | --- | --- |
+| Index templates / ILM (`--ctypes schema`) | Future indices only | Templates apply at index creation. Documents already written keep the mapping they were written with. |
+| Resources / topology (`--ctypes resource`) | Yes | ECK performs a rolling update back to the previous spec; the cluster stays available. |
+| Snapshot policy (`--ctypes snapshot`) | Yes | SLM schedule and retention are just configuration. |
+| Elasticsearch version | **No** | See below. |
+| Indexed data | No | See below. |
+
+**Version downgrades are not possible.** Elasticsearch does not support
+in-place downgrades — a cluster that has started on a newer version cannot be
+moved back. `rollback.sh` compares `spec.version` in the target manifests
+against what is deployed and refuses rather than letting ECK fail halfway. The
+only way back to an older version is restoring a snapshot into a cluster running
+that version:
+
 ```bash
-# Get the previous template version from git or backup
-git show HEAD~1:index/deploy/k8s/base/templates/posts-index-template.yaml > /tmp/old-template.yaml
+./restore.sh --environment prod --snapshot <name>
+```
 
-# Manually update template
-kubectl port-forward svc/greenearth-es-http 9200 -n greenearth-local &
+**Data is not rolled back.** A manifest rollback changes configuration, not
+documents. A breaking mapping change that has already been written to needs a
+reindex (`tools/reindex.py`, see the [ingex README](../README.md#index-schema-migrations))
+or a snapshot restore.
+
+#### Testing the rollback tooling
+
+`./rollback_test.sh` runs the parts of `deploy.sh` and `rollback.sh` that can be
+checked without a cluster. It puts fake `kubectl`/`gcloud`/`sleep` on `PATH`,
+runs the real scripts against them, and asserts on the commands they issue. It
+takes a couple of seconds, makes no network calls, and never contacts GCP.
+
+```bash
+./rollback_test.sh                  # from ingex/index
+KEEP_WORKDIR=1 ./rollback_test.sh   # leave temp files for inspection
+```
+
+It exists mainly for one thing: `cleanup_on_failure` ends in `kubectl delete
+namespace`, and whether it fires cannot be checked against a real cluster,
+because getting it wrong deletes the cluster. The suite covers both states —
+under the current `set -e` the trap is not inherited into nested functions and
+so never fires, and against a `set -eE` copy the scoping still holds (schema and
+resource leave the namespace alone; init still cleans up). If anyone hardens
+this script with `errtrace`, that test is what catches a regression.
+
+It also covers `deployment-history` surviving `apply -k`, `deployment-git-sha`
+being recorded for every change type, `--manifests-dir` validation and worktree
+sha resolution, rollback target selection, `--dry-run` issuing no mutating
+commands, and the Elasticsearch version-downgrade refusal.
+
+What it cannot cover is the ECK reconcile itself — that a rolled-back manifest
+actually changes the cluster. Verify that against Elasticsearch directly, e.g.
+`GET _index_template/posts_ilm_template` before and after.
+
+#### Emergency rollback (manual)
+
+If `rollback.sh` cannot run — no history, a revision predating the current
+manifest layout, or a broken toolchain — intervene directly:
+
+**Resource/topology changes**: edit the CR and let ECK reconcile.
+
+```bash
+kubectl edit elasticsearch greenearth -n greenearth-prod
+```
+
+**Schema changes**: push the old template straight at the cluster.
+
+```bash
+git show <sha>:index/deploy/k8s/base/templates/posts-index-template.yaml > /tmp/old-template.yaml
+
+kubectl port-forward svc/greenearth-es-http 9200 -n greenearth-prod &
 curl -k -X PUT "https://localhost:9200/_index_template/posts_template" \
   -u "es-service-user:PASSWORD" \
   -H "Content-Type: application/json" \
   -d @/tmp/old-template.json
 ```
 
-**For resource changes**:
-```bash
-# Edit Elasticsearch resource directly
-kubectl edit elasticsearch greenearth -n greenearth-local
+Note that `kubectl rollout undo` is the wrong tool here: the ES StatefulSets are
+created and reconciled by the ECK operator, which will simply put back whatever
+the `Elasticsearch` CR says. Roll back through the CR or the manifests, never
+the StatefulSet.
 
-# Revert the spec changes manually
-# Save and exit - ECK will roll back
-```
+Ingest and API services roll back separately and independently — see
+[ingest/README.md](../ingest/README.md) and the api repo.
 
 ### Best Practices for Production Deployments
 
