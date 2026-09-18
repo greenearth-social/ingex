@@ -300,9 +300,19 @@ func TestBackfillQualityPosts_TimestampTiesAcrossPages(t *testing.T) {
 				// all tie. Without the URI sort key, every remaining post compares
 				// equal to the first page's cursor and disappears from later pages.
 				hasTieBreaker := len(query.Sort) == 3 && query.Sort[2]["at_uri"] == "asc"
+				var afterURI string
+				if len(query.SearchAfter) > 0 && hasTieBreaker {
+					var ok bool
+					afterURI, ok = query.SearchAfter[2].(string)
+					if !ok {
+						t.Errorf("search_after URI = %v, want string", query.SearchAfter[2])
+						http.Error(w, "invalid cursor URI", http.StatusBadRequest)
+						return
+					}
+				}
 				page := []Hit{}
 				for _, uri := range uris {
-					if len(query.SearchAfter) > 0 && (!hasTieBreaker || uri <= query.SearchAfter[2].(string)) {
+					if len(query.SearchAfter) > 0 && (!hasTieBreaker || uri <= afterURI) {
 						continue
 					}
 					sortValues := []interface{}{json.Number("1785232800000"), tc.indexedAtSort}
