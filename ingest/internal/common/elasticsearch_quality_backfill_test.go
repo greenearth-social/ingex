@@ -3,6 +3,7 @@ package common
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ func TestFetchQualityCandidates_QueryShape(t *testing.T) {
 	defer srv.Close()
 
 	_, err := FetchQualityCandidates(t.Context(), client, NewLogger(false),
-		"posts_recent", 20, "2026-07-15T00:00:00Z", "", "", 500)
+		"posts_recent", 20, "2026-07-15T00:00:00Z", nil, 500)
 	if err != nil {
 		t.Fatalf("FetchQualityCandidates: %v", err)
 	}
@@ -64,8 +65,13 @@ func TestFetchQualityCandidates_QueryShape(t *testing.T) {
 
 	// Deterministic pagination: search_after needs a total sort order.
 	sort, ok := body["sort"].([]interface{})
-	if !ok || len(sort) != 2 {
-		t.Fatalf("expected a two-key sort for search_after, got %v", body["sort"])
+	if !ok || len(sort) != 3 {
+		t.Fatalf("expected a three-key sort for search_after, got %v", body["sort"])
+	}
+	for i, field := range []string{"created_at", "indexed_at", "at_uri"} {
+		if !reflect.DeepEqual(sort[i], map[string]interface{}{field: "asc"}) {
+			t.Errorf("sort[%d] = %v, want %s ascending", i, sort[i], field)
+		}
 	}
 }
 
@@ -80,14 +86,15 @@ func TestFetchQualityCandidates_PassesSearchAfterCursor(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	cursor := []interface{}{"2026-07-20T00:00:00Z", "2026-07-20T01:00:00Z", "at://did:plc:a/app.bsky.feed.post/1"}
 	_, err := FetchQualityCandidates(t.Context(), client, NewLogger(false),
-		"posts_recent", 20, "2026-07-15T00:00:00Z", "2026-07-20T00:00:00Z", "2026-07-20T01:00:00Z", 500)
+		"posts_recent", 20, "2026-07-15T00:00:00Z", cursor, 500)
 	if err != nil {
 		t.Fatalf("FetchQualityCandidates: %v", err)
 	}
 
 	after, ok := body["search_after"].([]interface{})
-	if !ok || len(after) != 2 || after[0] != "2026-07-20T00:00:00Z" {
+	if !ok || !reflect.DeepEqual(after, cursor) {
 		t.Fatalf("expected search_after cursor, got %v", body["search_after"])
 	}
 }
@@ -101,7 +108,7 @@ func TestBackfillQualityPosts(t *testing.T) {
 			`"at_uri":"at://did:plc:a/app.bsky.feed.post/` + n + `","author_did":"did:plc:a",` +
 			`"created_at":"` + createdAt + `","indexed_at":"` + createdAt + `","like_count":25,` +
 			`"ge_post_embedding_model_uuid":"uuid-1"},` +
-			`"sort":["` + createdAt + `","` + createdAt + `"],` +
+			`"sort":["` + createdAt + `","` + createdAt + `","at://did:plc:a/app.bsky.feed.post/` + n + `"],` +
 			`"fields":{"embeddings.ge_post_embedding":[[0.1,0.2]]}}`
 	}
 
@@ -212,7 +219,7 @@ func TestBackfillQualityPosts(t *testing.T) {
 				_, _ = w.Write([]byte(`{"took":1,"hits":{"total":{"value":1,"relation":"eq"},"hits":[` +
 					`{"_id":"at://a","_source":{"at_uri":"at://a","author_did":"did:plc:a",` +
 					`"created_at":"2026-07-28T10:00:00Z","like_count":25},` +
-					`"sort":["2026-07-28T10:00:00Z","2026-07-28T10:00:00Z"]}]}}`))
+					`"sort":["2026-07-28T10:00:00Z","2026-07-28T10:00:00Z","at://a"]}]}}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"took":1,"hits":{"total":{"value":0,"relation":"eq"},"hits":[]}}`))
@@ -231,4 +238,117 @@ func TestBackfillQualityPosts(t *testing.T) {
 			t.Errorf("stats = %+v, want Indexed=0 Skipped=1", stats)
 		}
 	})
+}
+
+func TestBackfillQualityPosts_TimestampTiesAcrossPages(t *testing.T) {
+	const createdAt = "2026-07-28T10:00:00Z"
+	for _, tc := range []struct {
+		name          string
+		indexedAt     string
+		indexedAtSort json.Number
+	}{
+		{"same timestamps", createdAt, json.Number("1785232800000")},
+		// Elasticsearch's missing-date sort sentinel exceeds float64's exact
+		// integer range. It must survive decoding and search_after unchanged.
+		{"missing indexed_at", "", json.Number("9223372036854775807")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			uris := []string{"at://a/post/1", "at://a/post/2", "at://a/post/3", "at://a/post/4", "at://a/post/5"}
+			var indexed []string
+			var previousCursor []interface{}
+			var searches int
+			client, srv := newMockESClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+				w.Header().Set("X-Elastic-Product", "Elasticsearch")
+				if strings.Contains(r.URL.Path, "_bulk") {
+					lines := strings.Split(strings.TrimSpace(readAll(t, r)), "\n")
+					for i := 1; i < len(lines); i += 2 {
+						var doc QualityPostDoc
+						if err := json.Unmarshal([]byte(lines[i]), &doc); err != nil {
+							t.Errorf("decode bulk document: %v", err)
+						}
+						indexed = append(indexed, doc.AtURI)
+					}
+					_, _ = w.Write([]byte(`{"took":1,"errors":false,"items":[]}`))
+					return
+				}
+
+				searches++
+				if searches > 4 {
+					http.Error(w, "pagination did not terminate", http.StatusBadRequest)
+					return
+				}
+				var query struct {
+					Size        int                 `json:"size"`
+					Sort        []map[string]string `json:"sort"`
+					SearchAfter []interface{}       `json:"search_after"`
+				}
+				decoder := json.NewDecoder(r.Body)
+				decoder.UseNumber()
+				if err := decoder.Decode(&query); err != nil {
+					t.Errorf("decode search: %v", err)
+					http.Error(w, "invalid search", http.StatusBadRequest)
+					return
+				}
+				if !reflect.DeepEqual(query.SearchAfter, previousCursor) {
+					t.Errorf("search_after = %v, want exact returned sort values %v", query.SearchAfter, previousCursor)
+					http.Error(w, "cursor changed", http.StatusBadRequest)
+					return
+				}
+
+				// Emulate strict search_after ordering for posts whose timestamps
+				// all tie. Without the URI sort key, every remaining post compares
+				// equal to the first page's cursor and disappears from later pages.
+				hasTieBreaker := len(query.Sort) == 3 && query.Sort[2]["at_uri"] == "asc"
+				var afterURI string
+				if len(query.SearchAfter) > 0 && hasTieBreaker {
+					var ok bool
+					afterURI, ok = query.SearchAfter[2].(string)
+					if !ok {
+						t.Errorf("search_after URI = %v, want string", query.SearchAfter[2])
+						http.Error(w, "invalid cursor URI", http.StatusBadRequest)
+						return
+					}
+				}
+				page := []Hit{}
+				for _, uri := range uris {
+					if len(query.SearchAfter) > 0 && (!hasTieBreaker || uri <= afterURI) {
+						continue
+					}
+					sortValues := []interface{}{json.Number("1785232800000"), tc.indexedAtSort}
+					if hasTieBreaker {
+						sortValues = append(sortValues, uri)
+					}
+					page = append(page, Hit{
+						ID: uri, Sort: sortValues,
+						Source: PostData{AtURI: uri, AuthorDID: "did:plc:a", CreatedAt: createdAt,
+							IndexedAt: tc.indexedAt, LikeCount: 25, PostEmbeddingModelUUID: "uuid-1"},
+						Fields: map[string]json.RawMessage{"embeddings.ge_post_embedding": json.RawMessage(`[[0.1,0.2]]`)},
+					})
+					if len(page) == query.Size {
+						break
+					}
+				}
+				if len(page) > 0 {
+					previousCursor = page[len(page)-1].Sort
+				}
+				_ = json.NewEncoder(w).Encode(SearchResponse{Hits: Hits{Hits: page}})
+			}))
+			defer srv.Close()
+
+			cfg := QualityBackfillConfig{SourceIndex: "posts_recent", Threshold: 20,
+				IndexPeriod: IndexPeriodWeek, RetentionAge: 14 * 24 * time.Hour,
+				Now: time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC), PageSize: 2}
+			stats, err := BackfillQualityPosts(t.Context(), client, NewLogger(false), cfg, false)
+			if err != nil {
+				t.Fatalf("BackfillQualityPosts: %v", err)
+			}
+			if stats != (QualityBackfillStats{Scanned: 5, Indexed: 5, Pages: 3}) {
+				t.Errorf("stats = %+v, want all five tied posts across three pages", stats)
+			}
+			if !reflect.DeepEqual(indexed, uris) {
+				t.Errorf("indexed URIs = %v, want each post exactly once: %v", indexed, uris)
+			}
+		})
+	}
 }
