@@ -106,7 +106,12 @@ func BulkUpdatePerspectiveScores(ctx context.Context, client *elasticsearch.Clie
 		queued++
 	}
 
+	// A malformed AT-URI is bad data rather than a fault here, so it stays at
+	// Debug as the like-count path logs the same skip. Counted anyway: a post
+	// whose URI will not yield a DID can never be scored, and a rate that is
+	// anything but flat-zero says something upstream has changed.
 	if skippedNoRouting > 0 {
+		logger.Metric("es.update_perspective_scores.skipped_no_routing_count", float64(skippedNoRouting))
 		logger.Debug("Skipped %d perspective updates with unparseable AT-URIs", skippedNoRouting)
 	}
 	// Unlike an unparseable AT-URI, this is a caller bug rather than bad data.

@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -147,8 +148,16 @@ func TestBulkUpdatePerspectiveScoresSkipsUnroutablePosts(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// Metric() is gated on the logger being enabled, so an enabled logger with
+	// its output redirected is what exercises the metric path.
+	var output bytes.Buffer
+	logger := NewLogger(true)
+	logger.SetOutput(&output)
+	metrics := newMockMetricCollector()
+	logger.SetMetricCollector(metrics)
+
 	updates := []PerspectiveUpdate{{Index: "posts-2026-w35", AtURI: "not-an-at-uri", ScoredAt: "2026-08-28T00:00:00Z"}}
-	updated, err := BulkUpdatePerspectiveScores(t.Context(), client, updates, false, NewLogger(false))
+	updated, err := BulkUpdatePerspectiveScores(t.Context(), client, updates, false, logger)
 	if err != nil {
 		t.Fatalf("BulkUpdatePerspectiveScores: %v", err)
 	}
@@ -157,6 +166,11 @@ func TestBulkUpdatePerspectiveScoresSkipsUnroutablePosts(t *testing.T) {
 	}
 	if called {
 		t.Error("an empty batch should not reach Elasticsearch")
+	}
+	// The skip is logged at Debug, so the metric is the only signal that
+	// survives a production log level.
+	if got := metrics.getRecords("es.update_perspective_scores.skipped_no_routing_count"); len(got) != 1 || got[0] != 1 {
+		t.Errorf("skipped_no_routing_count = %v, want [1]", got)
 	}
 }
 
