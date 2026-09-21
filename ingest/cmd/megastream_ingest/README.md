@@ -152,7 +152,7 @@ destination index mapping the fields (below).
 
 - `GE_PERSPECTIVE_API_KEY` - Perspective API key (GSM secret `perspective-api-key-{env}`); unset disables scoring
 - `GE_PERSPECTIVE_HOST` - API host override (default: `https://commentanalyzer.googleapis.com`); the devenv points this at its local stub
-- `GE_PERSPECTIVE_QPS` - This service's share of the shared quota (default: `150`)
+- `GE_PERSPECTIVE_QPS` - This service's share of the shared quota (default: `150` in prod, `15` in stage)
 - `GE_PERSPECTIVE_ON_QUOTA` - `wait` to throttle ingest, `skip` to index posts unscored (default: `wait`)
 - `GE_PERSPECTIVE_TIMEOUT` - Per-request HTTP timeout (default: `2s`)
 - `GE_PERSPECTIVE_MAX_CONCURRENCY` - Concurrent scoring requests (default: `32`)
@@ -167,6 +167,16 @@ destination index mapping the fields (below).
 > Serving also sees spikes ingest does not. `wait` keeps ingest inside its slice by slowing
 > it down; switch to `skip` when serving needs the budget more than the corpus
 > does, then recover the gap with `backfill_perspective`.
+>
+> **Stage draws on the same pool.** Both environments deploy into one GCP
+> project and Perspective quota is per project, so those two slices are really
+> four claims on one 36 000. Stage's ingest ceiling is scaled by the sample rate
+> instead: `ShouldSampleDID` keeps 1 DID in 10 there, so stage ingests a tenth
+> of the stream and its default is a tenth of prod's, `15`. That is a ceiling,
+> not a reservation — stage's real draw is whatever a tenth of the stream costs.
+> The point of the lower number is that a regression which made stage spend
+> prod-sized budget gets throttled instead of quietly eating serving's headroom.
+> Keep it in step with `ingestSampleDenominator`.
 
 > **Rollout ordering:** as with `ge_post_embedding`, deploy the posts index
 > template first — but the service enforces this rather than trusting it.
