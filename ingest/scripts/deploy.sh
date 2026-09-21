@@ -371,8 +371,22 @@ deploy_megastream_service() {
     # inside that slice; set it to "skip" to index posts unscored instead, and
     # recover them later with cmd/backfill_perspective. Watch
     # perspective.rate_limit.skipped.count to know when that is owed.
+    #
+    # The published split -- 9 000 QPM ingest, 26 700 serving, 300 buffer --
+    # budgets for one ingest process and one serving fleet, but stage and prod
+    # deploy into the same GCP project and Perspective quota is per project, so
+    # all four deployments draw on the one pool. Stage's ceiling is therefore
+    # scaled by the ingest sample rate: ShouldSampleDID keeps 1 DID in 10 there
+    # (internal/common/sampler.go), so stage cannot want more than a tenth of
+    # prod's rate, and 150 QPS was never a budget it could spend -- only a
+    # ceiling high enough to hide a regression that made it spend more. Keep
+    # this in step with ingestSampleDenominator if that ever changes.
     local perspective_api_key_secret="perspective-api-key-$GE_ENVIRONMENT"
-    local perspective_qps="${GE_PERSPECTIVE_QPS:-150}"
+    local perspective_qps_default=150
+    if [ "$GE_ENVIRONMENT" = "stage" ]; then
+        perspective_qps_default=15
+    fi
+    local perspective_qps="${GE_PERSPECTIVE_QPS:-$perspective_qps_default}"
     local perspective_on_quota="${GE_PERSPECTIVE_ON_QUOTA:-wait}"
 
     # Set max-rewind based on environment

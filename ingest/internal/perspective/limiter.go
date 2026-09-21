@@ -57,6 +57,13 @@ var ErrQuotaExhausted = errors.New("perspective quota exhausted")
 // Note this is a per-process limit. That is correct here only because
 // megastream_ingest runs a single instance (it owns one cursor); anything that
 // scales out would need a shared counter.
+//
+// It is also per *environment*, which the 9 000 figure does not by itself
+// account for: stage and prod deploy into the same GCP project and Perspective
+// quota is per project, so stage ingest spends from the same pool. Its ceiling
+// is scaled down at deploy time instead (scripts/deploy.sh), by the same factor
+// ShouldSampleDID drops posts at, since stage ingests a tenth of the stream and
+// so can never want more than a tenth of the rate.
 type limiter struct {
 	rl     *rate.Limiter
 	policy QuotaPolicy
