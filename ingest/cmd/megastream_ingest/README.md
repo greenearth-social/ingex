@@ -152,7 +152,7 @@ destination index mapping the fields (below).
 
 - `GE_PERSPECTIVE_API_KEY` - Perspective API key (GSM secret `perspective-api-key-{env}`); unset disables scoring
 - `GE_PERSPECTIVE_HOST` - API host override (default: `https://commentanalyzer.googleapis.com`); the devenv points this at its local stub
-- `GE_PERSPECTIVE_QPS` - This service's share of the shared quota (default: `150` in prod, `15` in stage)
+- `GE_PERSPECTIVE_QPS` - This service's share of the shared quota (default: `150` in prod, `50` in stage)
 - `GE_PERSPECTIVE_ON_QUOTA` - `wait` to throttle ingest, `skip` to index posts unscored (default: `wait`)
 - `GE_PERSPECTIVE_TIMEOUT` - Per-request HTTP timeout (default: `2s`)
 - `GE_PERSPECTIVE_MAX_CONCURRENCY` - Concurrent scoring requests (default: `32`)
@@ -170,13 +170,19 @@ destination index mapping the fields (below).
 >
 > **Stage draws on the same pool.** Both environments deploy into one GCP
 > project and Perspective quota is per project, so those two slices are really
-> four claims on one 36 000. Stage's ingest ceiling is scaled by the sample rate
-> instead: `ShouldSampleDID` keeps 1 DID in 10 there, so stage ingests a tenth
-> of the stream and its default is a tenth of prod's, `15`. That is a ceiling,
-> not a reservation — stage's real draw is whatever a tenth of the stream costs.
-> The point of the lower number is that a regression which made stage spend
-> prod-sized budget gets throttled instead of quietly eating serving's headroom.
-> Keep it in step with `ingestSampleDenominator`.
+> four claims on one 36 000. Stage runs a lower ceiling, `50`, so a regression
+> there cannot spend prod-sized budget.
+>
+> **Size that ceiling by burst, not by volume.** The tempting reasoning — stage
+> ingests a tenth of the stream, so give it a tenth of the rate — is wrong, and
+> measurably so. Sampling changes how *often* a batch arrives, not how big it
+> is: the flush is a fixed 512 messages in both environments, about 242 posts
+> once replies split off. At `15` a batch took ~14s to drain against the 30s
+> context in `dispatchIndexPosts` that also has to cover embeddings and the ES
+> write, while the Perspective calls themselves averaged 82ms. `50` drains the
+> same batch in ~5s. Sustained draw is set by real volume (~2 qps in stage), not
+> by the ceiling, so the higher number costs the shared quota nothing on an
+> ordinary day — it only bounds a runaway.
 
 > **Rollout ordering:** as with `ge_post_embedding`, deploy the posts index
 > template first — but the service enforces this rather than trusting it.

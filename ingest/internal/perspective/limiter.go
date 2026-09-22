@@ -60,10 +60,17 @@ var ErrQuotaExhausted = errors.New("perspective quota exhausted")
 //
 // It is also per *environment*, which the 9 000 figure does not by itself
 // account for: stage and prod deploy into the same GCP project and Perspective
-// quota is per project, so stage ingest spends from the same pool. Its ceiling
-// is scaled down at deploy time instead (scripts/deploy.sh), by the same factor
-// ShouldSampleDID drops posts at, since stage ingests a tenth of the stream and
-// so can never want more than a tenth of the rate.
+// quota is per project, so stage ingest spends from the same pool. Stage runs a
+// lower ceiling, set at deploy time (scripts/deploy.sh).
+//
+// That ceiling is sized by burst rather than by volume, which is worth stating
+// because the obvious reasoning is wrong. Sampling makes stage ingest a tenth
+// of the stream, but it does not make its batches a tenth the size -- the flush
+// is a fixed 512 messages in both environments, so a stage batch is as large as
+// a prod one and merely arrives ten times less often. A ceiling scaled to
+// average volume therefore takes ten times as long to drain the same burst.
+// What it actually has to clear is one batch inside the 30s context in
+// dispatchIndexPosts, shared with the embedding call and the ES write.
 type limiter struct {
 	rl     *rate.Limiter
 	policy QuotaPolicy

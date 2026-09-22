@@ -375,16 +375,21 @@ deploy_megastream_service() {
     # The published split -- 9 000 QPM ingest, 26 700 serving, 300 buffer --
     # budgets for one ingest process and one serving fleet, but stage and prod
     # deploy into the same GCP project and Perspective quota is per project, so
-    # all four deployments draw on the one pool. Stage's ceiling is therefore
-    # scaled by the ingest sample rate: ShouldSampleDID keeps 1 DID in 10 there
-    # (internal/common/sampler.go), so stage cannot want more than a tenth of
-    # prod's rate, and 150 QPS was never a budget it could spend -- only a
-    # ceiling high enough to hide a regression that made it spend more. Keep
-    # this in step with ingestSampleDenominator if that ever changes.
+    # all four deployments draw on the one pool. Stage gets a lower ceiling than
+    # prod so a regression there cannot spend prod-sized budget.
+    #
+    # Size it by burst, not by volume. Sampling changes how often a batch
+    # arrives in stage, not how big it is: megastream flushes at a fixed 512
+    # messages in both environments, which measured out to ~242 posts per batch.
+    # What the ceiling has to do is drain one of those before the 30s context in
+    # dispatchIndexPosts expires, and that budget also covers embeddings and the
+    # ES write. 50 qps drains ~242 posts in ~5s. Sustained draw is set by real
+    # volume (~2 qps in stage), not by this number, so a higher ceiling costs
+    # the shared quota nothing on an ordinary day.
     local perspective_api_key_secret="perspective-api-key-$GE_ENVIRONMENT"
     local perspective_qps_default=150
     if [ "$GE_ENVIRONMENT" = "stage" ]; then
-        perspective_qps_default=15
+        perspective_qps_default=50
     fi
     local perspective_qps="${GE_PERSPECTIVE_QPS:-$perspective_qps_default}"
     local perspective_on_quota="${GE_PERSPECTIVE_ON_QUOTA:-wait}"
