@@ -46,13 +46,23 @@ var ErrQuotaExhausted = errors.New("perspective quota exhausted")
 // limiter caps requests to our share of the Perspective quota.
 //
 // The quota is 36 000 requests per minute, shared between this service and the
-// api's serving path, so ingest takes a configured slice of it — 9 000 RPM by
-// default, against serving's 26 700, which leaves a 300 RPM buffer for the
-// inexactness of two independent limiters. The limiter is
-// deliberately a smooth token bucket rather than the calendar-minute counter
-// the api uses: a minute bucket permits spending the entire allowance in the
-// first second of each minute, which is exactly the burst shape that would
-// collide with a serving spike. rate.Limiter spreads the same budget evenly.
+// api's serving path, so ingest takes a configured slice of it — 8 460 RPM by
+// default, against serving's 26 700. A token bucket rather than the
+// calendar-minute counter the api uses, because the refill rate bounds
+// sustained draw over every window rather than resetting on a wall-clock edge.
+//
+// Burst capacity is one megastream batch, not one second of budget. Perspective
+// meters per minute, so pacing a batch out over a second-by-second allowance
+// buys nothing it asks for and costs the whole batch its latency: a 236-post
+// batch against a 15/s bucket took ~14s to admit, against 93ms of actual API
+// time per call. The serving path already sends Perspective bursts of this
+// shape on every ranking request, so the burst itself is not novel traffic.
+//
+// The arithmetic that matters: a bucket with burst B and rate R admits at most
+// B + R×T over a window T, so the true per-minute ceiling is R×60 + B, not
+// R×60. The slice numbers above are chosen against that, not against R×60 —
+// 141×60 + 512 = 8 972, inside 9 000 with the 300 RPM buffer untouched. Raising
+// perspectiveBurst or GE_PERSPECTIVE_QPS means redoing that sum.
 //
 // Note this is a per-process limit. That is correct here only because
 // megastream_ingest runs a single instance (it owns one cursor); anything that
@@ -70,15 +80,23 @@ type limiter struct {
 	logger *common.IngestLogger
 }
 
-func newLimiter(qps int, policy QuotaPolicy, logger *common.IngestLogger) *limiter {
+// perspectiveBurst is the bucket's burst capacity, sized to one megastream
+// flush (batchSize in cmd/megastream_ingest) so a whole batch is admitted
+// without pacing. The two are coupled only by this comment; a change to the
+// flush size wants a change here.
+const perspectiveBurst = 512
+
+func newLimiter(qps, burst int, policy QuotaPolicy, logger *common.IngestLogger) *limiter {
 	if qps <= 0 {
 		qps = 1
 	}
+	// A burst below the rate would make the bucket stricter than its own
+	// refill, which is never what a caller means.
+	if burst < qps {
+		burst = qps
+	}
 	return &limiter{
-		// Burst equal to one second of budget: enough that a batch's fan-out
-		// starts immediately, small enough that we never present the API with
-		// a spike larger than our sustained rate.
-		rl:     rate.NewLimiter(rate.Limit(qps), qps),
+		rl:     rate.NewLimiter(rate.Limit(qps), burst),
 		policy: policy,
 		logger: logger,
 	}
