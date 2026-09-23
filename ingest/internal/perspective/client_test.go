@@ -194,6 +194,33 @@ func TestScoreGivesUpAfterMaxRetries(t *testing.T) {
 	}
 }
 
+// 429 is quota contention, not a transient fault. Retrying it sends more
+// requests into the window that is already over budget, and with MaxRetries at
+// 2 one post could become three requests and two backoffs inside a batch that
+// is already short on deadline. The post is left for the backfill instead.
+func TestScoreDoesNotRetryRateLimits(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	collector := newRecordingCollector()
+	client := testClient(server.URL, 2)
+	client.logger = loggerWithCollector(collector)
+
+	if _, err := client.Score(context.Background(), "text"); err == nil {
+		t.Fatal("Score() error = nil, want failure")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("made %d attempts, want 1 — a 429 must not be retried", got)
+	}
+	if n := collector.count("perspective.score.rate_limited.count"); n != 1 {
+		t.Errorf("rate_limited.count = %d, want 1", n)
+	}
+}
+
 func TestNewClientDefaultsToGoogleHost(t *testing.T) {
 	client := NewClient(ClientConfig{APIKey: "k"}, common.NewLogger(false))
 	if client.config.Host != DefaultHost {

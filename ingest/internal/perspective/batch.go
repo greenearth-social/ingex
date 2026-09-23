@@ -112,6 +112,9 @@ func (b *BatchScorer) Score(ctx context.Context, inputs []ScoreInput) []ScoreRes
 
 	start := time.Now()
 
+	ctx, cancel := withScoringBudget(ctx)
+	defer cancel()
+
 	var group errgroup.Group
 	group.SetLimit(b.maxConcurrency)
 
@@ -152,6 +155,12 @@ func (b *BatchScorer) scoreOne(ctx context.Context, input ScoreInput) ScoreResul
 	case errors.Is(err, ErrLanguageNotSupported):
 		result.Outcome = OutcomeUnsupportedLanguage
 		b.logger.Metric("perspective.score.unsupported_language.count", 1)
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		// The scoring budget ran out with this request in flight. That is the
+		// same event as a post that never got a slot, not an API fault, and
+		// classifying it as failed would make failed.count mean two things.
+		result.Outcome = OutcomeSkipped
+		result.Err = err
 	default:
 		result.Outcome = OutcomeFailed
 		result.Err = err
@@ -159,4 +168,31 @@ func (b *BatchScorer) scoreOne(ctx context.Context, input ScoreInput) ScoreResul
 		b.logger.Debug("Perspective scoring failed for %s: %v", input.AtURI, err)
 	}
 	return result
+}
+
+// scoringBudgetFraction is how much of a batch's remaining time Perspective may
+// spend. The rest belongs to the Elasticsearch write, which runs after
+// enrich.Wait() on the same context in indexDocuments -- so an unbounded
+// Perspective wait does not merely delay scoring, it eats the deadline the
+// bulk index needs and a timed-out BulkIndex drops the batch's posts entirely.
+// Scores are advisory; the posts are not.
+const scoringBudgetFraction = 2
+
+// withScoringBudget caps scoring at a fraction of the caller's remaining time.
+//
+// Derived from the parent rather than a constant so it tracks the batch timeout
+// in dispatchIndexPosts instead of having to be kept in step with it by hand.
+//
+// A context with no deadline is left alone: that is cmd/backfill_perspective,
+// which is the thing that repairs what this sheds and must not shed in turn.
+func withScoringBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return ctx, func() {}
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, remaining/scoringBudgetFraction)
 }

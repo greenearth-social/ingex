@@ -139,8 +139,16 @@ func (l *limiter) acquire(ctx context.Context) error {
 	case <-timer.C:
 		return nil
 	case <-ctx.Done():
+		// Cancelling returns the unused token, so a post we gave up on does
+		// not also spend budget the next batch could have used.
 		reservation.Cancel()
+		// Both counters fire: skipped.count stays the single "a backfill is
+		// owed" signal across every cause, and the deadline counter separates
+		// "we ran out of batch time" from "the budget refused us", which want
+		// different responses -- the first is shedding working as intended, the
+		// second means the configured rate is too low.
 		l.logger.Metric("perspective.rate_limit.skipped.count", 1)
+		l.logger.Metric("perspective.rate_limit.deadline_skipped.count", 1)
 		return ctx.Err()
 	}
 }

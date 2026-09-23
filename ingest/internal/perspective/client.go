@@ -161,15 +161,21 @@ func (c *Client) doOnce(ctx context.Context, body []byte) (map[string]float64, b
 		if resp.StatusCode == http.StatusBadRequest && isLanguageNotSupported(respBody) {
 			return nil, false, ErrLanguageNotSupported
 		}
-		// 429 is a genuine quota overrun rather than a transient fault. It is
-		// retryable, but the retry is nearly always wasted: our own limiter is
-		// what should have prevented it. Count it separately so a rise here
-		// reads as "the budget is set too high", not as flaky transport.
+		// 429 is a genuine quota overrun rather than a transient fault, and
+		// deliberately NOT retryable. A retry arrives during the exact window
+		// the quota is contended, so it adds load where there is already too
+		// much -- and with MaxRetries at 2 one post could become three requests
+		// and three backoffs, extending a batch that is already short on
+		// deadline. The post is left unscored for cmd/backfill_perspective
+		// instead, which runs when the quota is not contended.
+		//
+		// Counted separately so a rise here reads as "the budget is set too
+		// high", not as flaky transport.
 		if resp.StatusCode == http.StatusTooManyRequests {
 			c.logger.Metric("perspective.score.rate_limited.count", 1)
+			return nil, false, fmt.Errorf("perspective API returned status %d: %s", resp.StatusCode, string(respBody))
 		}
-		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		return nil, retryable, fmt.Errorf("perspective API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, resp.StatusCode >= 500, fmt.Errorf("perspective API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var parsed analyzeResponse
