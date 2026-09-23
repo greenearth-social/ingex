@@ -156,7 +156,7 @@ destination index mapping the fields (below).
 - `GE_PERSPECTIVE_ON_QUOTA` - `wait` to throttle ingest, `skip` to index posts unscored (default: `wait`)
 - `GE_PERSPECTIVE_TIMEOUT` - Per-request HTTP timeout (default: `2s`)
 - `GE_PERSPECTIVE_MAX_CONCURRENCY` - Concurrent scoring requests (default: `32`)
-- `GE_PERSPECTIVE_RETRY_MAX` - Retries beyond the first attempt (default: `2`)
+- `GE_PERSPECTIVE_RETRY_MAX` - Retries beyond the first attempt, for `5xx` only — `429` is never retried (default: `2`)
 
 > **Quota is shared.** The Perspective quota is 36 000 requests/minute (600 QPS)
 > across *both* this service and the api's serving path. `GE_PERSPECTIVE_QPS` is
@@ -222,6 +222,27 @@ binding; `perspective.rate_limit.throttled.count` shows how often. A non-zero
 `perspective.rate_limit.skipped.count` means posts were indexed unscored and a
 `backfill_perspective` run is owed. `perspective.index_gate.ready` at `0` means
 nothing is being scored at all — see rollout ordering above.
+
+Read `skipped.count` against `perspective.rate_limit.deadline_skipped.count`,
+which is the subset shed because the batch ran out of scoring budget rather than
+because the rate refused them. **Bursty is the mechanism working; sustained is a
+problem.** A spike defers work out of a contended window, and the backfill
+collects it later. A steady rate means the configured `GE_PERSPECTIVE_QPS` is
+genuinely too low and the unscored backlog will outrun the backfill. The two
+look identical on `skipped.count` alone.
+
+**Contention behaviour.** Scoring gets at most half a batch's remaining time
+(`scoringBudgetFraction`); the rest belongs to the Elasticsearch write, which
+runs after `enrich.Wait()` on the same context. That is not a latency
+preference — a timed-out `BulkIndex` drops the batch's posts, and posts matter
+more than the advisory scores on them. Posts past the budget are left unstamped
+for the backfill.
+
+A `429` from Perspective is **not retried**. It means the shared quota is
+contended, and a retry adds load to exactly that window — with
+`GE_PERSPECTIVE_RETRY_MAX` at 2, one post could become three requests and two
+backoffs inside a batch that is already short on deadline. `5xx` is still
+retried; that is a transient fault, not contention.
 
 ## Usage
 
