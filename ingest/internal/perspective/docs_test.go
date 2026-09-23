@@ -35,8 +35,17 @@ func scoringServer(t *testing.T, respond func(text string, w http.ResponseWriter
 // gate defaults closed, so every test that exercises scoring itself has to
 // open it; the gate's own behaviour is covered in index_ready_test.go.
 func testScorer(host string, qps int, policy QuotaPolicy) *BatchScorer {
+	return testScorerWithBurst(host, qps, perspectiveBurst, policy)
+}
+
+// testScorerWithBurst builds a scorer whose bucket is smaller than production's
+// batch-sized one, for the tests that need the budget to actually bind. The
+// production burst admits a whole megastream flush, so a five-post fixture
+// never reaches the limiter at all.
+func testScorerWithBurst(host string, qps, burst int, policy QuotaPolicy) *BatchScorer {
 	logger := common.NewLogger(false)
 	scorer := NewBatchScorer(testClient(host, 0), qps, 8, policy, logger)
+	scorer.limiter = newLimiter(qps, burst, policy, logger)
 	scorer.SetIndexReady(true)
 	return scorer
 }
@@ -223,7 +232,8 @@ func TestAttachPerspectiveScoresSkipModeLeavesPostsUnscored(t *testing.T) {
 		docs[i] = postDoc("at://did:plc:a/app.bsky.feed.post/"+string(rune('1'+i)), "text")
 	}
 	// Budget of 1/s with burst 1: one post gets through, the rest are dropped.
-	scored, _, skipped, _ := AttachPerspectiveScores(context.Background(), testScorer(server.URL, 1, QuotaSkip), docs)
+	scorer := testScorerWithBurst(server.URL, 1, 1, QuotaSkip)
+	scored, _, skipped, _ := AttachPerspectiveScores(context.Background(), scorer, docs)
 
 	if scored != 1 {
 		t.Errorf("scored %d posts, want 1 (the burst allowance)", scored)

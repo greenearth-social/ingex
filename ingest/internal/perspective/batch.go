@@ -93,7 +93,7 @@ func NewBatchScorer(client *Client, qps, maxConcurrency int, policy QuotaPolicy,
 	}
 	return &BatchScorer{
 		client:         client,
-		limiter:        newLimiter(qps, policy, logger),
+		limiter:        newLimiter(qps, perspectiveBurst, policy, logger),
 		maxConcurrency: maxConcurrency,
 		logger:         logger,
 	}

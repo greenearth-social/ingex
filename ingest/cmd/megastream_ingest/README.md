@@ -152,7 +152,7 @@ destination index mapping the fields (below).
 
 - `GE_PERSPECTIVE_API_KEY` - Perspective API key (GSM secret `perspective-api-key-{env}`); unset disables scoring
 - `GE_PERSPECTIVE_HOST` - API host override (default: `https://commentanalyzer.googleapis.com`); the devenv points this at its local stub
-- `GE_PERSPECTIVE_QPS` - This service's share of the shared quota (default: `150` in prod, `15` in stage)
+- `GE_PERSPECTIVE_QPS` - Token-bucket refill rate, this service's share of the shared quota (default: `141` in prod, `15` in stage)
 - `GE_PERSPECTIVE_ON_QUOTA` - `wait` to throttle ingest, `skip` to index posts unscored (default: `wait`)
 - `GE_PERSPECTIVE_TIMEOUT` - Per-request HTTP timeout (default: `2s`)
 - `GE_PERSPECTIVE_MAX_CONCURRENCY` - Concurrent scoring requests (default: `32`)
@@ -160,23 +160,34 @@ destination index mapping the fields (below).
 
 > **Quota is shared.** The Perspective quota is 36 000 requests/minute (600 QPS)
 > across *both* this service and the api's serving path. `GE_PERSPECTIVE_QPS` is
-> ingest's slice of it — 9 000 RPM at the default, against serving's 26 700
-> (`GE_PERSPECTIVE_QPM` in the api), summing to 35 700 so that 300 RPM stays
-> unclaimed. That buffer covers the inexactness of two independent limiters in
+> ingest's slice of it — 8 972 RPM at the default, against serving's 26 700
+> (`GE_PERSPECTIVE_QPM` in the api), leaving the 300 RPM buffer unclaimed.
+>
+> That 8 972 is `141 × 60 + 512`, not `141 × 60`. The limiter is a token bucket
+> whose burst is one megastream batch (`perspectiveBurst`), and a bucket admits
+> `B + R×T` over a window `T` — so the burst is part of the minute's ceiling and
+> the refill rate was picked to leave room for it. **Changing either number
+> means redoing that sum.** That buffer covers the inexactness of two independent limiters in
 > separate processes; raising either slice without lowering the other spends it.
 > Serving also sees spikes ingest does not. `wait` keeps ingest inside its slice by slowing
 > it down; switch to `skip` when serving needs the budget more than the corpus
 > does, then recover the gap with `backfill_perspective`.
 >
+> **Burst is what makes a batch prompt; the rate only bounds sustained draw.**
+> Perspective meters per minute, so pacing a batch across a per-second allowance
+> buys nothing it asks for. Measured in stage at the old one-second burst: a
+> 236-post batch took ~14s to admit while the API calls themselves averaged
+> 93ms, against the 30s context in `dispatchIndexPosts` that also covers
+> embeddings and the ES write. With a batch-sized burst the same batch is
+> admitted at once and the refill rate still caps the long-run average. The
+> serving path already sends Perspective bursts of this shape on every ranking
+> request.
+>
 > **Stage draws on the same pool.** Both environments deploy into one GCP
 > project and Perspective quota is per project, so those two slices are really
-> four claims on one 36 000. Stage's ingest ceiling is scaled by the sample rate
-> instead: `ShouldSampleDID` keeps 1 DID in 10 there, so stage ingests a tenth
-> of the stream and its default is a tenth of prod's, `15`. That is a ceiling,
-> not a reservation — stage's real draw is whatever a tenth of the stream costs.
-> The point of the lower number is that a regression which made stage spend
-> prod-sized budget gets throttled instead of quietly eating serving's headroom.
-> Keep it in step with `ingestSampleDenominator`.
+> four claims on one 36 000. Stage keeps a much lower rate (`15`): its sustained
+> draw is ~2 QPS, the burst is what makes its batches prompt, and a low ceiling
+> still bounds a runaway. Its worst minute is `15 × 60 + 512 = 1 412`.
 
 > **Rollout ordering:** as with `ge_post_embedding`, deploy the posts index
 > template first — but the service enforces this rather than trusting it.
