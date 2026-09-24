@@ -485,6 +485,7 @@ curl -k -X POST "https://localhost:9200/_security/api_key" \
             "names": ["posts*", "likes*",
               "post_tombstones", "post_tombstones_*", "post-tombstones-*",
               "like_tombstones", "like_tombstones_*", "like-tombstones-*",
+              "replies", "replies-*",
               "hashtags", "hashtags*", "inferences", "inferences-*"],
             "privileges": ["read", "view_index_metadata"]
           }
@@ -533,6 +534,7 @@ See the docs at [/ingest/deploy/README.md](../ingest/deploy/README.md)
 
 ### API Key Management
 
+- **Permission changes**: Editing the key creation script does not change existing keys. Update their permissions or issue replacement keys; for replacements, update the corresponding Secret Manager secret and any local `GE_DEV_ES_API_KEY` value.
 - **Separation of concerns**: Ingest services have read/write keys, API has read-only key
 - **Expiration**: Keys are set to expire after 365 days
 - **Security**: Each key has minimal required permissions for its specific use case

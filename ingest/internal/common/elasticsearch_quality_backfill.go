@@ -43,14 +43,9 @@ type QualityBackfillStats struct {
 // only in doc values, so they have to be read back through docvalue_fields and
 // re-indexed explicitly (same trap as greenearth-social/api#325).
 //
-// Paging uses search_after over (created_at, indexed_at, at_uri), so a run that
-// dies partway can be resumed from the last reported cursor, and re-running is
-// safe: documents are written with _id = at_uri, so repeats overwrite in place.
-//
-// at_uri is what makes the sort a total order, and it is not optional: ES
-// resumes strictly after the cursor, so a page boundary landing inside a group
-// of documents sharing a sort key skips the rest of that group. created_at has
-// second granularity and posts arrive in bursts, so ties are routine.
+// Paging uses search_after over (created_at, indexed_at, at_uri). The unique
+// post URI breaks timestamp ties so a page boundary cannot skip posts. Re-running
+// is safe: documents are written with _id = at_uri, so repeats overwrite in place.
 func BackfillQualityPosts(
 	ctx context.Context,
 	client *elasticsearch.Client,
@@ -71,13 +66,12 @@ func BackfillQualityPosts(
 
 	windowStart := now.Add(-cfg.RetentionAge).UTC().Format(time.RFC3339)
 
-	var afterCreatedAt, afterIndexedAt, afterAtURI string
+	var after []interface{}
 	for {
 		resp, err := FetchQualityCandidates(ctx, client, logger, cfg.SourceIndex,
-			cfg.Threshold, windowStart, afterCreatedAt, afterIndexedAt, afterAtURI, pageSize)
+			cfg.Threshold, windowStart, after, pageSize)
 		if err != nil {
-			return stats, fmt.Errorf("scan %s at cursor (%q, %q, %q): %w",
-				cfg.SourceIndex, afterCreatedAt, afterIndexedAt, afterAtURI, err)
+			return stats, fmt.Errorf("scan %s at cursor %v: %w", cfg.SourceIndex, after, err)
 		}
 		if len(resp.Hits.Hits) == 0 {
 			break
@@ -103,26 +97,22 @@ func BackfillQualityPosts(
 
 		for index, docs := range byIndex {
 			if err := BulkIndex(ctx, client, index, docs, dryRun, logger); err != nil {
-				return stats, fmt.Errorf("backfill %d posts into %s (resume from created_at=%q indexed_at=%q at_uri=%q): %w",
-					len(docs), index, afterCreatedAt, afterIndexedAt, afterAtURI, err)
+				return stats, fmt.Errorf("backfill %d posts into %s (cursor %v): %w",
+					len(docs), index, after, err)
 			}
 			stats.Indexed += len(docs)
 		}
 
 		last := resp.Hits.Hits[len(resp.Hits.Hits)-1]
-		afterCreatedAt, afterIndexedAt = last.Source.CreatedAt, last.Source.IndexedAt
-		afterAtURI = last.Source.AtURI
-		if afterCreatedAt == "" {
-			return stats, fmt.Errorf("cannot page past a document with no created_at (id %q)", last.ID)
+		if len(last.Sort) != 3 {
+			return stats, fmt.Errorf("cannot page past a document without a complete sort cursor (id %q)", last.ID)
 		}
-		// An empty at_uri would drop the cursor back to an unpaged query and
-		// restart the scan from the window start, looping forever.
-		if afterAtURI == "" {
-			return stats, fmt.Errorf("cannot page past a document with no at_uri (id %q)", last.ID)
-		}
+		// Preserve Elasticsearch's exact sort values rather than reconstructing
+		// them from _source, where dates can have a different representation.
+		after = last.Sort
 
-		logger.Info("Backfill progress: %d scanned, %d indexed, %d skipped (cursor %s)",
-			stats.Scanned, stats.Indexed, stats.Skipped, afterCreatedAt)
+		logger.Info("Backfill progress: %d scanned, %d indexed, %d skipped (cursor %v)",
+			stats.Scanned, stats.Indexed, stats.Skipped, after)
 	}
 
 	return stats, nil
@@ -140,9 +130,7 @@ func FetchQualityCandidates(
 	index string,
 	minLikeCount int,
 	createdAfter string,
-	afterCreatedAt string,
-	afterIndexedAt string,
-	afterAtURI string,
+	after []interface{},
 	size int,
 ) (SearchResponse, error) {
 	var response SearchResponse
@@ -170,9 +158,8 @@ func FetchQualityCandidates(
 		"query": map[string]interface{}{
 			"bool": map[string]interface{}{"filter": filters},
 		},
-		// search_after needs a total order, which (created_at, indexed_at) is
-		// not -- at_uri is the unique tie-breaker that makes it one. Matches
-		// FetchPosts, and is the triple the resume cursor is expressed in.
+		// Many posts share both timestamps, especially when seeding fixtures.
+		// The keyword at_uri field provides a unique, sortable tie-breaker.
 		"sort": []interface{}{
 			map[string]interface{}{"created_at": "asc"},
 			map[string]interface{}{"indexed_at": "asc"},
@@ -182,8 +169,8 @@ func FetchQualityCandidates(
 		"docvalue_fields": []interface{}{"embeddings.*"},
 	}
 
-	if afterCreatedAt != "" && afterIndexedAt != "" && afterAtURI != "" {
-		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt, afterAtURI}
+	if len(after) > 0 {
+		query["search_after"] = after
 	}
 
 	queryJSON, err := json.Marshal(query)
@@ -211,7 +198,9 @@ func FetchQualityCandidates(
 		return response, fmt.Errorf("quality candidate search returned error: %s", res.String())
 	}
 
-	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
+	decoder := json.NewDecoder(res.Body)
+	decoder.UseNumber() // Keep numeric sort values exact when sending search_after.
+	if err := decoder.Decode(&response); err != nil {
 		return response, fmt.Errorf("failed to parse quality candidate response: %w", err)
 	}
 

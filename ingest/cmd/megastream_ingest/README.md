@@ -56,6 +56,7 @@ Configuration is done through environment variables and command line flags.
 - `--dry-run` - Run without writing to Elasticsearch (for testing)
 - `--skip-tls-verify` - Skip TLS certificate verification (local development only)
 - `--no-rewind` - Do not rewind to the last processed timestamp on startup (drops intervening data)
+- `--no-perspective` - Skip Perspective API scoring of posts
 
 ### Environment Variables
 
@@ -113,6 +114,135 @@ Failures are fail-open: posts are still indexed without the field. Disabled in
 > write index) *before* deploying this service with `GE_INFERENCE_BASE_URL`
 > set. Otherwise Elasticsearch dynamically maps the field as `float`, which
 > cannot serve kNN queries and requires a reindex to fix.
+
+**Perspective Scoring (optional):**
+
+When `GE_PERSPECTIVE_API_KEY` is set, each new non-reply post is scored by
+Google's Perspective API and the result is stored on the posts index as
+`perspective_scores` (the 15 raw PRC attribute scores), `combined_perspective_score`
+(the weighted PRC score in `[0, 1]`), and `perspective_scored_at`.
+
+This exists so the api does not have to score candidates on the serving path,
+and so we accumulate a complete attribute-score corpus before the Perspective
+API sunsets in January — see greenearth-social/api#368. Replies are not scored.
+
+Three states are meaningful, and the api distinguishes all three:
+
+| document state | meaning |
+|---|---|
+| all three fields set | scored |
+| `perspective_scored_at` only | permanently unscorable — no text at all (an image-only post), or a language the API declines to rate. Never retried. |
+| no fields | not scored yet. The api scores it live; `backfill_perspective` fills it in. |
+
+`backfill_perspective` writes to the concrete index each post lives in, taken
+from the scan's `_index`, not to `--source-index`. That flag is normally the
+`posts_recent` alias, and a bulk update addressed to an alias is routed to the
+alias's *write* index — so with a weekly index per retention period, every post
+outside the current week would come back `document_missing`, which the write
+path counts as routine. Watch `es.update_perspective_scores.missing_count`
+against `updated_count`: routine one at a time, a misroute in bulk.
+
+The middle state matters more than it looks: without it, every image-only and
+non-English post would be re-submitted on every backfill run and re-queried by
+the api on every feed request, forever.
+
+Failures are fail-open: posts are still indexed with no perspective fields.
+Disabled in `--dry-run` mode and by `--no-perspective`, and gated on the
+destination index mapping the fields (below).
+
+- `GE_PERSPECTIVE_API_KEY` - Perspective API key (GSM secret `perspective-api-key-{env}`); unset disables scoring
+- `GE_PERSPECTIVE_HOST` - API host override (default: `https://commentanalyzer.googleapis.com`); the devenv points this at its local stub
+- `GE_PERSPECTIVE_QPS` - Token-bucket refill rate, this service's share of the shared quota (default: `141` in prod, `15` in stage)
+- `GE_PERSPECTIVE_ON_QUOTA` - `wait` to throttle ingest, `skip` to index posts unscored (default: `wait`)
+- `GE_PERSPECTIVE_TIMEOUT` - Per-request HTTP timeout (default: `2s`)
+- `GE_PERSPECTIVE_MAX_CONCURRENCY` - Concurrent scoring requests (default: `32`)
+- `GE_PERSPECTIVE_RETRY_MAX` - Retries beyond the first attempt, for `5xx` only — `429` is never retried (default: `2`)
+
+> **Quota is shared.** The Perspective quota is 36 000 requests/minute (600 QPS)
+> across *both* this service and the api's serving path. `GE_PERSPECTIVE_QPS` is
+> ingest's slice of it — 8 972 RPM at the default, against serving's 26 700
+> (`GE_PERSPECTIVE_QPM` in the api), leaving the 300 RPM buffer unclaimed.
+>
+> That 8 972 is `141 × 60 + 512`, not `141 × 60`. The limiter is a token bucket
+> whose burst is one megastream batch (`perspectiveBurst`), and a bucket admits
+> `B + R×T` over a window `T` — so the burst is part of the minute's ceiling and
+> the refill rate was picked to leave room for it. **Changing either number
+> means redoing that sum.** That buffer covers the inexactness of two independent limiters in
+> separate processes; raising either slice without lowering the other spends it.
+> Serving also sees spikes ingest does not. `wait` keeps ingest inside its slice by slowing
+> it down; switch to `skip` when serving needs the budget more than the corpus
+> does, then recover the gap with `backfill_perspective`.
+>
+> **Burst is what makes a batch prompt; the rate only bounds sustained draw.**
+> Perspective meters per minute, so pacing a batch across a per-second allowance
+> buys nothing it asks for. Measured in stage at the old one-second burst: a
+> 236-post batch took ~14s to admit while the API calls themselves averaged
+> 93ms, against the 30s context in `dispatchIndexPosts` that also covers
+> embeddings and the ES write. With a batch-sized burst the same batch is
+> admitted at once and the refill rate still caps the long-run average. The
+> serving path already sends Perspective bursts of this shape on every ranking
+> request.
+>
+> **Stage draws on the same pool.** Both environments deploy into one GCP
+> project and Perspective quota is per project, so those two slices are really
+> four claims on one 36 000. Stage keeps a much lower rate (`15`): its sustained
+> draw is ~2 QPS, the burst is what makes its batches prompt, and a low ceiling
+> still bounds a runaway. Its worst minute is `15 × 60 + 512 = 1 412`.
+
+> **Rollout ordering:** as with `ge_post_embedding`, deploy the posts index
+> template first — but the service enforces this rather than trusting it.
+>
+> An index template applies only when an index is *created*, so the period
+> index already being written to when the template lands does not have the new
+> fields, and the template alone cannot give them to it. Writing anyway would
+> let Elasticsearch infer the types from whichever document arrives first, and
+> Go renders `float64(0)` as the JSON integer `0`: a maximally toxic post
+> arriving first maps `combined_perspective_score` as a `long`, after which
+> every fractional score is silently truncated to `0` in the index — accepted,
+> not rejected — and a field's type cannot be changed in place. `_source` keeps
+> the true value so serving still reads the right number, but the field is
+> mapped `index: true` so that it can be queried and aggregated, and that would
+> quietly return nonsense.
+>
+> So scoring is **gated on the mapping**: before writing, the service checks
+> that the current period index maps `combined_perspective_score`,
+> `perspective_scored_at` and `perspective_scores.*` as the template declares
+> them. While it does not, posts are indexed unscored — the same state as never
+> having been scored, so the api scores them live and `backfill_perspective`
+> can collect them later. The check re-runs each minute alongside `EnsureIndex`,
+> so a deploy landing mid-period needs no intervention: the next period index is
+> created from the current template and scoring starts at the boundary.
+>
+> `perspective.index_gate.ready` is `1` when scoring is live and `0` while
+> gated. Expect `0` for the remainder of the period after a mid-period deploy;
+> `0` past the following boundary means the template never landed.
+
+**Metrics.** `perspective.rate_limit.wait_ms` rises first when the budget starts
+binding; `perspective.rate_limit.throttled.count` shows how often. A non-zero
+`perspective.rate_limit.skipped.count` means posts were indexed unscored and a
+`backfill_perspective` run is owed. `perspective.index_gate.ready` at `0` means
+nothing is being scored at all — see rollout ordering above.
+
+Read `skipped.count` against `perspective.rate_limit.deadline_skipped.count`,
+which is the subset shed because the batch ran out of scoring budget rather than
+because the rate refused them. **Bursty is the mechanism working; sustained is a
+problem.** A spike defers work out of a contended window, and the backfill
+collects it later. A steady rate means the configured `GE_PERSPECTIVE_QPS` is
+genuinely too low and the unscored backlog will outrun the backfill. The two
+look identical on `skipped.count` alone.
+
+**Contention behaviour.** Scoring gets at most half a batch's remaining time
+(`scoringBudgetFraction`); the rest belongs to the Elasticsearch write, which
+runs after `enrich.Wait()` on the same context. That is not a latency
+preference — a timed-out `BulkIndex` drops the batch's posts, and posts matter
+more than the advisory scores on them. Posts past the budget are left unstamped
+for the backfill.
+
+A `429` from Perspective is **not retried**. It means the shared quota is
+contended, and a retry adds load to exactly that window — with
+`GE_PERSPECTIVE_RETRY_MAX` at 2, one post could become three requests and two
+backoffs inside a batch that is already short on deadline. `5xx` is still
+retried; that is a transient fault, not contention.
 
 ## Usage
 

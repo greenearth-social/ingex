@@ -126,6 +126,7 @@ READONLY_KEY_RESPONSE=$(kubectl exec -n "${GE_K8S_NAMESPACE}" "${ES_POD}" -- cur
             "names": ["posts*", "likes*",
               "post_tombstones", "post_tombstones_*", "post-tombstones-*",
               "like_tombstones", "like_tombstones_*", "like-tombstones-*",
+              "replies", "replies-*",
               "hashtags", "hashtags*", "inferences", "inferences-*"],
             "privileges": ["read", "view_index_metadata"]
           }

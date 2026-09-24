@@ -79,6 +79,15 @@ data:
                 "title": {"type": "text", "index": false},
                 "description": {"type": "text", "index": false}
               }
+            },
+            "combined_perspective_score": {
+              "type": "float",
+              "index": true
+            },
+            "perspective_scored_at": {
+              "type": "date",
+              "format": "iso8601",
+              "index": true
             }
           }
         }
