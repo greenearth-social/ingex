@@ -100,7 +100,7 @@ func TestFetchPosts_RequestsEmbeddingsViaFields(t *testing.T) {
 	defer srv.Close()
 
 	logger := NewLogger(false)
-	_, err := FetchPosts(t.Context(), client, logger, "posts-2026-w30", "", "", "", "", 10)
+	_, err := FetchPosts(t.Context(), client, logger, "posts-2026-w30", "", "", "", "", "", 10)
 	if err != nil {
 		t.Fatalf("FetchPosts returned error: %v", err)
 	}

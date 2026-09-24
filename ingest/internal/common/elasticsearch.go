@@ -1077,9 +1077,17 @@ type HashtagSearchResponse struct {
 //   - logger: Logger for debug/error messages
 //   - index: Index name to query
 //   - startTime, endTime: optional time range filter on created_at field (RFC3339 format)
-//   - afterCreatedAt, afterIndexedAt: pagination cursors (both required if either provided)
+//   - afterCreatedAt, afterIndexedAt, afterAtURI: pagination cursors (all
+//     required if any is provided)
 //   - size: number of results to fetch (defaults to 1000 if 0)
-func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, size int) (SearchResponse, error) {
+//
+// The sort must be a total order or paging silently loses documents: ES
+// resumes strictly after the cursor, so when a page boundary falls inside a
+// group of documents sharing a sort key, the rest of that group is skipped.
+// created_at has second granularity and posts arrive in bursts, so ties are
+// common. at_uri is unique, which makes the order total. The same defect was
+// measured at 3-4% loss in FetchLikes and ~2% in the Perspective scan.
+func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, afterAtURI string, size int) (SearchResponse, error) {
 	var response SearchResponse
 
 	if size <= 0 {
@@ -1112,6 +1120,7 @@ func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *Inges
 		"sort": []interface{}{
 			map[string]interface{}{"created_at": "asc"},
 			map[string]interface{}{"indexed_at": "asc"},
+			map[string]interface{}{"at_uri": "asc"},
 		},
 		"size": size,
 		// posts/replies templates exclude "embeddings" from _source (api#312 step 2).
@@ -1121,8 +1130,8 @@ func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *Inges
 		"docvalue_fields": []interface{}{"embeddings.*"},
 	}
 
-	if afterCreatedAt != "" && afterIndexedAt != "" {
-		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt}
+	if afterCreatedAt != "" && afterIndexedAt != "" && afterAtURI != "" {
+		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt, afterAtURI}
 	}
 
 	queryJSON, err := json.Marshal(query)
