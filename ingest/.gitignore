@@ -6,3 +6,4 @@ bin/
 .jetstream_state.json
 .megastream_instance.json
 .jetstream_instance.json
+.extract_backfill_state

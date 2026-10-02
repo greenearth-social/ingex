@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"cloud.google.com/go/firestore"
 	"cloud.google.com/go/storage"
 	"github.com/elastic/go-elasticsearch/v9"
 	"github.com/greenearth/ingest/internal/common"
@@ -138,12 +139,86 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		os.Exit(1)
 	}
 
+	// Ensure period-based indices exist and are the write target for likes,
+	// like_tombstones, and posts. Jetstream updates post like counts through the
+	// posts alias, so posts must always have a write index as well. Runs at
+	// startup and every minute so that period rollovers
+	// are detected promptly without waiting for the next batch flush.
+	if !dryRun {
+		ensureIndices := func() error {
+			indexCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			for _, alias := range []string{"likes", "like_tombstones", "posts", "replies"} {
+				name := common.CurrentIndexName(alias, config.IndexPeriod)
+				if err := common.EnsureIndex(indexCtx, esClient, name, alias, logger); err != nil {
+					return fmt.Errorf("failed to ensure index for %s: %w", alias, err)
+				}
+			}
+			return nil
+		}
+
+		{
+			backoff := time.Second
+			for {
+				if err := ensureIndices(); err == nil {
+					break
+				} else {
+					logger.Error("ensureIndices failed (retrying in %v): %v", backoff, err)
+				}
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return
+				}
+				if backoff < 60*time.Second {
+					backoff *= 2
+				}
+			}
+		}
+
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := ensureIndices(); err != nil {
+						logger.Error("%v", err)
+					}
+				}
+			}
+		}()
+	}
+
 	// Initialize and start rate limiter
 	threshold := config.LikeRateLimitPerHour / (60 / config.LikeRateLimitWindowMinutes)
 	windowDur := time.Duration(config.LikeRateLimitWindowMinutes) * time.Minute
 	blockDur := time.Duration(config.LikeBlockDurationMinutes) * time.Minute
 	rateLimiter := jetstream_ingest.NewRateLimiter(windowDur, blockDur, threshold)
 	rateLimiter.Start(ctx)
+
+	// Follow deltas for the API's per-user followed-users cache (api#83).
+	// Entirely optional: with no Firestore project configured, or if the
+	// client cannot be built, ingestion carries on exactly as before and the
+	// API falls back to its TTL refresh.
+	var followWriter *jetstream_ingest.FollowWriter
+	var followFirestore *firestore.Client
+	if !dryRun && config.FollowCacheEnabled() {
+		followFirestore, err = common.NewFirestoreClient(ctx, config.FirestoreProject, config.FirestoreDatabase)
+		if err != nil {
+			logger.Error("Failed to create Firestore client for follow deltas: %v (continuing without follow-cache updates)", err)
+		} else {
+			followStore := common.NewFirestoreFollowStore(followFirestore, logger)
+			trackedUsers := jetstream_ingest.NewTrackedUsers(followStore, logger)
+			go trackedUsers.Run(ctx, time.Duration(config.FollowsTrackedRefreshSec)*time.Second)
+
+			followWriter = jetstream_ingest.NewFollowWriter(followStore, trackedUsers, logger, config.FollowsWriteBuffer)
+			go followWriter.Run(ctx)
+			logger.Info("Follow-delta writer started (database=%s)", config.FirestoreDatabase)
+		}
+	}
 
 	// Start blocklist persistence goroutine (writes to GCS periodically)
 	if !dryRun && config.BlocklistDestination != "" {
@@ -324,6 +399,20 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		}()
 	}
 
+	// Posts join the lean two-tower corpus the moment a like pushes them over
+	// the threshold (greenearth-social/ingex#442). nil disables promotion.
+	var qualityCfg *common.QualityPromotionConfig
+	if config.QualityIndexEnabled {
+		qualityCfg = &common.QualityPromotionConfig{
+			SourceIndex:  "posts",
+			Threshold:    config.QualityLikeThreshold,
+			IndexPeriod:  config.IndexPeriod,
+			RetentionAge: config.QualityRetentionAge,
+		}
+		logger.Info("Quality corpus promotion enabled (threshold: %d likes, retention: %s)",
+			config.QualityLikeThreshold, config.QualityRetentionAge)
+	}
+
 	// Start worker pool for parallel Elasticsearch writes
 	const numWorkers = 10
 	workersDone := make(chan struct{})
@@ -331,7 +420,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		var wg sync.WaitGroup
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, &wg)
+			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, qualityCfg, &wg)
 		}
 		wg.Wait()
 		close(workersDone)
@@ -358,6 +447,30 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 
 			logger.Metric("jetstream.inbound_count", 1)
 			msg := common.NewJetstreamMessage(rawMsg, logger)
+
+			// Follow deltas for the API's followed-users cache (api#83).
+			// Handled before the sampler deliberately: sampling exists to
+			// control *like* volume in stage, and applying it here would
+			// silently drop most of a stage user's follows. The writer
+			// filters to the users we actually serve, so the volume is
+			// negligible either way, and Enqueue drops rather than blocking
+			// so this can never stall the ingestion loop.
+			if followWriter != nil && (msg.IsFollow() || msg.IsFollowDelete()) {
+				// Labelled by whether the event was for one of our users, so
+				// "no follow writes" can be told apart from "no follows seen".
+				if followWriter.Enqueue(msg) {
+					logger.Metric("jetstream.follow_events_count", 1)
+				} else {
+					logger.Metric("jetstream.follow_events_untracked_count", 1)
+				}
+				continue
+			}
+
+			if !common.ShouldSampleDID(msg.GetAuthorDID(), config.Environment) {
+				logger.Metric("jetstream.sample_dropped_count", 1)
+				skippedCount++
+				continue
+			}
 
 			// Handle like deletions
 			if msg.IsLikeDelete() {
@@ -507,6 +620,23 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	}
 
 cleanup:
+	// Let queued follow deltas land before the Firestore client closes.
+	if followWriter != nil {
+		followWriter.Close()
+		select {
+		case <-followWriter.Done():
+		case <-time.After(5 * time.Second):
+			logger.Error("Timeout draining follow-delta writer")
+		}
+		logger.Info("Follow-delta writer stopped (written: %d, dropped: %d)",
+			followWriter.Written(), followWriter.Dropped())
+	}
+	if followFirestore != nil {
+		if err := followFirestore.Close(); err != nil {
+			logger.Error("Failed to close Firestore client: %v", err)
+		}
+	}
+
 	// Send final like batch to workers
 	if len(batch) > 0 {
 		job := batchJob{
@@ -592,7 +722,7 @@ cleanup:
 }
 
 // esWorker processes batches of documents and writes them to Elasticsearch
-func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, wg *sync.WaitGroup) {
+func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, qualityCfg *common.QualityPromotionConfig, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	batchCounter := 0
@@ -637,10 +767,11 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 							}
 						}
 
-						if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
-							logger.Error("Worker %d: Failed to decrement post like counts: %v", id, err)
-							// Don't set success=false - this is a secondary operation
-						}
+						var wg sync.WaitGroup
+						wg.Add(2)
+						go common.BulkIndexWorker(&wg, ctx, esClient, "posts", updates, dryRun, logger, common.BulkUpdateLikeCounts, "decrement like counts in")
+						go common.BulkIndexWorker(&wg, ctx, esClient, "replies", updates, dryRun, logger, common.BulkUpdateLikeCounts, "decrement like counts in")
+						wg.Wait()
 					}
 				}
 			}
@@ -667,9 +798,27 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 					}
 				}
 
-				if err := common.BulkUpdatePostLikeCounts(ctx, esClient, "posts", updates, dryRun, logger); err != nil {
-					logger.Error("Worker %d: Failed to update post like counts: %v", id, err)
-					// Don't set success=false - this is a secondary operation
+				// The posts update runs inline rather than through
+				// BulkIndexWorker so its results are available: they carry each
+				// post's new like count, which is what identifies a threshold
+				// crossing without a second read.
+				var wg sync.WaitGroup
+				wg.Add(1)
+				go common.BulkIndexWorker(&wg, ctx, esClient, "replies", updates, dryRun, logger, common.BulkUpdateLikeCounts, "increment like counts in")
+
+				likeResults, err := common.BulkUpdateLikeCountsWithResults(ctx, esClient, "posts", updates, dryRun, logger)
+				if err != nil {
+					logger.Error("Worker %d: Failed to increment like counts in posts: %v", id, err)
+				}
+				wg.Wait()
+
+				// Promotion failures are logged, not fatal: the quality corpus is
+				// a derived view that the backfill script can rebuild, and a
+				// missed promotion must never stall like ingestion.
+				if err == nil && qualityCfg != nil && len(likeResults) > 0 {
+					if _, perr := common.PromoteQualityPosts(ctx, esClient, logger, *qualityCfg, likeResults, dryRun); perr != nil {
+						logger.Error("Worker %d: Failed to promote posts to the quality corpus: %v", id, perr)
+					}
 				}
 			}
 		}

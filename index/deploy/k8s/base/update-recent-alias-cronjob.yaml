@@ -1,0 +1,174 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: update-recent-alias
+spec:
+  # Run every 5 minutes. The shortest period is 10min (local), so this ensures
+  # posts_recent and posts_recent_quality are updated within at most 5 minutes
+  # of each period boundary.
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: update-alias
+            image: curlimages/curl:8.4.0
+            env:
+            - name: ES_SERVICE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: es-service-user-secret
+                  key: password
+            - name: INDEX_PERIOD
+              valueFrom:
+                configMapKeyRef:
+                  name: ilm-settings
+                  key: index_period
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              ES="https://greenearth-es-http:9200"
+              AUTH="es-service-user:$ES_SERVICE_PASSWORD"
+
+              # Compute the period suffix for an epoch timestamp.
+              # Uses the same logic as the bootstrap job and ingest service.
+              suffix_for_epoch() {
+                local ts="$1"
+                case "$INDEX_PERIOD" in
+                  week)
+                    date -u -d "@$ts" +%G-w%V ;;
+                  hour)
+                    date -u -d "@$ts" +%Y-%m-%d-%H ;;
+                  10min)
+                    local hh mm mm10
+                    hh=$(date -u -d "@$ts" +%H)
+                    mm=$(date -u -d "@$ts" +%M)
+                    mm10=$(( (mm / 10) * 10 ))
+                    printf "%s-%s-%02d" "$(date -u -d "@$ts" +%Y-%m-%d)" "$hh" "$mm10" ;;
+                  *)
+                    date -u -d "@$ts" +%G-w%V ;;
+                esac
+              }
+
+              period_seconds() {
+                case "$INDEX_PERIOD" in
+                  week)  echo 604800 ;;
+                  hour)  echo 3600 ;;
+                  10min) echo 600 ;;
+                  *)     echo 604800 ;;
+                esac
+              }
+
+              # Find the physical index that backs a given period prefix, tolerating a
+              # migration SHA suffix (e.g. posts-2026-w24-7030fc2).  Returns the most
+              # recently created match, or empty string if none exist.
+              find_index() {
+                local prefix="$1"
+                curl -k -s -u "$AUTH" \
+                  "$ES/_cat/indices/${prefix}*?h=index&s=creation.date:desc&format=json" \
+                  2>/dev/null \
+                  | grep -o '"[^"]*"' | tr -d '"' | grep "^${prefix}" | head -1 || true
+              }
+
+              # Point alias at the most recent $3 period indices named "$1-<suffix>",
+              # removing any member that has fallen outside that window.
+              #
+              #   update_alias <index-prefix> <alias> <period-count>
+              update_alias() {
+                local prefix="$1"
+                local alias="$2"
+                local periods="$3"
+
+                local now period_secs i suffix idx
+                now=$(date -u +%s)
+                period_secs=$(period_seconds)
+
+                # Resolve the physical index backing each period in the window.
+                # WANTED stays space-delimited so it can be membership-tested below.
+                local wanted="" current_index=""
+                i=0
+                while [ "$i" -lt "$periods" ]; do
+                  suffix=$(suffix_for_epoch "$(( now - i * period_secs ))")
+                  idx=$(find_index "$prefix-$suffix")
+                  if [ -n "$idx" ]; then
+                    wanted="$wanted $idx"
+                    if [ "$i" -eq 0 ]; then
+                      current_index="$idx"
+                    fi
+                  fi
+                  i=$(( i + 1 ))
+                done
+
+                if [ -z "$current_index" ]; then
+                  echo "$alias: current period index ($prefix-$(suffix_for_epoch "$now")) not found — skipping"
+                  return 0
+                fi
+
+                echo "$alias: target members:$wanted"
+
+                local alias_json members missing add_actions remove_actions
+                alias_json=$(curl -k -s -u "$AUTH" "$ES/*/_alias/$alias" 2>/dev/null || echo "{}")
+                # Space-delimited, not newline-delimited: the membership tests below
+                # are `case " $members " in *" $idx "*`, which needs a space on both
+                # sides of every entry to match the last one on a line.
+                members=$(echo "$alias_json" | \
+                  grep -o "\"[^\"]*\":{\"aliases\":{\"$alias\"" | \
+                  grep -o '^"[^"]*"' | tr -d '"' | tr '\n' ' ' || true)
+
+                # An update is needed if any target is absent, or any member is stale.
+                missing=0
+                for idx in $wanted; do
+                  case " $members " in
+                    *" $idx "*) ;;
+                    *) missing=1 ;;
+                  esac
+                done
+
+                remove_actions=""
+                for idx in $members; do
+                  case " $wanted " in
+                    *" $idx "*) ;;
+                    *) remove_actions="${remove_actions}{\"remove\":{\"index\":\"$idx\",\"alias\":\"$alias\"}}," ;;
+                  esac
+                done
+
+                if [ "$missing" -eq 0 ] && [ -z "$remove_actions" ]; then
+                  echo "$alias: already correct — no update needed"
+                  return 0
+                fi
+
+                add_actions=""
+                for idx in $wanted; do
+                  if [ -n "$add_actions" ]; then
+                    add_actions="${add_actions},"
+                  fi
+                  add_actions="${add_actions}{\"add\":{\"index\":\"$idx\",\"alias\":\"$alias\"}}"
+                done
+
+                echo "Updating $alias..."
+                curl -k --fail-with-body -X POST "$ES/_aliases" \
+                  -u "$AUTH" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"actions\":[${remove_actions}${add_actions}]}"
+
+                echo ""
+                echo "$alias updated."
+              }
+
+              # Both aliases span 3 periods so that neither window is ever shorter
+              # than the 14 days the retrieval path assumes — 2 weekly periods dip to
+              # 7 days just after a period boundary. Keeping them equal also matters
+              # because candidates retrieved from the quality corpus are hydrated
+              # against posts_recent (L12 embeddings, and like_count for the rankers):
+              # if posts_recent were the narrower window, a candidate could be
+              # retrievable but not hydratable.
+              update_alias "posts" "posts_recent" 3
+              update_alias "posts-quality" "posts_recent_quality" 3

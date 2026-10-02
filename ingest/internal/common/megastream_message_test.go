@@ -1,17 +1,22 @@
 package common
 
 import (
+	"encoding/json"
+	"fmt"
+	"reflect"
 	"testing"
+
+	"github.com/greenearth/ingest/internal/embeddings"
 )
 
 func TestIsAccountDeletion(t *testing.T) {
 	logger := NewLogger(false)
 
 	tests := []struct {
-		name                    string
-		rawPostJSON             string
+		name                      string
+		rawPostJSON               string
 		expectedIsAccountDeletion bool
-		expectedAccountStatus   string
+		expectedAccountStatus     string
 	}{
 		{
 			name: "account deletion event",
@@ -27,7 +32,7 @@ func TestIsAccountDeletion(t *testing.T) {
 				}
 			}`,
 			expectedIsAccountDeletion: true,
-			expectedAccountStatus:   "deleted",
+			expectedAccountStatus:     "deleted",
 		},
 		{
 			name: "account deactivation event",
@@ -43,7 +48,7 @@ func TestIsAccountDeletion(t *testing.T) {
 				}
 			}`,
 			expectedIsAccountDeletion: false,
-			expectedAccountStatus:   "deactivated",
+			expectedAccountStatus:     "deactivated",
 		},
 		{
 			name: "active account event",
@@ -59,7 +64,7 @@ func TestIsAccountDeletion(t *testing.T) {
 				}
 			}`,
 			expectedIsAccountDeletion: false,
-			expectedAccountStatus:   "",
+			expectedAccountStatus:     "",
 		},
 		{
 			name: "regular post creation event",
@@ -76,7 +81,7 @@ func TestIsAccountDeletion(t *testing.T) {
 				}
 			}`,
 			expectedIsAccountDeletion: false,
-			expectedAccountStatus:   "",
+			expectedAccountStatus:     "",
 		},
 		{
 			name: "regular post deletion event",
@@ -89,7 +94,7 @@ func TestIsAccountDeletion(t *testing.T) {
 				}
 			}`,
 			expectedIsAccountDeletion: false,
-			expectedAccountStatus:   "",
+			expectedAccountStatus:     "",
 		},
 	}
 
@@ -593,7 +598,7 @@ func TestMegaStreamMessage_ImageAltTextParsing(t *testing.T) {
 		}
 	})
 
-	t.Run("alt text in CreateElasticsearchDoc", func(t *testing.T) {
+	t.Run("alt text in CreatePostDoc", func(t *testing.T) {
 		rawPostJSON := `{
 			"message": {
 				"commit": {
@@ -621,7 +626,7 @@ func TestMegaStreamMessage_ImageAltTextParsing(t *testing.T) {
 		}`
 
 		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
-		doc := CreateElasticsearchDoc(msg, 0)
+		doc := CreatePostDoc(msg, 0)
 
 		if len(doc.Media) != 1 {
 			t.Fatalf("Expected 1 media item in doc, got %d", len(doc.Media))
@@ -694,7 +699,7 @@ func TestMegaStreamMessage_ExternalEmbedParsing(t *testing.T) {
 		}
 	})
 
-	t.Run("external embed in CreateElasticsearchDoc", func(t *testing.T) {
+	t.Run("external embed in CreatePostDoc", func(t *testing.T) {
 		rawPostJSON := `{
 			"message": {
 				"commit": {
@@ -716,7 +721,7 @@ func TestMegaStreamMessage_ExternalEmbedParsing(t *testing.T) {
 		}`
 
 		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, "{}", logger)
-		doc := CreateElasticsearchDoc(msg, 0)
+		doc := CreatePostDoc(msg, 0)
 
 		if doc.ExternalEmbed == nil {
 			t.Fatal("Expected non-nil ExternalEmbed in doc")
@@ -846,7 +851,7 @@ func TestMegaStreamMessage_VideoTranscriptParsing(t *testing.T) {
 		}
 	})
 
-	t.Run("video transcript in CreateElasticsearchDoc", func(t *testing.T) {
+	t.Run("video transcript in CreatePostDoc", func(t *testing.T) {
 		rawPostJSON := `{
 			"message": {
 				"commit": {
@@ -878,7 +883,7 @@ func TestMegaStreamMessage_VideoTranscriptParsing(t *testing.T) {
 		}`
 
 		msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, inferencesJSON, logger)
-		doc := CreateElasticsearchDoc(msg, 0)
+		doc := CreatePostDoc(msg, 0)
 
 		if doc.VideoTranscript != "Transcript text here" {
 			t.Errorf("Expected VideoTranscript 'Transcript text here', got %q", doc.VideoTranscript)
@@ -887,6 +892,176 @@ func TestMegaStreamMessage_VideoTranscriptParsing(t *testing.T) {
 			t.Errorf("Expected VideoTranscriptLanguage 'es', got %q", doc.VideoTranscriptLanguage)
 		}
 	})
+}
+
+func TestMegaStreamMessage_TopicScoresParsing(t *testing.T) {
+	logger := NewLogger(false)
+	rawPostJSON := `{
+		"message": {
+			"commit": {
+				"operation": "create",
+				"record": {
+					"text": "A post about current events",
+					"createdAt": "2025-01-27T12:00:00Z"
+				}
+			}
+		}
+	}`
+
+	tests := []struct {
+		name       string
+		inferences string
+		want       map[string]float32
+	}{
+		{
+			name: "all valid post text topic scores",
+			inferences: `{
+				"text": {
+					"message.commit.record.text": {
+						"topic": {
+							"News & Social Concern": 0.73779296875,
+							"Sports": 0.00861358642578125,
+							"Science & Technology": 0.6943359375
+						}
+					}
+				}
+			}`,
+			want: map[string]float32{
+				"News & Social Concern": float32(0.73779296875),
+				"Sports":                float32(0.00861358642578125),
+				"Science & Technology":  float32(0.6943359375),
+			},
+		},
+		{
+			name: "invalid entries are skipped while zero is retained",
+			inferences: `{
+				"text": {
+					"message.commit.record.text": {
+						"topic": {
+							"Sports": 0,
+							"String Score": "0.7",
+							"Negative Score": -0.1,
+							"Score Above One": 1.1
+						}
+					}
+				}
+			}`,
+			want: map[string]float32{"Sports": 0},
+		},
+		{
+			name: "empty topic object",
+			inferences: `{
+				"text": {
+					"message.commit.record.text": {"topic": {}}
+				}
+			}`,
+		},
+		{
+			name:       "missing text analyses",
+			inferences: `{}`,
+		},
+		{
+			name: "topics on another analyzed field are ignored",
+			inferences: `{
+				"text": {
+					"message.commit.record.embed.external.title": {
+						"topic": {"Sports": 0.9}
+					}
+				}
+			}`,
+		},
+		{
+			name: "all invalid scores produce no map",
+			inferences: `{
+				"text": {
+					"message.commit.record.text": {
+						"topic": {
+							"String Score": "0.7",
+							"Score Above One": 1.1
+						}
+					}
+				}
+			}`,
+		},
+		{
+			name:       "malformed inference JSON",
+			inferences: `{"text":`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, tt.inferences, logger)
+			if got := msg.GetTopicScores(); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("GetTopicScores() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCreatePostDoc_TopicScoresJSON(t *testing.T) {
+	logger := NewLogger(false)
+	rawPostJSON := `{
+		"message": {
+			"commit": {
+				"operation": "create",
+				"record": {
+					"text": "A post",
+					"createdAt": "2025-01-27T12:00:00Z"
+				}
+			}
+		}
+	}`
+
+	withTopics := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, `{
+		"text": {
+			"message.commit.record.text": {
+				"topic": {
+					"News & Social Concern": 0.73779296875,
+					"Sports": 0
+				}
+			}
+		}
+	}`, logger)
+	want := map[string]float32{
+		"News & Social Concern": float32(0.73779296875),
+		"Sports":                0,
+	}
+	doc := CreatePostDoc(withTopics, 0)
+	if !reflect.DeepEqual(doc.TopicScores, want) {
+		t.Fatalf("CreatePostDoc topic scores = %v, want %v", doc.TopicScores, want)
+	}
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal post document: %v", err)
+	}
+	var encodedDoc map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &encodedDoc); err != nil {
+		t.Fatalf("unmarshal post document JSON: %v", err)
+	}
+	var encodedTopics map[string]float32
+	if err := json.Unmarshal(encodedDoc["topic_scores"], &encodedTopics); err != nil {
+		t.Fatalf("unmarshal topic_scores: %v", err)
+	}
+	if !reflect.DeepEqual(encodedTopics, want) {
+		t.Errorf("serialized topic_scores = %v, want %v", encodedTopics, want)
+	}
+
+	withoutTopics := CreatePostDoc(
+		NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, `{}`, logger),
+		0,
+	)
+	encoded, err = json.Marshal(withoutTopics)
+	if err != nil {
+		t.Fatalf("marshal post document without topics: %v", err)
+	}
+	encodedDoc = nil
+	if err := json.Unmarshal(encoded, &encodedDoc); err != nil {
+		t.Fatalf("unmarshal post document JSON without topics: %v", err)
+	}
+	if _, ok := encodedDoc["topic_scores"]; ok {
+		t.Errorf("missing topic scores were not omitted from post JSON: %s", encoded)
+	}
 }
 
 func TestMegaStreamMessage_CreatedAtNormalization(t *testing.T) {
@@ -951,5 +1126,71 @@ func TestMegaStreamMessage_CreatedAtNormalization(t *testing.T) {
 				t.Errorf("GetCreatedAt() = %q, expected %q", got, tt.expectedCreatedAt)
 			}
 		})
+	}
+}
+
+// TestMegaStreamMessage_EmbeddingsParsing covers api#312 step 2 and ingex#444:
+// only the families something actually reads are ingested. all_MiniLM_L6_v2 and
+// google_embeddinggemma_300m are read by nothing, so parseInferences must not
+// store them; all_MiniLM_L12_v2 must still be parsed, because serving reads it
+// (MMR and the heavy ranker) and it is the post tower's input. Every field kept
+// on a post document is paid for on the hydration path and again in _source.
+func TestMegaStreamMessage_EmbeddingsParsing(t *testing.T) {
+	logger := NewLogger(false)
+	rawPostJSON := `{
+		"message": {
+			"commit": {
+				"operation": "create",
+				"record": {
+					"text": "hello",
+					"createdAt": "2025-12-12T02:14:25.876Z"
+				}
+			}
+		}
+	}`
+
+	l12, err := embeddings.Encode([]float32{0.1, 0.2, 0.3})
+	if err != nil {
+		t.Fatalf("failed to encode L12 fixture: %v", err)
+	}
+	l6, err := embeddings.Encode([]float32{0.4, 0.5, 0.6})
+	if err != nil {
+		t.Fatalf("failed to encode L6 fixture: %v", err)
+	}
+
+	gemma, err := embeddings.Encode([]float32{0.7, 0.8, 0.9})
+	if err != nil {
+		t.Fatalf("failed to encode gemma fixture: %v", err)
+	}
+
+	inferencesJSON := fmt.Sprintf(`{
+		"text_embeddings": {
+			"all-MiniLM-L12-v2": %q,
+			"all-MiniLM-L6-v2": %q
+		},
+		"video": {
+			"audio_transcription": {
+				"text": "a transcript",
+				"language": "en",
+				"embeddings": {"google/embeddinggemma-300m": %q}
+			}
+		}
+	}`, l12, l6, gemma)
+
+	msg := NewMegaStreamMessage("at://test", "did:plc:test", rawPostJSON, inferencesJSON, logger)
+	got := msg.GetEmbeddings()
+
+	if _, ok := got["all_MiniLM_L6_v2"]; ok {
+		t.Errorf("expected all_MiniLM_L6_v2 to be dropped, but it was present: %v", got["all_MiniLM_L6_v2"])
+	}
+	if _, ok := got["google_embeddinggemma_300m"]; ok {
+		t.Errorf("expected google_embeddinggemma_300m to be dropped, but it was present: %v", got["google_embeddinggemma_300m"])
+	}
+	// The transcript itself is still ingested; only its embedding is dropped.
+	if msg.GetVideoTranscript() != "a transcript" {
+		t.Errorf("video transcript should still be parsed, got %q", msg.GetVideoTranscript())
+	}
+	if _, ok := got["all_MiniLM_L12_v2"]; !ok {
+		t.Errorf("expected all_MiniLM_L12_v2 to still be parsed, got %v", got)
 	}
 }

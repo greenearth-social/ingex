@@ -657,7 +657,7 @@ func processDatabase(ctx context.Context, dbPath, filename string, rowChan chan<
 		var atURI, did, rawPost, inferences string
 		if err := rows.Scan(&atURI, &did, &rawPost, &inferences); err != nil {
 			logger.Error("Failed to scan row from %s: %v", filename, err)
-			logger.Metric("megastream.row_skip_count", 1)
+			logger.Metric("megastream.row_scan_error_count", 1)
 			continue
 		}
 

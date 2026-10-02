@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: greenearth-es-data-pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      elasticsearch.k8s.elastic.co/cluster-name: greenearth
+      elasticsearch.k8s.elastic.co/statefulset-name: greenearth-es-data

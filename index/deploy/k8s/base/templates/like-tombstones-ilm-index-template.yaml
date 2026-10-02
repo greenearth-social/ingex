@@ -1,18 +1,21 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: like-tombstones-index-template
+  name: like-tombstones-ilm-index-template
 data:
-  like-tombstones-index-template.json: |
+  like-tombstones-ilm-index-template.json: |
     {
-      "index_patterns": ["like_tombstones_v1*"],
+      "index_patterns": ["like-tombstones-*"],
       "template": {
         "settings": {
-          "number_of_shards": $(INDEX_SHARDS),
-          "number_of_replicas": $(INDEX_REPLICAS),
+          "number_of_shards": $(TOMBSTONES_INDEX_SHARDS),
+          "number_of_replicas": $(TOMBSTONES_INDEX_REPLICAS),
           "refresh_interval": "30s",
           "translog.durability": "async",
-          "translog.sync_interval": "30s"
+          "translog.sync_interval": "30s",
+          "lifecycle": {
+            "name": "tombstones_ilm_policy"
+          }
         },
         "mappings": {
           "_routing": {

@@ -26,7 +26,7 @@ Export data from Elasticsearch to Parquet files for analysis and archival.
 - `GE_PARQUET_DESTINATION`: Output destination - supports local paths (./output) or GCS paths (gs://bucket/path)
 - `GE_PARQUET_MAX_RECORDS`: Default max records per file (default: 100000)
 - `GE_EXTRACT_FETCH_SIZE`: Default fetch size (default: 1000)
-- `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts"). Supported values: `posts`, `likes`, `hashtags`
+- `GE_EXTRACT_INDICES`: Comma-separated list of indices to export (default: "posts"). Supported values: `posts`, `replies`, `likes`, `hashtags`
 - `GE_LOGGING_ENABLED`: Enable logging (default: true)
 
 ## Examples
@@ -57,7 +57,7 @@ export GE_PARQUET_DESTINATION="gs://my-bucket/exports/"
 ### Export multiple indices with rolling time window
 
 ```bash
-GE_EXTRACT_INDICES="posts,likes" ./extract --window-size-min 240
+GE_EXTRACT_INDICES="posts,likes,replies" ./extract --window-size-min 240
 ```
 
 ### Export with fixed time window
@@ -101,6 +101,7 @@ GE_EXTRACT_INDICES="posts_v2,likes_v2" ./extract --output-path ./v2_exports --st
 The command exports data to Parquet files with timestamp-based naming:
 - `bsky_posts_20251012_090556.parquet`
 - `bsky_posts_20251012_120823.parquet`
+- `bsky_replies_20251012_120823.parquet` (for replies index)
 - `bsky_likes_20251012_150430.parquet` (for likes index)
 - `bsky_inferences_20251012_150430.parquet` (automatically alongside posts, unless `--skip-inferences` is set)
 - etc.
@@ -111,14 +112,24 @@ Each file contains up to `max-records` posts (or all remaining posts if `max-rec
 
 ### Parquet Schema
 
-**Posts** (`bsky_posts_*.parquet`):
+**Posts and replies** (`bsky_posts_*.parquet`, `bsky_replies_*.parquet`):
+
 - `did`: Author DID (BlueSky user identifier)
+- `at_uri`: AT-URI of the post or reply
 - `embed_quote_uri`: Quoted post URI (if quote post)
 - `inserted_at`: Timestamp when indexed in Elasticsearch
 - `record_created_at`: Post creation timestamp
 - `record_text`: Post content/text
+- `contains_images`: Required, non-null boolean copied from Elasticsearch
+- `contains_video`: Required, non-null boolean copied from Elasticsearch
 - `reply_parent_uri`: Parent post URI (if in thread)
 - `reply_root_uri`: Root post URI (if in thread)
+- `embeddings`: Map of exported model names to base85-encoded embeddings (if available)
+
+The media flags preserve both `true` and `false`; a flag absent from the ES document
+exports as `false`. These columns are included in newly generated local and GCS
+files. Existing Parquet files are not rewritten and may lack these columns, so
+readers using the flags across historical files must handle the older schema.
 
 **Inferences** (`bsky_inferences_*.parquet`):
 - `at_uri`: AT-URI of the post

@@ -223,12 +223,6 @@ func TestMegastreamIngestIntegration(t *testing.T) {
 			t.Logf("  created_at: %s", doc.CreatedAt)
 			t.Logf("  indexed_at: %s", doc.IndexedAt)
 			t.Logf("  has_embeddings: %v", len(doc.Embeddings) > 0)
-			if doc.ThreadRootPost != "" {
-				t.Logf("  thread_root_post: %s", doc.ThreadRootPost)
-			}
-			if doc.ThreadParentPost != "" {
-				t.Logf("  thread_parent_post: %s", doc.ThreadParentPost)
-			}
 			if doc.QuotePost != "" {
 				t.Logf("  quote_post: %s", doc.QuotePost)
 			}
@@ -247,7 +241,7 @@ func TestMegastreamIngestIntegration(t *testing.T) {
 }
 
 // getSampleDocuments retrieves sample documents from the specified index
-func getSampleDocuments(ctx context.Context, esClient *elasticsearch.Client, index string, size int) ([]common.ElasticsearchDoc, error) {
+func getSampleDocuments(ctx context.Context, esClient *elasticsearch.Client, index string, size int) ([]common.PostDoc, error) {
 	query := map[string]interface{}{
 		"size": size,
 		"sort": []map[string]interface{}{
@@ -292,7 +286,7 @@ func getSampleDocuments(ctx context.Context, esClient *elasticsearch.Client, ind
 		return nil, fmt.Errorf("invalid response structure: hits is not an array")
 	}
 
-	var docs []common.ElasticsearchDoc
+	var docs []common.PostDoc
 	for _, hit := range hitsList {
 		hitMap, ok := hit.(map[string]interface{})
 		if !ok {
@@ -304,13 +298,13 @@ func getSampleDocuments(ctx context.Context, esClient *elasticsearch.Client, ind
 			continue
 		}
 
-		// Marshal and unmarshal to convert to ElasticsearchDoc struct
+		// Marshal and unmarshal to convert to PostDoc struct
 		sourceBytes, err := json.Marshal(source)
 		if err != nil {
 			continue
 		}
 
-		var doc common.ElasticsearchDoc
+		var doc common.PostDoc
 		if err := json.Unmarshal(sourceBytes, &doc); err != nil {
 			continue
 		}

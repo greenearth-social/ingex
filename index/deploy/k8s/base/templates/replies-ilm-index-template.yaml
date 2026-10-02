@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: replies-ilm-index-template
+data:
+  replies-ilm-index-template.json: |
+    {
+      "index_patterns": ["replies-*"],
+      "template": {
+        "settings": {
+          "number_of_shards": $(REPLIES_INDEX_SHARDS),
+          "number_of_replicas": $(REPLIES_INDEX_REPLICAS),
+          "refresh_interval": "30s",
+          "translog.durability": "async",
+          "translog.sync_interval": "30s",
+          "lifecycle": {
+            "name": "replies_ilm_policy"
+          },
+          "analysis": {
+            "analyzer": {
+              "content_analyzer": {
+                "type": "standard",
+                "stopwords": "_english_"
+              }
+            }
+          }
+        },
+        "mappings": {
+          "_routing": {
+            "required": true
+          },
+          "properties": {
+            "at_uri": {
+              "type": "keyword",
+              "index": true
+            },
+            "author_did": {
+              "type": "keyword",
+              "index": true
+            },
+            "content": {
+              "type": "text",
+              "index": false
+            },
+            "created_at": {
+              "type": "date",
+              "format": "iso8601",
+              "index": true
+            },
+            "thread_root_post": {
+              "type": "keyword",
+              "index": true
+            },
+            "thread_parent_post": {
+              "type": "keyword",
+              "index": true
+            },
+            "quote_post": {
+              "type": "keyword",
+              "index": false
+            },
+            "embeddings": {
+              "type": "object",
+              "properties": {
+                "all_MiniLM_L12_v2": {
+                  "type": "dense_vector",
+                  "dims": 384,
+                  "index": false
+                }
+              }
+            },
+            "indexed_at": {
+              "type": "date",
+              "format": "iso8601",
+              "index": true
+            },
+            "like_count": {
+              "type": "integer",
+              "index": false
+            },
+            "media": {
+              "type": "nested",
+              "properties": {
+                "id": {"type": "keyword", "index": false},
+                "media_type": {"type": "keyword", "index": false},
+                "mime_type": {"type": "keyword", "index": false},
+                "size": {"type": "long", "index": false},
+                "aspect_ratio": {"type": "float", "index": false},
+                "width": {"type": "integer", "index": false},
+                "height": {"type": "integer", "index": false},
+                "alt_text": {"type": "text", "index": false}
+              }
+            },
+            "contains_images": {"type": "boolean", "index": false},
+            "contains_video": {"type": "boolean", "index": false},
+            "image_count": {"type": "integer", "index": false},
+            "video_count": {"type": "integer", "index": false},
+            "media_count": {"type": "integer", "index": false},
+            "external_embed": {
+              "type": "object",
+              "properties": {
+                "uri": {"type": "keyword", "index": false},
+                "title": {"type": "text", "index": false},
+                "description": {"type": "text", "index": false}
+              }
+            },
+            "video_transcript": {
+              "type": "text",
+              "index": false
+            },
+            "video_transcript_language": {
+              "type": "keyword",
+              "index": false
+            }
+          }
+        }
+      }
+    }

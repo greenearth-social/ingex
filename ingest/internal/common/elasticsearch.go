@@ -6,12 +6,19 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	"github.com/elastic/go-elasticsearch/v9"
 )
+
+// indexAliasInfo holds per-index alias configuration returned by GetAlias.
+type indexAliasInfo struct {
+	IsWriteIndex bool `json:"is_write_index"`
+}
 
 // Float32Array is a wrapper for []float32 that ensures values are always marshaled as floats
 type Float32Array []float32
@@ -48,28 +55,78 @@ type ExternalEmbed struct {
 	Description string `json:"description,omitempty"`
 }
 
-// ElasticsearchDoc represents the document structure for indexing
-type ElasticsearchDoc struct {
+// ESDoc is the constraint for document types that can be bulk-indexed.
+type ESDoc interface {
+	esAtURI() string
+	esAuthorDID() string
+}
+
+// PostDoc is the document structure for indexing original posts.
+// Reply-specific fields (ThreadParentPost, ThreadRootPost) are intentionally absent.
+type PostDoc struct {
 	AtURI                   string                  `json:"at_uri"`
 	AuthorDID               string                  `json:"author_did"`
 	Content                 string                  `json:"content"`
 	CreatedAt               string                  `json:"created_at"`
-	ThreadRootPost          string                  `json:"thread_root_post,omitempty"`
-	ThreadParentPost        string                  `json:"thread_parent_post,omitempty"`
-	QuotePost               string                  `json:"quote_post,omitempty"`
+	QuotePost               string                  `json:"quote_post"`
 	Embeddings              map[string]Float32Array `json:"embeddings,omitempty"`
+	PostEmbeddingModelUUID  string                  `json:"ge_post_embedding_model_uuid"`
+	TopicScores             map[string]float32      `json:"topic_scores,omitempty"`
 	IndexedAt               string                  `json:"indexed_at"`
 	LikeCount               int                     `json:"like_count"`
-	Media                   []MediaItem             `json:"media,omitempty"`
+	Media                   []MediaItem             `json:"media"`
 	ContainsImages          bool                    `json:"contains_images"`
 	ContainsVideo           bool                    `json:"contains_video"`
 	ImageCount              int                     `json:"image_count"`
 	VideoCount              int                     `json:"video_count"`
 	MediaCount              int                     `json:"media_count"`
-	ExternalEmbed           *ExternalEmbed          `json:"external_embed,omitempty"`
-	VideoTranscript         string                  `json:"video_transcript,omitempty"`
-	VideoTranscriptLanguage string                  `json:"video_transcript_language,omitempty"`
+	ExternalEmbed           *ExternalEmbed          `json:"external_embed"`
+	VideoTranscript         string                  `json:"video_transcript"`
+	VideoTranscriptLanguage string                  `json:"video_transcript_language"`
+
+	// Perspective API conversational-quality scores, computed at ingest so the
+	// api does not have to score candidates on the serving path (api#368).
+	//
+	// All three are omitempty and travel together. CombinedPerspectiveScore is
+	// a pointer because 0.0 is a meaningful score (maximally toxic) that a
+	// plain float64 would omit. PerspectiveScoredAt set with no combined score
+	// means "attempted, unscorable" — nearly always non-English text the API
+	// declines to rate — and is what stops the api re-querying those posts
+	// forever. All three absent means "not scored yet".
+	PerspectiveScores        map[string]float64 `json:"perspective_scores,omitempty"`
+	CombinedPerspectiveScore *float64           `json:"combined_perspective_score,omitempty"`
+	PerspectiveScoredAt      string             `json:"perspective_scored_at,omitempty"`
 }
+
+func (d PostDoc) esAtURI() string     { return d.AtURI }
+func (d PostDoc) esAuthorDID() string { return d.AuthorDID }
+
+// ReplyDoc is the document structure for indexing replies.
+// Includes thread join fields; omits PostEmbeddingModelUUID (replies don't receive post-tower embeddings).
+type ReplyDoc struct {
+	AtURI                   string                  `json:"at_uri"`
+	AuthorDID               string                  `json:"author_did"`
+	Content                 string                  `json:"content"`
+	CreatedAt               string                  `json:"created_at"`
+	ThreadRootPost          string                  `json:"thread_root_post"`
+	ThreadParentPost        string                  `json:"thread_parent_post"`
+	QuotePost               string                  `json:"quote_post"`
+	Embeddings              map[string]Float32Array `json:"embeddings,omitempty"`
+	IndexedAt               string                  `json:"indexed_at"`
+	LikeCount               int                     `json:"like_count"`
+	Media                   []MediaItem             `json:"media"`
+	ContainsImages          bool                    `json:"contains_images"`
+	ContainsVideo           bool                    `json:"contains_video"`
+	ImageCount              int                     `json:"image_count"`
+	VideoCount              int                     `json:"video_count"`
+	MediaCount              int                     `json:"media_count"`
+	ExternalEmbed           *ExternalEmbed          `json:"external_embed"`
+	VideoTranscript         string                  `json:"video_transcript"`
+	VideoTranscriptLanguage string                  `json:"video_transcript_language"`
+}
+
+func (d ReplyDoc) esAtURI() string     { return d.AtURI }
+func (d ReplyDoc) esAuthorDID() string { return d.AuthorDID }
 
 // PostTombstoneDoc represents the document structure for post deletion tombstones
 type PostTombstoneDoc struct {
@@ -125,21 +182,23 @@ type ElasticsearchConfig struct {
 
 // NewElasticsearchClient creates and tests a new Elasticsearch client
 func NewElasticsearchClient(config ElasticsearchConfig, logger *IngestLogger) (*elasticsearch.Client, error) {
-	esConfig := elasticsearch.Config{
-		Addresses: []string{config.URL},
-		APIKey:    config.APIKey,
+	opts := []elasticsearch.Option{
+		elasticsearch.WithAddresses(config.URL),
+		elasticsearch.WithAPIKey(config.APIKey),
 	}
 
 	if config.SkipTLSVerify {
 		logger.Info("TLS certificate verification disabled (local development mode)")
-		esConfig.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // nolint:gosec // G402: Required for local development with self-signed certs
-			},
-		}
+		opts = append(opts, elasticsearch.WithTransportOptions(
+			elastictransport.WithTransport(&http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true, // nolint:gosec // G402: Required for local development with self-signed certs
+				},
+			}),
+		))
 	}
 
-	client, err := elasticsearch.NewClient(esConfig)
+	client, err := elasticsearch.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Elasticsearch client: %w", err)
 	}
@@ -156,8 +215,8 @@ func NewElasticsearchClient(config ElasticsearchConfig, logger *IngestLogger) (*
 	return client, nil
 }
 
-// BulkIndex indexes a batch of documents to Elasticsearch
-func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, docs []ElasticsearchDoc, dryRun bool, logger *IngestLogger) error {
+// BulkIndex indexes a batch of PostDoc or ReplyDoc documents to Elasticsearch.
+func BulkIndex[T ESDoc](ctx context.Context, client *elasticsearch.Client, index string, docs []T, dryRun bool, logger *IngestLogger) error {
 	if len(docs) == 0 {
 		return nil
 	}
@@ -171,16 +230,16 @@ func BulkIndex(ctx context.Context, client *elasticsearch.Client, index string, 
 	validDocCount := 0
 
 	for _, doc := range docs {
-		if doc.AtURI == "" {
-			logger.Error("Skipping document with empty at_uri (author_did: %s)", doc.AuthorDID)
+		if doc.esAtURI() == "" {
+			logger.Error("Skipping document with empty at_uri (author_did: %s)", doc.esAuthorDID())
 			continue
 		}
 
 		meta := map[string]interface{}{
 			"index": map[string]interface{}{
 				"_index":  index,
-				"_id":     doc.AtURI,
-				"routing": doc.AuthorDID,
+				"_id":     doc.esAtURI(),
+				"routing": doc.esAuthorDID(),
 			},
 		}
 
@@ -461,21 +520,20 @@ func BulkDelete(ctx context.Context, client *elasticsearch.Client, index string,
 	return nil
 }
 
-// CreateElasticsearchDoc creates an ElasticsearchDoc from a MegaStreamMessage
-func CreateElasticsearchDoc(msg MegaStreamMessage, likeCount int) ElasticsearchDoc {
-	// Convert embeddings to Float32Array type for proper JSON marshaling
-	var embeddings map[string]Float32Array
-	rawEmbeddings := msg.GetEmbeddings()
-	if rawEmbeddings != nil {
-		embeddings = make(map[string]Float32Array, len(rawEmbeddings))
-		for key, value := range rawEmbeddings {
-			embeddings[key] = Float32Array(value)
-		}
+func msgEmbeddings(msg MegaStreamMessage) map[string]Float32Array {
+	raw := msg.GetEmbeddings()
+	if raw == nil {
+		return nil
 	}
+	out := make(map[string]Float32Array, len(raw))
+	for k, v := range raw {
+		out[k] = Float32Array(v)
+	}
+	return out
+}
 
-	// Extract media and compute summary fields
-	media := msg.GetMedia()
-	var imageCount, videoCount int
+func msgMediaCounts(msg MegaStreamMessage) (media []MediaItem, imageCount, videoCount, mediaCount int, containsImages, containsVideo bool) {
+	media = msg.GetMedia()
 	for _, item := range media {
 		switch item.MediaType {
 		case "image":
@@ -484,11 +542,41 @@ func CreateElasticsearchDoc(msg MegaStreamMessage, likeCount int) ElasticsearchD
 			videoCount++
 		}
 	}
-	mediaCount := len(media)
-	containsImages := imageCount > 0
-	containsVideo := videoCount > 0
+	mediaCount = len(media)
+	containsImages = imageCount > 0
+	containsVideo = videoCount > 0
+	return
+}
 
-	return ElasticsearchDoc{
+// CreatePostDoc creates a PostDoc from a MegaStreamMessage for indexing into posts-*.
+func CreatePostDoc(msg MegaStreamMessage, likeCount int) PostDoc {
+	media, imageCount, videoCount, mediaCount, containsImages, containsVideo := msgMediaCounts(msg)
+	return PostDoc{
+		AtURI:                   msg.GetAtURI(),
+		AuthorDID:               msg.GetAuthorDID(),
+		Content:                 msg.GetContent(),
+		CreatedAt:               msg.GetCreatedAt(),
+		QuotePost:               msg.GetQuotePost(),
+		Embeddings:              msgEmbeddings(msg),
+		TopicScores:             msg.GetTopicScores(),
+		IndexedAt:               time.Now().UTC().Format(time.RFC3339),
+		LikeCount:               likeCount,
+		Media:                   media,
+		ContainsImages:          containsImages,
+		ContainsVideo:           containsVideo,
+		ImageCount:              imageCount,
+		VideoCount:              videoCount,
+		MediaCount:              mediaCount,
+		ExternalEmbed:           msg.GetExternalEmbed(),
+		VideoTranscript:         msg.GetVideoTranscript(),
+		VideoTranscriptLanguage: msg.GetVideoTranscriptLanguage(),
+	}
+}
+
+// CreateReplyDoc creates a ReplyDoc from a MegaStreamMessage for indexing into replies-*.
+func CreateReplyDoc(msg MegaStreamMessage, likeCount int) ReplyDoc {
+	media, imageCount, videoCount, mediaCount, containsImages, containsVideo := msgMediaCounts(msg)
+	return ReplyDoc{
 		AtURI:                   msg.GetAtURI(),
 		AuthorDID:               msg.GetAuthorDID(),
 		Content:                 msg.GetContent(),
@@ -496,7 +584,7 @@ func CreateElasticsearchDoc(msg MegaStreamMessage, likeCount int) ElasticsearchD
 		ThreadRootPost:          msg.GetThreadRootPost(),
 		ThreadParentPost:        msg.GetThreadParentPost(),
 		QuotePost:               msg.GetQuotePost(),
-		Embeddings:              embeddings,
+		Embeddings:              msgEmbeddings(msg),
 		IndexedAt:               time.Now().UTC().Format(time.RFC3339),
 		LikeCount:               likeCount,
 		Media:                   media,
@@ -877,30 +965,65 @@ type TotalHits struct {
 
 // Hit represents a single search hit
 type Hit struct {
-	Index  string        `json:"_index"`
-	ID     string        `json:"_id"`
-	Score  float64       `json:"_score"`
-	Sort   []interface{} `json:"sort,omitempty"`
-	Source PostData      `json:"_source"`
+	Index  string                     `json:"_index"`
+	ID     string                     `json:"_id"`
+	Score  float64                    `json:"_score"`
+	Sort   []interface{}              `json:"sort,omitempty"`
+	Source PostData                   `json:"_source"`
+	Fields map[string]json.RawMessage `json:"fields,omitempty"`
+}
+
+// embeddingsFromHit returns hit's embeddings, preferring the "docvalue_fields"
+// retrieval API over _source. Once an index's mapping excludes "embeddings"
+// from _source (api#312 step 2), Source.Embeddings is empty and the vectors
+// are only recoverable via "docvalue_fields", which reads doc values
+// directly and — unlike "fields" — never falls back to decompressing
+// _source (that fallback is what silently breaks "fields" once _source
+// excludes the field; see greenearth-social/api#325).
+func embeddingsFromHit(hit Hit) map[string][]float32 {
+	embeddings := make(map[string][]float32, len(hit.Fields))
+	for name, raw := range hit.Fields {
+		modelName, ok := strings.CutPrefix(name, "embeddings.")
+		if !ok {
+			continue
+		}
+		var values [][]float32
+		if err := json.Unmarshal(raw, &values); err != nil || len(values) == 0 {
+			continue
+		}
+		embeddings[modelName] = values[0]
+	}
+	if len(embeddings) > 0 {
+		return embeddings
+	}
+	return hit.Source.Embeddings
 }
 
 // PostData represents the _source field of a search hit
 type PostData struct {
-	AtURI            string               `json:"at_uri"`
-	AuthorDID        string               `json:"author_did"`
-	Content          string               `json:"content"`
-	CreatedAt        string               `json:"created_at"`
-	ThreadRootPost   string               `json:"thread_root_post,omitempty"`
-	ThreadParentPost string               `json:"thread_parent_post,omitempty"`
-	QuotePost        string               `json:"quote_post,omitempty"`
-	Embeddings       map[string][]float32 `json:"embeddings,omitempty"`
-	IndexedAt        string               `json:"indexed_at"`
-	Media            []MediaItem          `json:"media,omitempty"`
-	ContainsImages   bool                 `json:"contains_images"`
-	ContainsVideo    bool                 `json:"contains_video"`
-	ImageCount       int                  `json:"image_count"`
-	VideoCount       int                  `json:"video_count"`
-	MediaCount       int                  `json:"media_count"`
+	AtURI                  string               `json:"at_uri"`
+	AuthorDID              string               `json:"author_did"`
+	Content                string               `json:"content"`
+	CreatedAt              string               `json:"created_at"`
+	ThreadRootPost         string               `json:"thread_root_post,omitempty"`
+	ThreadParentPost       string               `json:"thread_parent_post,omitempty"`
+	QuotePost              string               `json:"quote_post,omitempty"`
+	Embeddings             map[string][]float32 `json:"embeddings,omitempty"`
+	PostEmbeddingModelUUID string               `json:"ge_post_embedding_model_uuid,omitempty"`
+	IndexedAt              string               `json:"indexed_at"`
+	LikeCount              int                  `json:"like_count"`
+	Media                  []MediaItem          `json:"media,omitempty"`
+	ContainsImages         bool                 `json:"contains_images"`
+	ContainsVideo          bool                 `json:"contains_video"`
+	ImageCount             int                  `json:"image_count"`
+	VideoCount             int                  `json:"video_count"`
+	MediaCount             int                  `json:"media_count"`
+	ExternalEmbed          *ExternalEmbed       `json:"external_embed,omitempty"`
+
+	// See the matching fields on PostDoc for what the three states mean.
+	PerspectiveScores        map[string]float64 `json:"perspective_scores,omitempty"`
+	CombinedPerspectiveScore *float64           `json:"combined_perspective_score,omitempty"`
+	PerspectiveScoredAt      string             `json:"perspective_scored_at,omitempty"`
 }
 
 // LikeData represents the _source field of a like search hit
@@ -971,9 +1094,17 @@ type HashtagSearchResponse struct {
 //   - logger: Logger for debug/error messages
 //   - index: Index name to query
 //   - startTime, endTime: optional time range filter on created_at field (RFC3339 format)
-//   - afterCreatedAt, afterIndexedAt: pagination cursors (both required if either provided)
+//   - afterCreatedAt, afterIndexedAt, afterAtURI: pagination cursors (all
+//     required if any is provided)
 //   - size: number of results to fetch (defaults to 1000 if 0)
-func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, size int) (SearchResponse, error) {
+//
+// The sort must be a total order or paging silently loses documents: ES
+// resumes strictly after the cursor, so when a page boundary falls inside a
+// group of documents sharing a sort key, the rest of that group is skipped.
+// created_at has second granularity and posts arrive in bursts, so ties are
+// common. at_uri is unique, which makes the order total. The same defect was
+// measured at 3-4% loss in FetchLikes and ~2% in the Perspective scan.
+func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, afterAtURI string, size int) (SearchResponse, error) {
 	var response SearchResponse
 
 	if size <= 0 {
@@ -1006,12 +1137,18 @@ func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *Inges
 		"sort": []interface{}{
 			map[string]interface{}{"created_at": "asc"},
 			map[string]interface{}{"indexed_at": "asc"},
+			map[string]interface{}{"at_uri": "asc"},
 		},
 		"size": size,
+		// posts/replies templates exclude "embeddings" from _source (api#312 step 2).
+		// Use docvalue_fields, not fields: fields falls back to decompressing
+		// _source for dense_vector on this ES version, so it silently returns
+		// nothing once _source excludes the field (see api#325).
+		"docvalue_fields": []interface{}{"embeddings.*"},
 	}
 
-	if afterCreatedAt != "" && afterIndexedAt != "" {
-		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt}
+	if afterCreatedAt != "" && afterIndexedAt != "" && afterAtURI != "" {
+		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt, afterAtURI}
 	}
 
 	queryJSON, err := json.Marshal(query)
@@ -1051,9 +1188,11 @@ func FetchPosts(ctx context.Context, client *elasticsearch.Client, logger *Inges
 	return response, nil
 }
 
-// FetchLikes queries Elasticsearch for likes with pagination using search_after
-// Parameters mirror FetchPosts but return LikeSearchResponse
-func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, size int) (LikeSearchResponse, error) {
+// FetchLikes queries Elasticsearch for likes with pagination using search_after.
+// The at_uri cursor is a unique tie-breaker for likes that share created_at and
+// indexed_at; without it, Elasticsearch can skip the remainder of a timestamp
+// tie when a page ends in the middle of that tie.
+func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *IngestLogger, index string, startTime string, endTime string, afterCreatedAt string, afterIndexedAt string, afterAtURI string, size int) (LikeSearchResponse, error) {
 	var response LikeSearchResponse
 
 	if size <= 0 {
@@ -1086,12 +1225,13 @@ func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *Inges
 		"sort": []interface{}{
 			map[string]interface{}{"created_at": "asc"},
 			map[string]interface{}{"indexed_at": "asc"},
+			map[string]interface{}{"at_uri": "asc"},
 		},
 		"size": size,
 	}
 
-	if afterCreatedAt != "" && afterIndexedAt != "" {
-		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt}
+	if afterCreatedAt != "" && afterIndexedAt != "" && afterAtURI != "" {
+		query["search_after"] = []interface{}{afterCreatedAt, afterIndexedAt, afterAtURI}
 	}
 
 	queryJSON, err := json.Marshal(query)
@@ -1433,23 +1573,42 @@ func aggregateLikeCountUpdates(updates []LikeCountUpdate) map[string]int {
 	return aggregated
 }
 
-// BulkUpdatePostLikeCounts updates like_count fields on posts using the ES update API
+// LikeCountResult is the post-update state of one document, parsed from the
+// bulk response. Increment is the change that produced LikeCount, so callers
+// can tell what the count was beforehand — which is how threshold crossings are
+// detected without a second read (see PostsCrossingQualityThreshold).
+type LikeCountResult struct {
+	AtURI     string
+	LikeCount int
+	Increment int
+}
+
+// BulkUpdateLikeCounts updates like_count fields on documents using the ES update API.
 // Routes each update to the correct shard by extracting the author DID from the AT-URI.
-func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) error {
+func BulkUpdateLikeCounts(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) error {
+	_, err := BulkUpdateLikeCountsWithResults(ctx, client, index, updates, dryRun, logger)
+	return err
+}
+
+// BulkUpdateLikeCountsWithResults is BulkUpdateLikeCounts, additionally
+// returning the post-update like count of every document that was updated.
+// The counts come from the `get._source` the bulk request already asks for
+// via "_source": true, so this costs no extra round trip.
+func BulkUpdateLikeCountsWithResults(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) ([]LikeCountResult, error) {
 	if len(updates) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	if dryRun {
 		logger.Debug("Dry-run: Skipping bulk update of %d post like counts", len(updates))
-		return nil
+		return nil, nil
 	}
 
 	// Aggregate updates by subject_uri (in case same post appears multiple times)
 	aggregated := aggregateLikeCountUpdates(updates)
 
 	if len(aggregated) == 0 {
-		return fmt.Errorf("no valid updates in batch")
+		return nil, fmt.Errorf("no valid updates in batch")
 	}
 
 	var buf bytes.Buffer
@@ -1475,7 +1634,7 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 
 		metaJSON, err := json.Marshal(meta)
 		if err != nil {
-			return fmt.Errorf("failed to marshal update metadata: %w", err)
+			return nil, fmt.Errorf("failed to marshal update metadata: %w", err)
 		}
 
 		buf.Write(metaJSON)
@@ -1495,7 +1654,7 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 
 		updateJSON, err := json.Marshal(updateBody)
 		if err != nil {
-			return fmt.Errorf("failed to marshal update body: %w", err)
+			return nil, fmt.Errorf("failed to marshal update body: %w", err)
 		}
 
 		buf.Write(updateJSON)
@@ -1504,7 +1663,7 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 
 	if validUpdateCount == 0 {
 		logger.Debug("No like-count updates to perform (no corresponding posts found)")
-		return nil
+		return nil, nil
 	}
 	// Log if we skipped some updates due to missing posts
 	if skippedNoRouting > 0 {
@@ -1519,7 +1678,7 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 	logger.Metric("es.update_like_counts.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
 		logger.Metric("es.update_like_counts.error_count", 1)
-		return fmt.Errorf("bulk update request failed: %w", err)
+		return nil, fmt.Errorf("bulk update request failed: %w", err)
 	}
 	defer func() {
 		if err := res.Body.Close(); err != nil {
@@ -1529,26 +1688,49 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 
 	if res.IsError() {
 		logger.Metric("es.update_like_counts.error_count", 1)
-		return fmt.Errorf("bulk update request returned error: %s", res.String())
+		return nil, fmt.Errorf("bulk update request returned error: %s", res.String())
 	}
 
 	var bulkResponse struct {
 		Took   int  `json:"took"`
 		Errors bool `json:"errors"`
 		Items  []map[string]struct {
-			Status int `json:"status"`
+			ID     string `json:"_id"`
+			Status int    `json:"status"`
 			Error  *struct {
 				Type   string `json:"type"`
 				Reason string `json:"reason"`
 			} `json:"error"`
+			Get *struct {
+				Source struct {
+					LikeCount *int `json:"like_count"`
+				} `json:"_source"`
+			} `json:"get"`
 		} `json:"items"`
 	}
 
 	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
-		return fmt.Errorf("failed to parse bulk update response: %w", err)
+		return nil, fmt.Errorf("failed to parse bulk update response: %w", err)
 	}
 
 	logger.Metric("es.update_like_counts.took_ms", float64(bulkResponse.Took))
+
+	// Collect the post-update counts. Items without a `get` block are updates
+	// that did not apply (most often a 404 for a post we never ingested), and
+	// simply do not appear in the results.
+	var results []LikeCountResult
+	for _, item := range bulkResponse.Items {
+		for _, details := range item {
+			if details.Error != nil || details.Get == nil || details.Get.Source.LikeCount == nil {
+				continue
+			}
+			results = append(results, LikeCountResult{
+				AtURI:     details.ID,
+				LikeCount: *details.Get.Source.LikeCount,
+				Increment: aggregated[details.ID],
+			})
+		}
+	}
 
 	if bulkResponse.Errors {
 		hasRealErrors := false
@@ -1579,12 +1761,12 @@ func BulkUpdatePostLikeCounts(ctx context.Context, client *elasticsearch.Client,
 			logger.Error("Bulk like-count update failed with errors")
 			logger.Debug("Response items with errors: %s", string(itemsJSON))
 			logger.Metric("es.update_like_counts.error_count", 1)
-			return fmt.Errorf("bulk update failed: some updates had errors")
+			return nil, fmt.Errorf("bulk update failed: some updates had errors")
 		}
 	}
 
 	logger.Debug("Successfully updated like counts for %d posts", validUpdateCount)
-	return nil
+	return results, nil
 }
 
 // ExtractHashtags extracts hashtags from post content and returns them with hour bucket and count
@@ -2058,4 +2240,164 @@ func FetchHashtags(ctx context.Context, client *elasticsearch.Client, logger *In
 	logger.Debug("Hashtag search returned %d hits (total: %d)", len(response.Hits.Hits), response.Hits.Total.Value)
 
 	return response, nil
+}
+
+// CurrentIndexName returns the deterministic period-based index name for the
+// current UTC time. base is the alias name (e.g. "posts"); period is one of
+// IndexPeriodWeek ("week"), IndexPeriodHour ("hour"), or IndexPeriod10Min ("10min").
+// Underscores in base are converted to hyphens so that all index names are
+// consistently kebab-case (e.g. alias "post_tombstones" → index "post-tombstones-…").
+//
+// Examples:
+//
+//	CurrentIndexName("posts", "week")              → "posts-2026-w15"
+//	CurrentIndexName("likes", "hour")              → "likes-2026-04-12-14"
+//	CurrentIndexName("post_tombstones", "10min")   → "post-tombstones-2026-04-12-14-30"
+func CurrentIndexName(base, period string) string {
+	return IndexNameForTime(base, period, time.Now().UTC())
+}
+
+// IndexNameForTime is CurrentIndexName for an arbitrary timestamp. The quality
+// corpus buckets documents by the post's created_at rather than by ingest time,
+// so it needs to name an index for a time other than now.
+func IndexNameForTime(base, period string, t time.Time) string {
+	kebabBase := strings.ReplaceAll(base, "_", "-")
+	t = t.UTC()
+	switch period {
+	case IndexPeriodHour:
+		return fmt.Sprintf("%s-%s", kebabBase, t.Format("2006-01-02-15"))
+	case IndexPeriod10Min:
+		return fmt.Sprintf("%s-%s", kebabBase, t.Truncate(10*time.Minute).Format("2006-01-02-15-04"))
+	default:
+		year, week := t.ISOWeek()
+		return fmt.Sprintf("%s-%d-w%02d", kebabBase, year, week)
+	}
+}
+
+// EnsureIndex creates the named index if it does not already exist, then
+// makes it the write target for alias. It is idempotent: if the index already
+// exists and is already the write target, it returns without making any changes.
+//
+// All other indices currently in alias retain their membership; only the
+// is_write_index flag is shifted to indexName.
+func EnsureIndex(ctx context.Context, client *elasticsearch.Client, indexName, alias string, logger *IngestLogger) error {
+	// 1. Create the index. The matching index template will apply settings and
+	//    mappings automatically. A 400 "resource_already_exists_exception" is
+	//    expected on subsequent calls and treated as success.
+	createRes, err := client.Indices.Create(
+		indexName,
+		client.Indices.Create.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("create index %s: %w", indexName, err)
+	}
+	defer func() {
+		if cerr := createRes.Body.Close(); cerr != nil {
+			logger.Error("Failed to close create-index response body: %v", cerr)
+		}
+	}()
+
+	if createRes.IsError() {
+		bodyBytes, _ := io.ReadAll(createRes.Body)
+		var errBody struct {
+			Error struct {
+				Type string `json:"type"`
+			} `json:"error"`
+		}
+		if jerr := json.Unmarshal(bodyBytes, &errBody); jerr != nil || errBody.Error.Type != "resource_already_exists_exception" {
+			return fmt.Errorf("create index %s: [%d] %s", indexName, createRes.StatusCode, string(bodyBytes))
+		}
+	} else {
+		logger.Info("Created index %s", indexName)
+	}
+
+	// 2. Retrieve the current alias membership so we know which index (if any)
+	//    currently holds is_write_index: true.
+	aliasRes, err := client.Indices.GetAlias(
+		client.Indices.GetAlias.WithContext(ctx),
+		client.Indices.GetAlias.WithName(alias),
+		client.Indices.GetAlias.WithIgnoreUnavailable(true),
+	)
+	if err != nil {
+		return fmt.Errorf("get alias %s: %w", alias, err)
+	}
+	defer func() {
+		if cerr := aliasRes.Body.Close(); cerr != nil {
+			logger.Error("Failed to close get-alias response body: %v", cerr)
+		}
+	}()
+
+	// Parse response: map[indexName]{ aliases: map[aliasName]{ is_write_index: bool } }
+	var aliasState map[string]struct {
+		Aliases map[string]indexAliasInfo `json:"aliases"`
+	}
+	if !aliasRes.IsError() {
+		if jerr := json.NewDecoder(aliasRes.Body).Decode(&aliasState); jerr != nil {
+			return fmt.Errorf("parse alias response for %s: %w", alias, jerr)
+		}
+	}
+
+	// 3. Check if indexName is already the write target — if so, nothing to do.
+	if info, ok := aliasState[indexName]; ok {
+		if aliasInfo, ok := info.Aliases[alias]; ok && aliasInfo.IsWriteIndex {
+			return nil
+		}
+	}
+
+	// 4. Build an atomic alias update:
+	//    - Set is_write_index: false on any current write index.
+	//    - Add indexName with is_write_index: true.
+	type aliasAction struct {
+		Add *struct {
+			Index        string `json:"index"`
+			Alias        string `json:"alias"`
+			IsWriteIndex bool   `json:"is_write_index"`
+		} `json:"add,omitempty"`
+	}
+
+	var actions []aliasAction
+
+	for existingIndex, info := range aliasState {
+		if existingIndex == indexName {
+			continue
+		}
+		if aliasInfo, ok := info.Aliases[alias]; ok && aliasInfo.IsWriteIndex {
+			actions = append(actions, aliasAction{Add: &struct {
+				Index        string `json:"index"`
+				Alias        string `json:"alias"`
+				IsWriteIndex bool   `json:"is_write_index"`
+			}{Index: existingIndex, Alias: alias, IsWriteIndex: false}})
+		}
+	}
+
+	actions = append(actions, aliasAction{Add: &struct {
+		Index        string `json:"index"`
+		Alias        string `json:"alias"`
+		IsWriteIndex bool   `json:"is_write_index"`
+	}{Index: indexName, Alias: alias, IsWriteIndex: true}})
+
+	updateBody, err := json.Marshal(map[string]interface{}{"actions": actions})
+	if err != nil {
+		return fmt.Errorf("marshal alias update for %s: %w", alias, err)
+	}
+
+	updateRes, err := client.Indices.UpdateAliases(
+		strings.NewReader(string(updateBody)),
+		client.Indices.UpdateAliases.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("update alias %s: %w", alias, err)
+	}
+	defer func() {
+		if cerr := updateRes.Body.Close(); cerr != nil {
+			logger.Error("Failed to close update-alias response body: %v", cerr)
+		}
+	}()
+
+	if updateRes.IsError() {
+		return fmt.Errorf("update alias %s: %s", alias, updateRes.String())
+	}
+
+	logger.Info("Set %s as write index for alias %s", indexName, alias)
+	return nil
 }

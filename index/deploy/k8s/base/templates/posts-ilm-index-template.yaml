@@ -1,0 +1,156 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: posts-ilm-index-template
+data:
+  posts-ilm-index-template.json: |
+    {
+      "index_patterns": ["posts-*"],
+      "template": {
+        "settings": {
+          "number_of_shards": $(POSTS_INDEX_SHARDS),
+          "number_of_replicas": $(POSTS_INDEX_REPLICAS),
+          "refresh_interval": "30s",
+          "translog.durability": "async",
+          "translog.sync_interval": "30s",
+          "lifecycle": {
+            "name": "posts_ilm_policy"
+          },
+          "analysis": {
+            "analyzer": {
+              "content_analyzer": {
+                "type": "standard",
+                "stopwords": "_english_"
+              }
+            }
+          }
+        },
+        "mappings": {
+          "_routing": {
+            "required": true
+          },
+          "properties": {
+            "at_uri": {
+              "type": "keyword",
+              "index": true
+            },
+            "author_did": {
+              "type": "keyword",
+              "index": true
+            },
+            "content": {
+              "type": "text",
+              "index": true,
+              "analyzer": "content_analyzer"
+            },
+            "created_at": {
+              "type": "date",
+              "format": "iso8601",
+              "index": true
+            },
+            "quote_post": {
+              "type": "keyword",
+              "index": true
+            },
+            "embeddings": {
+              "type": "object",
+              "properties": {
+                "all_MiniLM_L12_v2": {
+                  "type": "dense_vector",
+                  "dims": 384,
+                  "index": true,
+                  "similarity": "cosine"
+                },
+                "ge_post_embedding": {
+                  "type": "dense_vector",
+                  "dims": 128,
+                  "index": true,
+                  "similarity": "cosine"
+                }
+              }
+            },
+            "ge_post_embedding_model_uuid": {
+              "type": "keyword",
+              "index": true
+            },
+            "topic_scores": {
+              "type": "object",
+              "enabled": false
+            },
+            "indexed_at": {
+              "type": "date",
+              "format": "iso8601",
+              "index": true
+            },
+            "like_count": {
+              "type": "integer",
+              "index": true
+            },
+            "media": {
+              "type": "nested",
+              "properties": {
+                "id": {"type": "keyword", "index": false},
+                "media_type": {"type": "keyword", "index": false},
+                "mime_type": {"type": "keyword", "index": false},
+                "size": {"type": "long", "index": false},
+                "aspect_ratio": {"type": "float", "index": false},
+                "width": {"type": "integer", "index": false},
+                "height": {"type": "integer", "index": false},
+                "alt_text": {"type": "text", "index": false}
+              }
+            },
+            "contains_images": {"type": "boolean", "index": true},
+            "contains_video": {"type": "boolean", "index": true},
+            "image_count": {"type": "integer", "index": false},
+            "video_count": {"type": "integer", "index": false},
+            "media_count": {"type": "integer", "index": false},
+            "external_embed": {
+              "type": "object",
+              "properties": {
+                "uri": {"type": "keyword", "index": false},
+                "title": {"type": "text", "index": false},
+                "description": {"type": "text", "index": false}
+              }
+            },
+            "perspective_scores": {
+              "type": "object",
+              "dynamic": false,
+              "properties": {
+                "affinity_experimental": {"type": "float", "index": false},
+                "alienation_experimental": {"type": "float", "index": false},
+                "compassion_experimental": {"type": "float", "index": false},
+                "curiosity_experimental": {"type": "float", "index": false},
+                "fearmongering_experimental": {"type": "float", "index": false},
+                "generalization_experimental": {"type": "float", "index": false},
+                "identity_attack": {"type": "float", "index": false},
+                "insult": {"type": "float", "index": false},
+                "moral_outrage_experimental": {"type": "float", "index": false},
+                "personal_story_experimental": {"type": "float", "index": false},
+                "reasoning_experimental": {"type": "float", "index": false},
+                "respect_experimental": {"type": "float", "index": false},
+                "scapegoating_experimental": {"type": "float", "index": false},
+                "threat": {"type": "float", "index": false},
+                "toxicity": {"type": "float", "index": false}
+              }
+            },
+            "combined_perspective_score": {
+              "type": "float",
+              "index": true
+            },
+            "perspective_scored_at": {
+              "type": "date",
+              "format": "iso8601",
+              "index": true
+            },
+            "video_transcript": {
+              "type": "text",
+              "index": false
+            },
+            "video_transcript_language": {
+              "type": "keyword",
+              "index": true
+            }
+          }
+        }
+      }
+    }

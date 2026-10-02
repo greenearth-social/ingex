@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
@@ -16,6 +17,10 @@ type HealthStatus struct {
 	Status    string    `json:"status"`
 	StartedAt time.Time `json:"started_at"`
 	Message   string    `json:"message,omitempty"`
+	// GitSHA is the short git sha of the deployed code (from GE_GIT_SHA). It lets
+	// us confirm which revision is live and pick rollback targets. Empty when the
+	// code is running unstamped (e.g. local dev).
+	GitSHA string `json:"git_sha,omitempty"`
 }
 
 // HealthServer manages the HTTP health check endpoint
@@ -26,6 +31,7 @@ type HealthServer struct {
 	healthy   bool
 	startedAt time.Time
 	message   string
+	gitSHA    string
 	logger    *IngestLogger
 }
 
@@ -37,6 +43,7 @@ func NewHealthServer(port int, maxPort int, logger *IngestLogger) (*HealthServer
 		startedAt: time.Now(),
 		healthy:   false,
 		message:   "Initializing...",
+		gitSHA:    os.Getenv("GE_GIT_SHA"),
 		logger:    logger,
 	}
 
@@ -120,6 +127,7 @@ func (hs *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Status:    hs.getStatusString(),
 		StartedAt: hs.startedAt,
 		Message:   hs.message,
+		GitSHA:    hs.gitSHA,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -159,6 +167,7 @@ func (hs *HealthServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 		Status:    hs.getStatusString(),
 		StartedAt: hs.startedAt,
 		Message:   hs.message,
+		GitSHA:    hs.gitSHA,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

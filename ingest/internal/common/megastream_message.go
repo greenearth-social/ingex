@@ -3,6 +3,9 @@ package common
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+
+	"github.com/greenearth/ingest/internal/embeddings"
 )
 
 // MegaStreamMessage defines the interface for processing messages from the MegaStream database
@@ -19,6 +22,7 @@ type MegaStreamMessage interface {
 	GetExternalEmbed() *ExternalEmbed
 	GetVideoTranscript() string
 	GetVideoTranscriptLanguage() string
+	GetTopicScores() map[string]float32
 	GetTimeUs() int64
 	IsDelete() bool
 	IsAccountDeletion() bool
@@ -39,6 +43,7 @@ type megaStreamMessage struct {
 	externalEmbed           *ExternalEmbed
 	videoTranscript         string
 	videoTranscriptLanguage string
+	topicScores             map[string]float32
 	timeUs                  int64
 	isDelete                bool
 	accountStatus           string
@@ -262,7 +267,7 @@ func (m *megaStreamMessage) parseExternalEmbed(embed map[string]interface{}) {
 	m.externalEmbed.Description, _ = external["description"].(string)
 }
 
-// parseInferences parses the inferences JSON and extracts embeddings
+// parseInferences parses the inferences JSON and extracts selected values.
 func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *IngestLogger) {
 	var inferences map[string]interface{}
 	if err := json.Unmarshal([]byte(inferencesJSON), &inferences); err != nil {
@@ -272,17 +277,37 @@ func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *Inges
 
 	if textEmbeddings, ok := inferences["text_embeddings"].(map[string]interface{}); ok {
 		if embL12, ok := textEmbeddings["all-MiniLM-L12-v2"].(string); ok {
-			if decoded, err := decodeEmbedding(embL12); err == nil {
+			if decoded, err := embeddings.Decode(embL12); err == nil {
 				m.embeddings["all_MiniLM_L12_v2"] = decoded
 			} else {
 				logger.Debug("Failed to decode L12 embedding for %s: %v", m.atURI, err)
 			}
 		}
-		if embL6, ok := textEmbeddings["all-MiniLM-L6-v2"].(string); ok {
-			if decoded, err := decodeEmbedding(embL6); err == nil {
-				m.embeddings["all_MiniLM_L6_v2"] = decoded
-			} else {
-				logger.Debug("Failed to decode L6 embedding for %s: %v", m.atURI, err)
+	}
+
+	// Topic scores are computed upstream by Graze, whose topic-analysis docs name
+	// cardiffnlp/twitter-roberta-base-dec2021-tweet-topic-multi-all. Ingex does not
+	// run or pin that model; see ingest/cmd/megastream_ingest/README.md#topic-scores
+	// for documentation links and provenance caveats.
+	// Graze keys text analyses by the JSON path of the analyzed value. Read only
+	// the post body result: titles and descriptions can have their own topic
+	// scores and must not be confused with the post's scores.
+	if text, ok := inferences["text"].(map[string]interface{}); ok {
+		if postText, ok := text["message.commit.record.text"].(map[string]interface{}); ok {
+			if topics, ok := postText["topic"].(map[string]interface{}); ok {
+				var rejected topicScoreRejections
+				for label, value := range topics {
+					rawScore, ok := value.(float64)
+					if !ok || math.IsNaN(rawScore) || math.IsInf(rawScore, 0) || rawScore < 0 || rawScore > 1 {
+						rejected.add(m.atURI, label, value)
+						continue
+					}
+					if m.topicScores == nil {
+						m.topicScores = make(map[string]float32, len(topics))
+					}
+					m.topicScores[label] = float32(rawScore)
+				}
+				logger.reportInvalidTopicScores(rejected)
 			}
 		}
 	}
@@ -300,15 +325,11 @@ func (m *megaStreamMessage) parseInferences(inferencesJSON string, logger *Inges
 	m.videoTranscript, _ = audioTranscription["text"].(string)
 	m.videoTranscriptLanguage, _ = audioTranscription["language"].(string)
 
-	if embeddingsMap, ok := audioTranscription["embeddings"].(map[string]interface{}); ok {
-		if embGemma, ok := embeddingsMap["google/embeddinggemma-300m"].(string); ok {
-			if decoded, err := decodeEmbedding(embGemma); err == nil {
-				m.embeddings["google_embeddinggemma_300m"] = decoded
-			} else {
-				logger.Debug("Failed to decode embeddinggemma-300m for %s: %v", m.atURI, err)
-			}
-		}
-	}
+	// The transcript embedding (google/embeddinggemma-300m, 768d) is deliberately
+	// not ingested: nothing reads it, and every field carried on a post document
+	// is paid for on the hydration path and again in _source (ingex#444, which
+	// removed the _source exclusion that used to hide that cost). It remains
+	// available in the megastream archives if a use case appears.
 }
 
 // Interface method implementations
@@ -376,6 +397,13 @@ func (m *megaStreamMessage) GetVideoTranscript() string {
 
 func (m *megaStreamMessage) GetVideoTranscriptLanguage() string {
 	return m.videoTranscriptLanguage
+}
+
+func (m *megaStreamMessage) GetTopicScores() map[string]float32 {
+	if len(m.topicScores) == 0 {
+		return nil
+	}
+	return m.topicScores
 }
 
 func (m *megaStreamMessage) GetMedia() []MediaItem {

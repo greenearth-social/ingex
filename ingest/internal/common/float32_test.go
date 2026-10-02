@@ -53,9 +53,9 @@ func TestFloat32JSONMarshaling(t *testing.T) {
 	}
 }
 
-// TestEmbeddingsJSONMarshaling tests the full ElasticsearchDoc embedding serialization
+// TestEmbeddingsJSONMarshaling tests the full PostDoc embedding serialization
 func TestEmbeddingsJSONMarshaling(t *testing.T) {
-	doc := ElasticsearchDoc{
+	doc := PostDoc{
 		AtURI:     "at://test",
 		AuthorDID: "did:test",
 		Content:   "test content",
@@ -160,7 +160,7 @@ func TestEmptyEmbeddingsMarshaling(t *testing.T) {
 	}
 
 	// Test with actual doc - nil embeddings should be omitted
-	doc := ElasticsearchDoc{
+	doc := PostDoc{
 		AtURI:      "at://test",
 		AuthorDID:  "did:test",
 		Content:    "test",

@@ -164,6 +164,13 @@ create_service_account() {
         --member="serviceAccount:$SA_EMAIL" \
         --role="roles/monitoring.metricWriter"
 
+    # Permission to read the users collection and write follow deltas into the
+    # API's followed-users cache (api#83). Firestore IAM is project-wide, so it
+    # cannot be scoped to just those two collections.
+    gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
+        --member="serviceAccount:$SA_EMAIL" \
+        --role="roles/datastore.user"
+
     log_info "Service account permissions configured."
 }
 
@@ -252,6 +259,22 @@ create_secrets() {
     else
         log_warn "GE_AWS_S3_SECRET_KEY not set. Skipping AWS S3 secret key secret creation."
         log_warn "Set this if you need megastream-ingest to access S3 data."
+    fi
+
+    # Perspective API key (api#368). Unlike the secrets above, this one is
+    # created and populated by the api repo's gcp_setup.sh — ingest and serving
+    # share a single key because they share a single quota. All that is needed
+    # here is read access for the ingest runner.
+    PERSPECTIVE_SECRET_NAME="perspective-api-key${SECRET_SUFFIX}"
+    if gcloud secrets describe "$PERSPECTIVE_SECRET_NAME" > /dev/null 2>&1; then
+        gcloud secrets add-iam-policy-binding "$PERSPECTIVE_SECRET_NAME" \
+            --member="serviceAccount:$SA_EMAIL" \
+            --role="roles/secretmanager.secretAccessor" \
+            --condition=None
+        log_info "Granted ingest access to $PERSPECTIVE_SECRET_NAME"
+    else
+        log_warn "$PERSPECTIVE_SECRET_NAME does not exist. Skipping Perspective access grant."
+        log_warn "Create it from the api repo first, or megastream-ingest will start with scoring disabled."
     fi
 
     log_info "Note: Non-secret configuration (Elasticsearch URL, S3 bucket, S3 prefix) is now stored in the deployment scripts."
@@ -454,6 +477,93 @@ setup_expiry_cloud_scheduler() {
     fi
 }
 
+setup_followed_users_backfill_cloud_scheduler() {
+    log_info "Setting up Cloud Scheduler for followed-users-backfill (targeted + full)..."
+
+    COMPUTE_SERVICE_ACCOUNT="21637448064-compute@developer.gserviceaccount.com"
+
+    # Use Cloud Run v2 API endpoint format with environment-specific job name
+    JOB_URI="https://run.googleapis.com/v2/projects/$GE_GCP_PROJECT_ID/locations/$GE_GCP_REGION/jobs/followed-users-backfill-$GE_ENVIRONMENT:run"
+
+    # Configure schedules based on environment: a frequent targeted sweep
+    # (incomplete/invalidated/stale entries only, cheap) and a weekly full
+    # sweep (enumerates every tracked user, catches missing/pending_overflow)
+    local targeted_schedule
+    local targeted_job_name
+    local full_schedule
+    local full_job_name
+
+    if [ "$GE_ENVIRONMENT" = "stage" ]; then
+        targeted_schedule="*/15 * * * *"  # Every 15 minutes
+        targeted_job_name="followed-users-backfill-targeted-stage"
+        full_schedule="0 3 * * 0"  # Weekly, Sunday at 3 AM UTC
+        full_job_name="followed-users-backfill-full-stage"
+        log_info "Stage environment: Configuring 15-minute targeted + weekly full followed-users-backfill schedules"
+    elif [ "$GE_ENVIRONMENT" = "prod" ]; then
+        # Widened from every 15 minutes to hourly: paired with the 50-minute
+        # task-timeout in deploy_followed_users_backfill_job, this leaves a
+        # 10-minute buffer before the next trigger fires, so two executions
+        # of the targeted job can't overlap even in the worst case.
+        targeted_schedule="0 * * * *"  # Every hour
+        targeted_job_name="followed-users-backfill-targeted-prod"
+        full_schedule="0 3 * * 0"  # Weekly, Sunday at 3 AM UTC
+        full_job_name="followed-users-backfill-full-prod"
+        log_info "Production environment: Configuring hourly targeted + weekly full followed-users-backfill schedules"
+    else
+        log_info "Skipping Cloud Scheduler setup for $GE_ENVIRONMENT (only stage and prod are configured)"
+        return 0
+    fi
+
+    # Grant the default compute service account permission to invoke the Cloud Run job
+    log_info "Granting default compute service account permission to invoke Cloud Run job..."
+    gcloud run jobs add-iam-policy-binding "followed-users-backfill-$GE_ENVIRONMENT" \
+        --region="$GE_GCP_REGION" \
+        --member="serviceAccount:$COMPUTE_SERVICE_ACCOUNT" \
+        --role="roles/run.invoker" \
+        2>/dev/null || log_info "Service account already has run.invoker permission"
+
+    # Create or update one HTTP scheduler job that triggers the Cloud Run
+    # job's :run endpoint with a container args override (see
+    # https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule#command-line
+    # for the OAuth-based invocation pattern; the args override uses the
+    # Cloud Run Jobs v2 execution-override request body).
+    create_or_update_backfill_scheduler_job() {
+        local job_name="$1" schedule="$2" args_json="$3" description="$4"
+        local body="{\"overrides\":{\"containerOverrides\":[{\"args\":$args_json}]}}"
+        if ! gcloud scheduler jobs describe "$job_name" --location="$GE_GCP_REGION" > /dev/null 2>&1; then
+            gcloud scheduler jobs create http "$job_name" \
+                --location="$GE_GCP_REGION" \
+                --schedule="$schedule" \
+                --uri="$JOB_URI" \
+                --http-method=POST \
+                --headers="Content-Type=application/json" \
+                --message-body="$body" \
+                --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
+                --description="$description"
+            log_info "Cloud Scheduler job created: $job_name"
+        else
+            # Update existing job to ensure schedule and other settings are current
+            gcloud scheduler jobs update http "$job_name" \
+                --location="$GE_GCP_REGION" \
+                --schedule="$schedule" \
+                --uri="$JOB_URI" \
+                --http-method=POST \
+                --headers="Content-Type=application/json" \
+                --message-body="$body" \
+                --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
+                --description="$description"
+            log_info "Cloud Scheduler job updated: $job_name"
+        fi
+    }
+
+    create_or_update_backfill_scheduler_job "$targeted_job_name" "$targeted_schedule" \
+        '["--mode","targeted","--concurrency","20"]' \
+        "Frequent targeted followed-users-backfill sweep (incomplete/invalidated/stale) for $GE_ENVIRONMENT"
+    create_or_update_backfill_scheduler_job "$full_job_name" "$full_schedule" \
+        '["--mode","full","--concurrency","20"]' \
+        "Weekly full followed-users-backfill sweep (missing/pending_overflow backstop) for $GE_ENVIRONMENT"
+}
+
 setup_extract_cloud_scheduler() {
     log_info "Setting up Cloud Scheduler for extract job..."
 
@@ -535,6 +645,13 @@ main() {
     create_vpc_connector
     setup_firewall_rules
     setup_expiry_cloud_scheduler
+    # Disabled: targeted-mode Firestore queries against followed_users_cache
+    # time out in prod without an index change we don't want to make just for
+    # this caching feature, and the full-sweep mode is too expensive to run
+    # on any frequent cadence. See api#453 for the full postmortem and the
+    # planned replacement (ingex#496). The scheduled jobs this created in
+    # stage/prod have already been deleted manually via ingestctl.sh.
+    # setup_followed_users_backfill_cloud_scheduler
     setup_extract_cloud_scheduler
 
     log_info "Environment setup complete!"
@@ -546,6 +663,7 @@ main() {
     echo
     echo "Important notes:"
     echo "- Elasticsearch expiry runs daily at 2 AM UTC"
+    echo "- Followed-users-backfill scheduling is disabled (see api#453) — no scheduled jobs are created"
     echo "- State files are stored in: gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT"
     echo "- Service account: ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com"
     echo

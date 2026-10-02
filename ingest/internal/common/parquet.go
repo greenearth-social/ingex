@@ -1,6 +1,24 @@
 package common
 
-// ExtractPost represents the Post document structure for Parquet serialization
+import "github.com/greenearth/ingest/internal/embeddings"
+
+// GEPostEmbeddingFamily is the post-tower output vector (128d, the one
+// two-tower kNN searches). ContentEmbeddingFamily is the MiniLM L12 content
+// vector: it stays on post documents because serving reads it (MMR
+// diversification and both rankers) and because it is the post tower's input.
+const (
+	GEPostEmbeddingFamily  = "ge_post_embedding"
+	ContentEmbeddingFamily = "all_MiniLM_L12_v2"
+)
+
+// ExportedEmbeddingFamilies are the families written to Parquet: the post
+// tower's output and the content vector that is its input, which training
+// needs in order to retrain the tower. Families that are no longer ingested
+// (ingex#444) stay out — they are recoverable from the megastream archives if
+// a use case appears, and exporting them only inflates every extract.
+var ExportedEmbeddingFamilies = []string{GEPostEmbeddingFamily, ContentEmbeddingFamily}
+
+// ExtractPost represents the shared post and reply structure for Parquet serialization.
 // Field names match the expected parquet output format
 type ExtractPost struct {
 	DID             string            `json:"did" parquet:"did"`
@@ -9,9 +27,24 @@ type ExtractPost struct {
 	InsertedAt      string            `json:"inserted_at" parquet:"inserted_at"`
 	RecordCreatedAt string            `json:"record_created_at" parquet:"record_created_at"`
 	RecordText      string            `json:"record_text" parquet:"record_text"`
+	ContainsImages  bool              `json:"contains_images" parquet:"contains_images"`
+	ContainsVideo   bool              `json:"contains_video" parquet:"contains_video"`
 	ReplyParentURI  string            `json:"reply_parent_uri,omitempty" parquet:"reply_parent_uri,optional"`
 	ReplyRootURI    string            `json:"reply_root_uri,omitempty" parquet:"reply_root_uri,optional"`
 	Embeddings      map[string]string `json:"embeddings,omitempty" parquet:"embeddings,optional"` // model name -> base85-encoded embedding string
+
+	// Perspective conversational-quality scores (api#368). Exported because
+	// the Perspective API sunsets in January and these are the labels for
+	// training a replacement classifier — the reason scoring moved to ingest
+	// in the first place.
+	//
+	// PerspectiveScores holds the raw per-attribute values; the combined score
+	// is a pointer so an absent score stays distinguishable from a genuine
+	// 0.0. PerspectiveScoredAt set with no combined score means "attempted,
+	// unscorable" — training must not read that as a missing row to retry.
+	PerspectiveScores        map[string]float64 `json:"perspective_scores,omitempty" parquet:"perspective_scores,optional"`
+	CombinedPerspectiveScore *float64           `json:"combined_perspective_score,omitempty" parquet:"combined_perspective_score,optional"`
+	PerspectiveScoredAt      string             `json:"perspective_scored_at,omitempty" parquet:"perspective_scored_at,optional"`
 }
 
 // HitToExtractPost converts an Elasticsearch Hit to an ExtractPost
@@ -23,18 +56,34 @@ func HitToExtractPost(hit Hit) ExtractPost {
 		InsertedAt:      hit.Source.IndexedAt,
 		RecordCreatedAt: hit.Source.CreatedAt,
 		RecordText:      hit.Source.Content,
+		ContainsImages:  hit.Source.ContainsImages,
+		ContainsVideo:   hit.Source.ContainsVideo,
 		ReplyParentURI:  hit.Source.ThreadParentPost,
 		ReplyRootURI:    hit.Source.ThreadRootPost,
+
+		PerspectiveScores:        hit.Source.PerspectiveScores,
+		CombinedPerspectiveScore: hit.Source.CombinedPerspectiveScore,
+		PerspectiveScoredAt:      hit.Source.PerspectiveScoredAt,
 	}
 
-	// Encode embeddings if present
-	if len(hit.Source.Embeddings) > 0 {
-		extractPost.Embeddings = make(map[string]string, len(hit.Source.Embeddings))
-		for modelName, floatArray := range hit.Source.Embeddings {
-			if encoded, err := encodeEmbedding(floatArray); err == nil {
-				extractPost.Embeddings[modelName] = encoded
+	// Export only the families in ExportedEmbeddingFamilies; anything else a
+	// document still carries from an older mapping is dropped here rather than
+	// inflating the extract. embeddingsFromHit prefers the "docvalue_fields"
+	// API over _source, which is how indexed dense_vector fields are read back.
+	if hitEmbeddings := embeddingsFromHit(hit); len(hitEmbeddings) > 0 {
+		for _, modelName := range ExportedEmbeddingFamilies {
+			floatArray, ok := hitEmbeddings[modelName]
+			if !ok {
+				continue
 			}
-			// Silently skip embeddings that fail to encode
+			encoded, err := embeddings.Encode(floatArray)
+			if err != nil {
+				continue // Silently skip embeddings that fail to encode
+			}
+			if extractPost.Embeddings == nil {
+				extractPost.Embeddings = make(map[string]string, len(ExportedEmbeddingFamilies))
+			}
+			extractPost.Embeddings[modelName] = encoded
 		}
 	}
 

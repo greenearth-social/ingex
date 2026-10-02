@@ -206,6 +206,9 @@ func runExport(ctx context.Context, config *common.Config, logger *common.Ingest
 					logger.Metric("extract.inference_error_count", 1)
 				}
 			}
+		case IndexTypeReplies:
+			// Replies have the same schema as posts; no inferences export.
+			_, exportErr = runExportForPosts(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
 		case IndexTypeLikes:
 			exportErr = runExportForLikes(ctx, esClient, logger, dryRun, outputPath, isGCS, gcsClient, gcsBucket, gcsPrefix, indexName, startTime, endTime, config)
 		case IndexTypeHashtags:
@@ -243,7 +246,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 
 	var fileNum = 1
 	var totalRecords int64 = 0
-	var afterCreatedAt, afterIndexedAt string
+	var afterCreatedAt, afterIndexedAt, afterAtURI string
 	var currentFileBatch []common.ExtractPost
 	var allAtURIs []string
 
@@ -259,7 +262,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 		default:
 		}
 
-		response, err := common.FetchPosts(ctx, esClient, logger, indexName, startTime, endTime, afterCreatedAt, afterIndexedAt, fetchSize)
+		response, err := common.FetchPosts(ctx, esClient, logger, indexName, startTime, endTime, afterCreatedAt, afterIndexedAt, afterAtURI, fetchSize)
 		if err != nil {
 			return allAtURIs, fmt.Errorf("failed to fetch posts: %w", err)
 		}
@@ -297,6 +300,7 @@ func runExportForPosts(ctx context.Context, esClient *elasticsearch.Client, logg
 		lastHit := response.Hits.Hits[len(response.Hits.Hits)-1]
 		afterCreatedAt = lastHit.Source.CreatedAt
 		afterIndexedAt = lastHit.Source.IndexedAt
+		afterAtURI = lastHit.Source.AtURI
 	}
 
 	if len(currentFileBatch) > 0 {
@@ -325,7 +329,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 
 	var fileNum = 1
 	var totalRecords int64 = 0
-	var afterCreatedAt, afterIndexedAt string
+	var afterCreatedAt, afterIndexedAt, afterAtURI string
 	var currentFileBatch []common.ExtractLike
 
 	for {
@@ -340,7 +344,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 		default:
 		}
 
-		response, err := common.FetchLikes(ctx, esClient, logger, indexName, startTime, endTime, afterCreatedAt, afterIndexedAt, fetchSize)
+		response, err := common.FetchLikes(ctx, esClient, logger, indexName, startTime, endTime, afterCreatedAt, afterIndexedAt, afterAtURI, fetchSize)
 		if err != nil {
 			return fmt.Errorf("failed to fetch likes: %w", err)
 		}
@@ -374,6 +378,7 @@ func runExportForLikes(ctx context.Context, esClient *elasticsearch.Client, logg
 		lastHit := response.Hits.Hits[len(response.Hits.Hits)-1]
 		afterCreatedAt = lastHit.Source.CreatedAt
 		afterIndexedAt = lastHit.Source.IndexedAt
+		afterAtURI = lastHit.Source.AtURI
 	}
 
 	if len(currentFileBatch) > 0 {
@@ -490,6 +495,8 @@ func generateFilename(indexName, lastPostTimestamp string, logger *common.Ingest
 		typeStr = "likes"
 	case IndexTypeHashtags:
 		typeStr = "hashtags"
+	case IndexTypeReplies:
+		typeStr = "replies"
 	case IndexTypeUnknown:
 		typeStr = "unknown"
 	default:
@@ -506,6 +513,7 @@ const (
 	IndexTypePosts    IndexType = "posts"
 	IndexTypeLikes    IndexType = "likes"
 	IndexTypeHashtags IndexType = "hashtags"
+	IndexTypeReplies  IndexType = "replies"
 	IndexTypeUnknown  IndexType = ""
 )
 
@@ -531,6 +539,10 @@ func parseIndices(indicesStr string) []string {
 func ParseIndexType(indexName string) (IndexType, error) {
 	lowerName := strings.ToLower(indexName)
 
+	if strings.Contains(lowerName, "replies") {
+		return IndexTypeReplies, nil
+	}
+
 	if strings.Contains(lowerName, "post") {
 		return IndexTypePosts, nil
 	}
@@ -543,7 +555,7 @@ func ParseIndexType(indexName string) (IndexType, error) {
 		return IndexTypeHashtags, nil
 	}
 
-	return IndexTypeUnknown, fmt.Errorf("index name '%s' does not contain 'posts', 'likes', or 'hashtags'", indexName)
+	return IndexTypeUnknown, fmt.Errorf("index name '%s' does not contain 'replies', 'posts', 'likes', or 'hashtags'", indexName)
 }
 
 func getIndexType(indexName string, logger *common.IngestLogger) IndexType {

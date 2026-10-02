@@ -7,6 +7,8 @@ resources:
   - ../../base
   - elasticsearch-pod-monitoring.yaml
   - max-map-count-daemonset.yaml
+  - elasticsearch-master-pdb.yaml
+  - elasticsearch-data-pdb.yaml
 
 patches:
   - target:
@@ -18,7 +20,7 @@ patches:
         value: master
       - op: replace
         path: /spec/nodeSets/0/count
-        value: 2
+        value: 3
       - op: replace
         path: /spec/nodeSets/0/config
         value:
@@ -27,6 +29,18 @@ patches:
       - op: add
         path: /spec/nodeSets/0/config/node.store.allow_mmap
         value: true
+      - op: add
+        path: /spec/nodeSets/0/podTemplate/spec/affinity
+        value:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    elasticsearch.k8s.elastic.co/statefulset-name: greenearth-es-master
+                topologyKey: kubernetes.io/hostname
+      - op: add
+        path: /spec/podDisruptionBudget
+        value: {}
       - op: replace
         path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
         value: 6Gi
@@ -60,14 +74,14 @@ patches:
               - name: elasticsearch
                 resources:
                   requests:
-                    memory: 32Gi
-                    cpu: "3000m"
+                    memory: 48Gi
+                    cpu: "7385m"
                   limits:
-                    memory: 32Gi
-                    cpu: "3000m"
+                    memory: 48Gi
+                    cpu: "7385m"
                 env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms16g -Xmx16g"
+                  value: "-Xms8g -Xmx8g"
           volumeClaimTemplates:
           - metadata:
               name: elasticsearch-data
@@ -119,3 +133,23 @@ configMapGenerator:
       - inference_index_shards=4
       - inference_index_replicas=1
       - inference_max_age=1d
+  - name: ilm-settings
+    behavior: replace
+    literals:
+      - posts_index_shards=3
+      - posts_index_replicas=1
+      # The quality index holds ~4.6% of the posts corpus (~773k docs @14d), so a
+      # single primary shard is both sufficient and preferable: kNN fans out to
+      # every shard, and fewer shards means fewer HNSW graphs consulted per query.
+      - posts_quality_index_shards=1
+      - posts_quality_index_replicas=1
+      - posts_quality_ilm_delete_age=14d
+      - likes_index_shards=2
+      - likes_index_replicas=1
+      - tombstones_index_shards=3
+      - tombstones_index_replicas=1
+      - replies_index_shards=3
+      - replies_index_replicas=1
+      - ilm_delete_age=60d
+      - ilm_forcemerge_age=8d
+      - index_period=week

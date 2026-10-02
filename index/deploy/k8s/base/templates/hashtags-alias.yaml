@@ -7,9 +7,17 @@ data:
     {
       "actions": [
         {
+          "remove": {
+            "index": "hashtags*",
+            "alias": "hashtags",
+            "must_exist": false
+          }
+        },
+        {
           "add": {
             "index": "hashtags_v1",
-            "alias": "hashtags"
+            "alias": "hashtags",
+            "is_write_index": true
           }
         }
       ]

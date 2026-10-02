@@ -1,13 +1,13 @@
-package common
+package embeddings
 
 import (
 	"bytes"
 	"math"
+	"math/rand"
 	"testing"
 )
 
 // TestDecodeBase85RFC1924 tests the base85 decoding function
-// Test data moved from megastream_message_test.go
 func TestDecodeBase85RFC1924(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -127,8 +127,8 @@ func TestBase85RFC1924RoundTrip(t *testing.T) {
 	}
 }
 
-// TestDecodeEmbedding tests the embedding decoding function
-func TestDecodeEmbedding(t *testing.T) {
+// TestDecode tests the embedding decoding function
+func TestDecode(t *testing.T) {
 	tests := []struct {
 		name     string
 		encoded  string
@@ -158,9 +158,9 @@ func TestDecodeEmbedding(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			decoded, err := decodeEmbedding(tt.encoded)
+			decoded, err := Decode(tt.encoded)
 			if err != nil {
-				t.Fatalf("decodeEmbedding() error = %v, expected nil", err)
+				t.Fatalf("Decode() error = %v, expected nil", err)
 			}
 
 			if len(decoded) != len(tt.expected) {
@@ -176,10 +176,10 @@ func TestDecodeEmbedding(t *testing.T) {
 	}
 }
 
-// TestEncodeEmbedding tests the embedding encoding function
+// TestEncode tests the embedding encoding function
 // Note: We don't test for exact match with Python output because different zlib
 // implementations can produce different (but valid) compressed outputs
-func TestEncodeEmbedding(t *testing.T) {
+func TestEncode(t *testing.T) {
 	tests := []struct {
 		name   string
 		floats []float32
@@ -200,15 +200,14 @@ func TestEncodeEmbedding(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded, err := encodeEmbedding(tt.floats)
+			encoded, err := Encode(tt.floats)
 			if err != nil {
-				t.Fatalf("encodeEmbedding() error = %v, expected nil", err)
+				t.Fatalf("Encode() error = %v, expected nil", err)
 			}
 
-			// Verify we can decode it back
-			decoded, err := decodeEmbedding(encoded)
+			decoded, err := Decode(encoded)
 			if err != nil {
-				t.Fatalf("decodeEmbedding() error = %v, expected nil", err)
+				t.Fatalf("Decode() error = %v, expected nil", err)
 			}
 
 			if len(decoded) != len(tt.floats) {
@@ -224,8 +223,8 @@ func TestEncodeEmbedding(t *testing.T) {
 	}
 }
 
-// TestEmbeddingRoundTrip tests that encoding and decoding embeddings are inverse operations
-func TestEmbeddingRoundTrip(t *testing.T) {
+// TestRoundTrip tests that encoding and decoding embeddings are inverse operations
+func TestRoundTrip(t *testing.T) {
 	tests := []struct {
 		name   string
 		floats []float32
@@ -240,14 +239,14 @@ func TestEmbeddingRoundTrip(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded, err := encodeEmbedding(tt.floats)
+			encoded, err := Encode(tt.floats)
 			if err != nil {
-				t.Fatalf("encodeEmbedding() error = %v", err)
+				t.Fatalf("Encode() error = %v", err)
 			}
 
-			decoded, err := decodeEmbedding(encoded)
+			decoded, err := Decode(encoded)
 			if err != nil {
-				t.Fatalf("decodeEmbedding() error = %v", err)
+				t.Fatalf("Decode() error = %v", err)
 			}
 
 			if len(decoded) != len(tt.floats) {
@@ -255,7 +254,6 @@ func TestEmbeddingRoundTrip(t *testing.T) {
 			}
 
 			for i := range decoded {
-				// Handle special values
 				if math.IsInf(float64(tt.floats[i]), 0) {
 					if !math.IsInf(float64(decoded[i]), 0) || math.Signbit(float64(tt.floats[i])) != math.Signbit(float64(decoded[i])) {
 						t.Errorf("infinity mismatch at index %d: got %v, want %v", i, decoded[i], tt.floats[i])
@@ -268,7 +266,6 @@ func TestEmbeddingRoundTrip(t *testing.T) {
 					}
 					continue
 				}
-				// Regular values should match exactly (bit-level)
 				if decoded[i] != tt.floats[i] {
 					t.Errorf("value mismatch at index %d: got %v, want %v", i, decoded[i], tt.floats[i])
 				}
@@ -277,25 +274,54 @@ func TestEmbeddingRoundTrip(t *testing.T) {
 	}
 }
 
-// TestEmbeddingRoundTripNaN tests NaN values separately since NaN != NaN
-func TestEmbeddingRoundTripNaN(t *testing.T) {
-	floats := []float32{float32(math.NaN()), 1.0, float32(math.NaN())}
-
-	encoded, err := encodeEmbedding(floats)
-	if err != nil {
-		t.Fatalf("encodeEmbedding() error = %v", err)
+// TestRoundTrip384Dim tests round-tripping a realistic 384-dimension embedding
+// (the dimension of all-MiniLM-L12-v2 content embeddings)
+func TestRoundTrip384Dim(t *testing.T) {
+	rng := rand.New(rand.NewSource(372))
+	floats := make([]float32, 384)
+	for i := range floats {
+		floats[i] = rng.Float32()*2 - 1
 	}
 
-	decoded, err := decodeEmbedding(encoded)
+	encoded, err := Encode(floats)
 	if err != nil {
-		t.Fatalf("decodeEmbedding() error = %v", err)
+		t.Fatalf("Encode() error = %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+
+	if len(decoded) != 384 {
+		t.Fatalf("length mismatch: got %d, want 384", len(decoded))
+	}
+
+	for i := range decoded {
+		if decoded[i] != floats[i] {
+			t.Errorf("value mismatch at index %d: got %v, want %v", i, decoded[i], floats[i])
+		}
+	}
+}
+
+// TestRoundTripNaN tests NaN values separately since NaN != NaN
+func TestRoundTripNaN(t *testing.T) {
+	floats := []float32{float32(math.NaN()), 1.0, float32(math.NaN())}
+
+	encoded, err := Encode(floats)
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
 	}
 
 	if len(decoded) != len(floats) {
 		t.Fatalf("length mismatch: got %d, want %d", len(decoded), len(floats))
 	}
 
-	// Check NaN values
 	if !math.IsNaN(float64(decoded[0])) {
 		t.Errorf("expected NaN at index 0, got %v", decoded[0])
 	}
@@ -315,8 +341,6 @@ func floatsAlmostEqual(a, b float32) bool {
 	if math.IsInf(float64(a), 0) && math.IsInf(float64(b), 0) {
 		return math.Signbit(float64(a)) == math.Signbit(float64(b))
 	}
-	// For most values, require exact match (bit-level)
-	// For values like 99.9 that can't be represented exactly, allow small tolerance
 	const epsilon = 1e-5
 	diff := a - b
 	if diff < 0 {

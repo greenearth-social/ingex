@@ -65,7 +65,14 @@ ingest/
 │   ├── k8s_recreate_api_key.sh                        # Recreate Elasticsearch API key
 │   ├── k8s_delete_es_data_via_api.sh                  # Delete ES data via API (safe)
 │   ├── k8s_delete_es_data_filesystem_emergency.sh     # Delete ES data from filesystem (emergency only)
-│   └── fix_es_readonly.sh                             # Fix ES read-only blocks
+│   ├── fix_es_readonly.sh                             # Fix ES read-only blocks
+│   ├── es_stats.py                                    # Ingest-rate and video-size stats from ES
+│   ├── megastream_drop_analysis.py                    # What share of ingested posts we could skip
+│   ├── megastream_label_inventory.py                  # Moderation labels present in megastream data
+│   ├── megastream_labeler_coverage.py                 # What a third-party labeler would catch
+│   ├── enumerate_labeler.py                           # Build/refresh a labeler's account DID set
+│   ├── jetstream_like_sample.py                       # Flagged share of live like traffic
+│   └── fetch_modlist.py                               # Download a moderation list via getRepo
 ├── go.mod                          # Module: github.com/greenearth/ingest
 └── test_data/                      # Sample SQLite databases for testing
 ```
@@ -117,6 +124,11 @@ See individual command READMEs for detailed usage:
 - [megastream_ingest documentation](cmd/megastream_ingest/README.md)
 - [jetstream_ingest documentation](cmd/jetstream_ingest/README.md)
 
+The labeler and megastream analysis scripts under `scripts/` are reference
+implementations for
+[#474](https://github.com/greenearth-social/ingex/issues/474) — filtering
+inauthentic accounts out of ingest.
+
 ## Configuration
 
 Each command has its own configuration requirements. See the individual command READMEs for details:
@@ -151,20 +163,35 @@ kubectl port-forward service/greenearth-es-http 9200 -n greenearth-local
 # Get elastic password
 ELASTIC_PASSWORD=$(kubectl get secret greenearth-es-elastic-user -n greenearth-local -o go-template='{{.data.elastic | base64decode}}')
 
-# Create API key (adjust index names as needed)
+# Create API key
+# Two index entries are required: one for the ILM-managed backing indices (hyphenated,
+# e.g. post-tombstones-2026-06-03-23-30) and one for the alias names (underscored,
+# e.g. post_tombstones). EnsureIndex calls both indices.create and indices.updateAliases,
+# and ES evaluates permissions against whichever name appears in each request.
 curl -k -X POST "https://localhost:9200/_security/api_key" \
   -u "elastic:$ELASTIC_PASSWORD" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "ingest-service-key",
-    "expiration": "90d",
     "role_descriptors": {
       "ingest_role": {
         "cluster": ["manage_index_templates", "monitor"],
         "indices": [
           {
-            "names": ["posts", "posts_v1", "post_tombstones", "post_tombstones_v1", "likes", "likes_v1", "like_tombstones", "like_tombstones_v1"],
-            "privileges": ["create_doc", "create", "delete", "index", "write", "maintenance", "all"]
+            "names": [
+              "posts-*", "post-tombstones-*",
+              "likes-*", "like-tombstones-*",
+              "inferences-*", "hashtags_v1*"
+            ],
+            "privileges": ["all"]
+          },
+          {
+            "names": [
+              "posts", "post_tombstones",
+              "likes", "like_tombstones",
+              "inferences", "hashtags"
+            ],
+            "privileges": ["all"]
           }
         ]
       }
@@ -177,10 +204,12 @@ Use the `encoded` value from the response.
 **For Local Source (`--source local`):**
 
 - `GE_LOCAL_SQLITE_DB_PATH` - Directory containing `.db.zip` files to process
+  (the suffix is required, but the contents may be either a zip archive or a
+  raw SQLite database — the spooler sniffs which)
 
 **For S3 Source (`--source s3`):**
 
-- `GE_AWS_S3_BUCKET` - S3 bucket name containing SQLite files
+- `GE_AWS_S3_BUCKET` - S3 bucket name containing SQLite files (requester-pays)
 - `GE_AWS_S3_PREFIX` - S3 key prefix (folder path)
 - `GE_AWS_REGION` - AWS region (default: "us-east-1")
 
@@ -190,7 +219,7 @@ Use the `encoded` value from the response.
 - `GE_SPOOL_INTERVAL_SEC` - Polling interval in seconds for spool mode (default: 60)
 - `SPOOL_STATE_FILE` - Path to state file for tracking processed files (default: ".processed_files.json")
 
-### Example Configuration
+### Local Testing
 
 **Local Source:**
 
@@ -209,37 +238,104 @@ export GE_LOGGING_ENABLED="true"
 export GE_AWS_S3_BUCKET="my-bucket"
 export GE_AWS_S3_PREFIX="megastream/databases/"
 export GE_AWS_REGION="us-west-2"
-export GE_ELASTICSEARCH_URL="https://my-cluster.es.amazonaws.com:9200"
+export GE_ELASTICSEARCH_URL="https://localhost:9200"
 export GE_ELASTICSEARCH_API_KEY="asdvnasdfdsa=="
 
-./megastream_ingest --source s3 --mode spool
+./megastream_ingest --source s3 --mode spool --skip-tls-verify --no-rewind
 ```
 
 ## Deployment
 
-### Local Testing
+See `./scripts/gc_setup.sh` and `./scripts/deploy.sh`
 
-Run against local Elasticsearch cluster (see [../index/README.md](../index/README.md)):
+### Git sha traceability
+
+So the stamped sha always matches what ships, `deploy.sh` **refuses to deploy
+with a dirty working tree** (uncommitted changes). Deploying an unpushed branch
+is fine — only a dirty tree is rejected. Commit or stash first.
+
+It then stamps the short git sha of the deployed code (`GIT_SHA`) onto every
+service and job in two places:
+
+- **Env var `GE_GIT_SHA`** — each binary reports it on its health endpoint (see
+  below) and prefixes it onto every log line.
+- **Cloud Run label `git-sha=<sha>`** — tags the service/revision (and job) so
+  past deployments are identifiable when choosing a rollback target
+  (`./scripts/rollback.sh --list`, see [Rolling back a
+  deployment](#rolling-back-a-deployment)).
+
+### Rolling back a deployment
+
+`deploy.sh` builds from source, so the repo never names an image tag and there
+is nothing to rebuild from an old sha: the deployed artifacts themselves are the
+rollback targets. `scripts/rollback.sh` uses the same workload names as
+`deploy.sh` and rolls back all four by default.
 
 ```bash
-# Start port-forward to local Elasticsearch
-kubectl port-forward service/greenearth-es-http 9200 -n greenearth-local
-
-# Run megastream_ingest
-./megastream_ingest --source local --mode once --skip-tls-verify
-
-# Or run jetstream_ingest
-./jetstream_ingest --skip-tls-verify
+./scripts/rollback.sh --environment prod --list   # candidates for all workloads
+./scripts/rollback.sh --environment prod          # everything back one deployment
+./scripts/rollback.sh jetstream --environment prod        # one workload
+./scripts/rollback.sh --environment prod --to e11d1b2     # a specific git sha
 ```
 
-See individual command READMEs for detailed deployment instructions.
+`--dry-run` prints the exact `gcloud` commands without running them; `--yes`
+skips the confirmation prompt. The script resolves the whole plan first and
+shows it before changing anything, so a rollback across four workloads is one
+decision rather than four.
 
-### Production Deployment
+The two workload kinds roll back differently:
 
-- **Target Platform**: (TODO) Azure Kubernetes Service (AKS)
-- **Container Runtime**: (TODO) Docker with multi-stage builds
-- **Deployment Method**: (TODO) Kubernetes manifests via Terraform
-- **Monitoring**: (TODO) Add health checks and metrics endpoints
+| | Mechanism | History | Window |
+| --- | --- | --- | --- |
+| **Services** (`jetstream-ingest`, `megastream-ingest`) | Shift 100% of traffic to an older revision, which pins the image digest and env config it was deployed with | Cloud Run revisions | The 10 most recent revisions — `deploy.sh` deletes the rest on each deploy |
+| **Jobs** (`elasticsearch-expiry`, `extract`) | Re-point the job's template at an earlier image | Job **executions**, each of which snapshots the image digest and `GE_GIT_SHA` it ran with | Bounded by execution history (`--max-executions`, default 1000 ≈ three weeks) |
+
+Cloud Run jobs have no revisions — a job is a single mutable template — which is
+why their history comes from executions instead. Both jobs run on a schedule, so
+every deployed generation that survived one tick is recoverable, and Artifact
+Registry keeps the old digests. Rolling a job back changes its **image only**;
+other env vars keep their current values. The rolled-back image takes effect on
+the job's next scheduled run, or immediately via `gcloud run jobs execute`.
+
+After a service rollback the script polls `/health` until the service reports
+the target's sha, so the rollback is confirmed from outside Cloud Run's own
+bookkeeping.
+
+**Getting back out:** a service rollback pins traffic to a named revision,
+taking `LATEST` out of the traffic split. `deploy.sh` resets traffic to `LATEST`
+after a successful deploy, so deploying the fix is all it takes; for jobs, the
+next deploy replaces the template outright. Because the reset runs only on
+success, a failed build leaves traffic on the rolled-back revision.
+
+**When to rebuild from git instead.** Every ingest workload reaches Elasticsearch
+at an internal LB IP baked in at deploy time. If that IP has moved since the
+target was deployed, rolling back restores a dead address — `rollback.sh` warns
+about this when it can reach the cluster, and it is also the fallback when the
+target has aged out of the window:
+
+```bash
+git checkout <sha> && ./scripts/deploy.sh --environment prod
+```
+
+Elasticsearch itself rolls back separately; see the
+[index README](../index/README.md).
+
+Rollbacks are manual by design. Cloud Run's own health-check behavior is
+untouched — a revision that never becomes Ready never receives traffic.
+
+### Health endpoint
+
+Every service and job runs a small health server (`internal/common/health.go`)
+on port 8080 (falling back up to 8089). It serves `/health`, `/healthz`,
+`/ready`, and `/`. The JSON payload includes the deployed sha, so you can confirm
+which revision is live and pin it in bug reports:
+
+```json
+{"healthy": true, "status": "healthy", "started_at": "…", "git_sha": "e9f07f5"}
+```
+
+`git_sha` is omitted when running unstamped code (e.g. local dev, where
+`GE_GIT_SHA` is unset).
 
 ## Development
 
@@ -318,7 +414,7 @@ See individual command READMEs for command-specific integration testing:
 
 The ingest services write to the following Elasticsearch indexes:
 
-### Posts (`posts` alias → `posts_v1`)
+### Posts
 
 BlueSky posts with full content and embeddings (from megastream_ingest):
 

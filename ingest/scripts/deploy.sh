@@ -21,8 +21,10 @@ GE_AWS_S3_PREFIX="${GE_AWS_S3_PREFIX:-mega/}"
 GE_JETSTREAM_INSTANCES="${GE_JETSTREAM_INSTANCES:-1}"
 GE_MEGASTREAM_INSTANCES="${GE_MEGASTREAM_INSTANCES:-1}"
 
-# Get current git SHA (short version) for deployment tracking
-GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+# Short git SHA of the deployed code, resolved by require_clean_worktree().
+# Stamped onto every Cloud Run service/job (env var + git-sha label) so we can
+# identify exactly what code is live.
+GIT_SHA=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -47,21 +49,22 @@ log_build() {
     echo -e "${BLUE}[BUILD]${NC} $1"
 }
 
+# Trims a service's revision history. This is also the rollback window: only the
+# revisions kept here can be rolled back to with scripts/rollback.sh.
+#
+# Services only. Cloud Run jobs have no revisions — `gcloud run jobs revisions`
+# is not a command, so the job branch this function used to carry never did
+# anything (its errors were swallowed). A job's deployment history lives in its
+# executions instead, each of which snapshots the image digest and git sha it
+# ran with; see scripts/rollback.sh.
 cleanup_old_revisions() {
-    local resource_type="$1"  # "service" or "job"
-    local resource_name="$2"
+    local service_name="$1"
     local max_revisions=10
 
     log_info "Cleaning up old revisions..."
 
-    local list_cmd
-    if [ "$resource_type" = "service" ]; then
-        list_cmd="gcloud run revisions list --service=$resource_name"
-    else
-        list_cmd="gcloud run jobs revisions list --job=$resource_name"
-    fi
-
-    local all_revisions=$($list_cmd \
+    local all_revisions=$(gcloud run revisions list \
+        --service="$service_name" \
         --region="$GE_GCP_REGION" \
         --format="value(name)" \
         --sort-by="~metadata.creationTimestamp" 2>/dev/null || true)
@@ -72,18 +75,61 @@ cleanup_old_revisions() {
             log_info "Found $revision_count revisions, keeping the $max_revisions most recent"
             echo "$all_revisions" | tail -n +$((max_revisions + 1)) | while read -r revision; do
                 log_info "Deleting old revision: $revision"
-                if [ "$resource_type" = "service" ]; then
-                    gcloud run revisions delete "$revision" \
-                        --region="$GE_GCP_REGION" \
-                        --quiet 2>/dev/null || log_warn "Failed to delete $revision"
-                else
-                    gcloud run jobs revisions delete "$revision" \
-                        --region="$GE_GCP_REGION" \
-                        --quiet 2>/dev/null || log_warn "Failed to delete $revision"
-                fi
+                gcloud run revisions delete "$revision" \
+                    --region="$GE_GCP_REGION" \
+                    --quiet 2>/dev/null || log_warn "Failed to delete $revision"
             done
         fi
     fi
+}
+
+# A rollback (scripts/rollback.sh) pins traffic to a named revision, which takes
+# LATEST out of the traffic split — after that, deploying would create a
+# perfectly healthy revision that serves nothing. Resetting to LATEST here makes
+# "deploy the fix" the way out of a rolled-back state, with no extra step to
+# remember. On a normal deploy this is a no-op. It runs only after the deploy
+# succeeded, so a failed build leaves traffic where the rollback put it.
+#
+# Services only: rolling a job back rewrites its single mutable template, which
+# the next `gcloud run jobs deploy` replaces outright.
+reset_traffic_to_latest() {
+    local service_name="$1"
+
+    log_info "Pointing traffic at the latest revision..."
+
+    if ! gcloud run services update-traffic "$service_name" \
+        --region="$GE_GCP_REGION" \
+        --project="$GE_GCP_PROJECT_ID" \
+        --to-latest \
+        --quiet > /dev/null; then
+        log_error "Deployed successfully, but could not point traffic at the new revision."
+        log_error "The previous revision is still serving. Retry with:"
+        log_error "  gcloud run services update-traffic $service_name --region=$GE_GCP_REGION --to-latest"
+        exit 1
+    fi
+}
+
+require_clean_worktree() {
+    log_info "Verifying git working tree is clean..."
+
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        log_error "Not inside a git repository — cannot verify the deployed code."
+        log_error "Run deploy.sh from a checkout of the ingex repo."
+        exit 1
+    fi
+
+    # Refuse to deploy with uncommitted changes so the stamped git sha always
+    # matches the code that ships. Deploying an unpushed branch is fine — only a
+    # dirty tree is rejected.
+    if [ -n "$(git status --porcelain)" ]; then
+        log_error "Working tree has uncommitted changes. Commit or stash them before deploying"
+        log_error "so the deployed git sha reflects the running code."
+        git status --short
+        exit 1
+    fi
+
+    GIT_SHA="$(git rev-parse --short HEAD)"
+    log_info "Deploying git sha: $GIT_SHA ($(git rev-parse --abbrev-ref HEAD))"
 }
 
 validate_config() {
@@ -152,6 +198,62 @@ get_elasticsearch_internal_lb_ip() {
     fi
 }
 
+# Final assertion on the resolved Elasticsearch URL, run once after
+# get_elasticsearch_internal_lb_ip and before anything is deployed.
+#
+# Every deploy bakes this value into --set-env-vars, and an empty one is not
+# inert: the Go client falls back to 127.0.0.1:9200, so each container starts,
+# fails to dial, and exits 1. That is how the extract job silently stopped
+# producing parquet for six days in August 2026 — the scheduled job ran on time
+# and failed every time. Checking the resolved value here catches it regardless
+# of which path above produced it, including a caller that exports a blank
+# GE_ELASTICSEARCH_URL into the environment.
+require_elasticsearch_url() {
+    log_info "Verifying resolved Elasticsearch URL..."
+
+    # Strip whitespace so an all-spaces value is treated as empty rather than
+    # sailing through the -z check and deploying as blank.
+    local url
+    url=$(echo "$GE_ELASTICSEARCH_URL" | tr -d '[:space:]')
+
+    if [ -z "$url" ]; then
+        log_error "GE_ELASTICSEARCH_URL resolved to an empty value."
+        log_error "Deploying this would set an empty env var on every service and job;"
+        log_error "each container would fall back to 127.0.0.1:9200 and exit 1 on startup."
+        log_error "Set GE_ELASTICSEARCH_URL explicitly, or make sure the internal LB is"
+        log_error "reachable: kubectl get service greenearth-es-internal-lb -n greenearth-$GE_ENVIRONMENT"
+        exit 1
+    fi
+
+    if [ "$url" = "INTERNAL_LB_PLACEHOLDER" ]; then
+        log_error "GE_ELASTICSEARCH_URL is still the literal placeholder INTERNAL_LB_PLACEHOLDER."
+        log_error "Auto-detection did not replace it. Set GE_ELASTICSEARCH_URL manually."
+        exit 1
+    fi
+
+    case "$url" in
+        http://*|https://*) ;;
+        *)
+            log_error "GE_ELASTICSEARCH_URL is not an http(s) URL: $url"
+            log_error "Expected something like https://10.142.0.81:9200"
+            exit 1
+            ;;
+    esac
+
+    # Cloud Run containers have no Elasticsearch on loopback. A localhost URL
+    # here is the same failure as an empty one, just spelled out.
+    case "$url" in
+        *//localhost:*|*//127.0.0.1:*|*//[::1]:*)
+            log_error "GE_ELASTICSEARCH_URL points at loopback: $url"
+            log_error "Cloud Run services cannot reach Elasticsearch on localhost."
+            log_error "Use the internal load balancer address for $GE_ENVIRONMENT."
+            exit 1
+            ;;
+    esac
+
+    log_info "Elasticsearch URL verified: $GE_ELASTICSEARCH_URL"
+}
+
 verify_vpc_connector() {
     log_info "Verifying VPC connector exists..."
 
@@ -207,6 +309,8 @@ deploy_jetstream_service() {
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --set-env-vars="GE_JETSTREAM_STATE_FILE=gs://$GE_GCP_PROJECT_ID-ingex-state-$GE_ENVIRONMENT/jetstream_state.json" \
+        --set-env-vars="GE_FIRESTORE_PROJECT=$GE_GCP_PROJECT_ID" \
+        --set-env-vars="GE_FIRESTORE_DATABASE=greenearth-$GE_ENVIRONMENT" \
         --set-env-vars="GE_ELASTICSEARCH_URL=$GE_ELASTICSEARCH_URL" \
         --set-env-vars="GE_ELASTICSEARCH_TLS_SKIP_VERIFY=true" \
         --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
@@ -215,7 +319,9 @@ deploy_jetstream_service() {
         --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
         --set-env-vars="GE_BLOCKLIST_DESTINATION=gs://$GE_GCP_PROJECT_ID-ingex-blocklist-$GE_ENVIRONMENT" \
         --set-env-vars="GE_LIKE_RATE_LIMIT_PER_HOUR=600" \
+        --set-env-vars="GE_INDEX_PERIOD=$GE_INDEX_PERIOD" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
+        --labels="git-sha=$GIT_SHA" \
         --scaling="$GE_JETSTREAM_INSTANCES" \
         --cpu=1 \
         --memory=512Mi \
@@ -225,7 +331,8 @@ deploy_jetstream_service() {
         --allow-unauthenticated \
         --args="--max-rewind,$max_rewind"
 
-    cleanup_old_revisions "service" "jetstream-ingest-$GE_ENVIRONMENT"
+    reset_traffic_to_latest "jetstream-ingest-$GE_ENVIRONMENT"
+    cleanup_old_revisions "jetstream-ingest-$GE_ENVIRONMENT"
 }
 
 deploy_megastream_service() {
@@ -241,6 +348,48 @@ deploy_megastream_service() {
         aws_access_key_secret="aws-s3-access-key-prod"
         aws_secret_key_secret="aws-s3-secret-key-prod"
     fi
+
+    # Inference service for post-tower embeddings (secrets managed by the
+    # inference-service repo). NOTE: the ge_post_embedding dense_vector mapping
+    # must be deployed to the posts index (index/deploy.sh <env> --ctypes schema)
+    # before this service writes the field, or ES will dynamically map it as a
+    # plain float field that cannot serve kNN queries.
+    local inference_api_key_secret="inference-api-key-$GE_ENVIRONMENT"
+    local inference_base_url="https://inference-stage.greenearth.social"
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        inference_base_url="https://inference.greenearth.social"
+    fi
+    inference_base_url="${GE_INFERENCE_BASE_URL:-$inference_base_url}"
+
+    # Perspective API scoring of posts at ingest (api#368). The secret is the
+    # same one the api uses; the ingex runner service account needs
+    # secretAccessor on it (granted by gcp_setup.sh).
+    #
+    # GE_PERSPECTIVE_QPS is this service's slice of a 36 000 QPM (600 QPS)
+    # quota shared with the api's serving path, so raising it takes budget away
+    # from serving. GE_PERSPECTIVE_ON_QUOTA=wait throttles ingest to stay
+    # inside that slice; set it to "skip" to index posts unscored instead, and
+    # recover them later with cmd/backfill_perspective. Watch
+    # perspective.rate_limit.skipped.count to know when that is owed.
+    #
+    # 141, not 150, because the limiter's bucket carries a batch-sized burst
+    # (perspectiveBurst, 512) on top of the refill rate. A token bucket admits
+    # B + R*60 in a minute, so the slice is 141*60 + 512 = 8 972 -- inside the
+    # 9 000 this service is budgeted, with serving's 26 700 and the 300 RPM
+    # buffer untouched. Changing either number means redoing that sum.
+    #
+    # The published split budgets for one ingest process and one serving fleet,
+    # but stage and prod deploy into the same GCP project and Perspective quota
+    # is per project, so all four deployments draw on the one pool. Stage keeps
+    # a much lower rate: its sustained draw is ~2 QPS, the burst is what makes
+    # its batches prompt, and a low ceiling still bounds a runaway.
+    local perspective_api_key_secret="perspective-api-key-$GE_ENVIRONMENT"
+    local perspective_qps_default=141
+    if [ "$GE_ENVIRONMENT" = "stage" ]; then
+        perspective_qps_default=15
+    fi
+    local perspective_qps="${GE_PERSPECTIVE_QPS:-$perspective_qps_default}"
+    local perspective_on_quota="${GE_PERSPECTIVE_ON_QUOTA:-wait}"
 
     # Set max-rewind based on environment
     # Stage: 15 minutes (prevent disk overflow on restart)
@@ -272,7 +421,12 @@ deploy_megastream_service() {
         --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
         --set-env-vars="GE_AWS_S3_BUCKET=$GE_AWS_S3_BUCKET" \
         --set-env-vars="GE_AWS_S3_PREFIX=$GE_AWS_S3_PREFIX" \
-        --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest,GE_AWS_S3_ACCESS_KEY=$aws_access_key_secret:latest,GE_AWS_S3_SECRET_KEY=$aws_secret_key_secret:latest" \
+        --set-env-vars="GE_INDEX_PERIOD=$GE_INDEX_PERIOD" \
+        --set-env-vars="GE_INFERENCE_BASE_URL=$inference_base_url" \
+        --set-env-vars="GE_PERSPECTIVE_QPS=$perspective_qps" \
+        --set-env-vars="GE_PERSPECTIVE_ON_QUOTA=$perspective_on_quota" \
+        --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest,GE_AWS_S3_ACCESS_KEY=$aws_access_key_secret:latest,GE_AWS_S3_SECRET_KEY=$aws_secret_key_secret:latest,GE_INFERENCE_API_KEY=$inference_api_key_secret:latest,GE_PERSPECTIVE_API_KEY=$perspective_api_key_secret:latest" \
+        --labels="git-sha=$GIT_SHA" \
         --scaling="$GE_MEGASTREAM_INSTANCES" \
         --cpu=1 \
         --memory=1Gi \
@@ -282,7 +436,8 @@ deploy_megastream_service() {
         --allow-unauthenticated \
         --args="--source,s3,--mode,spool,--max-rewind,$max_rewind"
 
-    cleanup_old_revisions "service" "megastream-ingest-$GE_ENVIRONMENT"
+    reset_traffic_to_latest "megastream-ingest-$GE_ENVIRONMENT"
+    cleanup_old_revisions "megastream-ingest-$GE_ENVIRONMENT"
 }
 
 deploy_expiry_job() {
@@ -365,12 +520,68 @@ EOF
         --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
         --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
         --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
+        --labels="git-sha=$GIT_SHA" \
         --cpu=1 \
         --memory=512Mi \
         --task-timeout=3600 \
         --args="--retention-hours,$retention_hours,--hashtag-retention-hours,$hashtag_retention_hours"
 
-    cleanup_old_revisions "job" "elasticsearch-expiry-$GE_ENVIRONMENT"
+}
+
+deploy_followed_users_backfill_job() {
+    log_info "Deploying followed-users-backfill job from source..."
+
+    # Create a temporary directory structure for buildpacks
+    # Buildpacks expect a go.mod at the root with the main package
+    log_info "Preparing source directory for buildpack..."
+
+    local temp_dir=$(mktemp -d)
+    trap "rm -rf $temp_dir" EXIT
+
+    # Copy the necessary files for building just this binary
+    cp go.mod go.sum "$temp_dir/"
+    cp -r internal "$temp_dir/"
+    mkdir -p "$temp_dir/cmd/followed_users_backfill"
+    cp cmd/followed_users_backfill/main.go "$temp_dir/cmd/followed_users_backfill/"
+    cp cmd/followed_users_backfill/main.go "$temp_dir/"
+
+    log_info "Deploying followed-users-backfill job with buildpacks..."
+
+    # Task timeout bounds a single execution regardless of --mode. Prod's
+    # targeted sweep now runs hourly (see setup_followed_users_backfill_cloud_scheduler),
+    # so 50 minutes leaves a 10-minute buffer before the next trigger fires —
+    # short enough that two executions of the same job can't overlap even in
+    # the worst case. Stage's targeted sweep stays on its original 15-minute
+    # cadence, so its timeout stays at 15 minutes to preserve the same
+    # no-overlap property there.
+    local task_timeout
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        task_timeout=3000
+    else
+        task_timeout=900
+    fi
+
+    gcloud run jobs deploy "followed-users-backfill-$GE_ENVIRONMENT" \
+        --source="$temp_dir" \
+        --region="$GE_GCP_REGION" \
+        --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
+        --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
+        --vpc-egress=private-ranges-only \
+        --set-env-vars="GE_LOGGING_ENABLED=true" \
+        --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
+        --set-env-vars="GE_GCP_PROJECT_ID=$GE_GCP_PROJECT_ID" \
+        --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
+        --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
+        --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
+        --set-env-vars="GE_FIRESTORE_PROJECT=$GE_GCP_PROJECT_ID" \
+        --set-env-vars="GE_FIRESTORE_DATABASE=greenearth-$GE_ENVIRONMENT" \
+        --set-env-vars="GE_FOLLOWS_CACHE_TTL_SEC=21600" \
+        --labels="git-sha=$GIT_SHA" \
+        --cpu=1 \
+        --memory=512Mi \
+        --task-timeout=$task_timeout \
+        --args="--mode,full,--concurrency,20"
+
 }
 
 deploy_extract_job() {
@@ -386,13 +597,11 @@ deploy_extract_job() {
     # Set extraction parameters based on environment
     local max_records
     local window_minutes
-    local indices
     local destination_bucket
 
     max_records=1000000      # 1M records
     window_minutes=33       # ~1/2 hour
-    indices="posts,likes,hashtags"
-    log_info "$GE_ENVIRONMENT environment: 1M max records, approx. 30 min window, indices: posts,likes,hashtags"
+    log_info "$GE_ENVIRONMENT environment: 1M max records, approx. 30 min window, indices: posts,likes,hashtags,replies"
     destination_bucket="$GE_GCP_PROJECT_ID-ingex-extract-$GE_ENVIRONMENT"
 
     # Prepare source directory (similar to expiry job)
@@ -418,19 +627,19 @@ deploy_extract_job() {
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
-        --set-env-vars="^|^GE_EXTRACT_INDICES=posts,likes,hashtags" \
+        --set-env-vars="^|^GE_EXTRACT_INDICES=posts,likes,hashtags,replies" \
         --set-env-vars="GE_PARQUET_DESTINATION=gs://$destination_bucket" \
         --set-env-vars="GE_PARQUET_MAX_RECORDS=$max_records" \
         --set-env-vars="GE_GCP_PROJECT_ID=$GE_GCP_PROJECT_ID" \
         --set-env-vars="GE_ENVIRONMENT=$GE_ENVIRONMENT" \
         --set-env-vars="GE_GCP_REGION=$GE_GCP_REGION" \
         --set-env-vars="GE_METRIC_EXPORT_INTERVAL_SEC=60" \
+        --labels="git-sha=$GIT_SHA" \
         --cpu=2 \
         --memory=4Gi \
         --task-timeout=7200 \
         --args="--window-size-min,$window_minutes"
 
-    cleanup_old_revisions "job" "extract-$GE_ENVIRONMENT"
 }
 
 deploy_all_services() {
@@ -439,6 +648,7 @@ deploy_all_services() {
     deploy_jetstream_service
     deploy_megastream_service
     deploy_expiry_job
+    deploy_followed_users_backfill_job
     deploy_extract_job
 
     log_info "All services deployed successfully!"
@@ -453,7 +663,7 @@ show_service_status() {
 
     echo
     echo "=== Cloud Run Jobs ==="
-    gcloud run jobs list --region="$GE_GCP_REGION" --filter="metadata.name:(elasticsearch-expiry-$GE_ENVIRONMENT OR extract-$GE_ENVIRONMENT)"
+    gcloud run jobs list --region="$GE_GCP_REGION" --filter="metadata.name:(elasticsearch-expiry-$GE_ENVIRONMENT OR followed-users-backfill-$GE_ENVIRONMENT OR extract-$GE_ENVIRONMENT)"
 
     echo
     echo "=== Service URLs ==="
@@ -466,15 +676,32 @@ show_service_status() {
 
     log_info "Use 'gcloud run services logs read SERVICE_NAME --region=$GE_GCP_REGION' to view logs"
     log_info "Use 'gcloud run jobs execute elasticsearch-expiry-$GE_ENVIRONMENT --region=$GE_GCP_REGION' to manually run expiry"
+    log_info "Use 'gcloud run jobs execute followed-users-backfill-$GE_ENVIRONMENT --region=$GE_GCP_REGION --args=--mode,targeted,--concurrency,20' to manually run followed-users-backfill"
     log_info "Use 'gcloud run jobs execute extract-$GE_ENVIRONMENT --region=$GE_GCP_REGION' to manually run extract"
 }
 
 main() {
     local service="${1:-all}"
 
+    # Refuse to deploy a dirty tree and resolve GIT_SHA before anything uses it.
+    require_clean_worktree
+
+    # Derive GE_INDEX_PERIOD from GE_ENVIRONMENT after all flags have been parsed.
+    # Using unconditional assignment so a stale GE_INDEX_PERIOD in the caller's
+    # shell cannot override the environment-appropriate value.
+    # prod → week (ISO week), stage → hour, local/default → 10min
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        GE_INDEX_PERIOD="week"
+    elif [ "$GE_ENVIRONMENT" = "stage" ]; then
+        GE_INDEX_PERIOD="hour"
+    else
+        GE_INDEX_PERIOD="10min"
+    fi
+
     echo "=================================================="
     echo "Green Earth Ingex - Cloud Run Source Deployment"
     echo "Environment: $GE_ENVIRONMENT"
+    echo "Index period: $GE_INDEX_PERIOD"
     echo "Project: $GE_GCP_PROJECT_ID"
     echo "Region: $GE_GCP_REGION"
     echo "Git SHA: $GIT_SHA"
@@ -490,6 +717,7 @@ main() {
     fi
 
     get_elasticsearch_internal_lb_ip
+    require_elasticsearch_url
 
     case "$service" in
         jetstream|jetstream-ingest)
@@ -504,6 +732,10 @@ main() {
             log_info "Deploying elasticsearch-expiry job..."
             deploy_expiry_job
             ;;
+        followed-users-backfill|follows-backfill)
+            log_info "Deploying followed-users-backfill job..."
+            deploy_followed_users_backfill_job
+            ;;
         extract|extract-job)
             log_info "Deploying extract job..."
             deploy_extract_job
@@ -513,7 +745,7 @@ main() {
             ;;
         *)
             log_error "Unknown service: $service"
-            echo "Valid services: jetstream, megastream, expiry, extract, all"
+            echo "Valid services: jetstream, megastream, expiry, followed-users-backfill, extract, all"
             exit 1
             ;;
     esac
@@ -559,6 +791,7 @@ while [[ $# -gt 0 ]]; do
             echo "  jetstream                   Deploy jetstream-ingest service only"
             echo "  megastream                  Deploy megastream-ingest service only"
             echo "  expiry                      Deploy elasticsearch-expiry job only"
+            echo "  followed-users-backfill     Deploy followed-users-backfill job only"
             echo "  extract                     Deploy extract job only"
             echo "  all                         Deploy all services (default)"
             echo
@@ -591,7 +824,7 @@ while [[ $# -gt 0 ]]; do
             echo
             exit 0
             ;;
-        jetstream|megastream|expiry|extract|all)
+        jetstream|megastream|expiry|followed-users-backfill|extract|all)
             # Handle service as first positional argument
             break
             ;;

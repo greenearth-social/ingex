@@ -201,6 +201,29 @@ func TestHealthServer_Endpoints(t *testing.T) {
 	}
 }
 
+func TestHealthServer_ReportsGitSHA(t *testing.T) {
+	t.Setenv("GE_GIT_SHA", "e9f07f5")
+	logger := NewLogger(false)
+
+	hs, err := NewHealthServer(9060, 9069, logger)
+	if err != nil {
+		t.Fatalf("Failed to create health server: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = hs.Start(ctx) // Error logged by Start itself
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	status := getHealthStatus(t, hs.GetPort())
+	if status.GitSHA != "e9f07f5" {
+		t.Errorf("Expected git_sha 'e9f07f5', got '%s'", status.GitSHA)
+	}
+}
+
 func TestHealthServer_PortRetry(t *testing.T) {
 	logger := NewLogger(false)
 

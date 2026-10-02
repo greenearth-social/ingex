@@ -1,0 +1,493 @@
+"""Unit tests for the resilience logic in reindex.py.
+
+These cover the interrupt-safe resume path: re-attaching to running reindex
+tasks, adopting orphaned reindexes, count-based progress, and the safety guard
+that prevents deleting a destination that is already serving an alias.
+"""
+
+import sys
+from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
+from elasticsearch import NotFoundError
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+import reindex  # noqa: E402
+from reindex import (  # noqa: E402
+    DONE,
+    FAILED,
+    PENDING,
+    REINDEXING,
+    SWAP_PENDING,
+    IndexState,
+    RunState,
+    _confirm_include_active,
+)
+
+
+def _nf() -> NotFoundError:
+    return NotFoundError("not found", meta=None, body=None)
+
+
+def _es() -> AsyncMock:
+    return AsyncMock()
+
+
+def _state(src: str, dst: str, status: str = PENDING, task_id=None) -> RunState:
+    st = RunState.create("abc1234", ["posts"])
+    st.indices[src] = IndexState(status=status, src=src, dst=dst, task_id=task_id)
+    st.save = lambda: None  # never touch disk in tests
+    return st
+
+
+# ---------------------------------------------------------------------------
+# _doc_count
+# ---------------------------------------------------------------------------
+
+async def test_doc_count_returns_count():
+    es = _es()
+    es.count.return_value = {"count": 42}
+    assert await reindex._doc_count(es, "x") == 42
+
+
+async def test_doc_count_missing_returns_none():
+    es = _es()
+    es.count.side_effect = _nf()
+    assert await reindex._doc_count(es, "x") is None
+
+
+# ---------------------------------------------------------------------------
+# _source_excludes_embeddings
+# ---------------------------------------------------------------------------
+
+async def test_source_excludes_embeddings_true():
+    es = _es()
+    es.indices.get_mapping.return_value = {
+        "posts-2026-w30-abc1234": {"mappings": {"_source": {"excludes": ["embeddings"]}}}
+    }
+    assert await reindex._source_excludes_embeddings(es, "posts-2026-w30-abc1234") is True
+
+
+async def test_source_excludes_embeddings_false_when_absent():
+    es = _es()
+    es.indices.get_mapping.return_value = {
+        "posts-2026-w30": {"mappings": {}}
+    }
+    assert await reindex._source_excludes_embeddings(es, "posts-2026-w30") is False
+
+
+async def test_source_excludes_embeddings_false_for_other_excludes():
+    es = _es()
+    es.indices.get_mapping.return_value = {
+        "posts-2026-w30": {"mappings": {"_source": {"excludes": ["some_other_field"]}}}
+    }
+    assert await reindex._source_excludes_embeddings(es, "posts-2026-w30") is False
+
+
+async def test_source_excludes_embeddings_false_when_index_missing():
+    es = _es()
+    es.indices.get_mapping.side_effect = _nf()
+    assert await reindex._source_excludes_embeddings(es, "missing") is False
+
+
+# ---------------------------------------------------------------------------
+# _start_reindex — vector-drop guard
+# ---------------------------------------------------------------------------
+
+async def test_start_reindex_refuses_when_source_excludes_embeddings(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=PENDING)
+    monkeypatch.setattr(reindex, "_source_excludes_embeddings", AsyncMock(return_value=True))
+
+    assert await reindex._start_reindex(es, st, "s") == FAILED
+    es.reindex.assert_not_awaited()
+
+
+async def test_start_reindex_proceeds_when_source_does_not_exclude_embeddings(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=PENDING)
+    monkeypatch.setattr(reindex, "_source_excludes_embeddings", AsyncMock(return_value=False))
+    es.reindex.return_value = {"task": "node1:99"}
+
+    assert await reindex._start_reindex(es, st, "s") == REINDEXING
+    es.reindex.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _task_running
+# ---------------------------------------------------------------------------
+
+async def test_task_running_true_when_not_completed():
+    es = _es()
+    es.tasks.get.return_value = {"completed": False}
+    assert await reindex._task_running(es, "t1") is True
+
+
+async def test_task_running_false_when_completed():
+    es = _es()
+    es.tasks.get.return_value = {"completed": True}
+    assert await reindex._task_running(es, "t1") is False
+
+
+async def test_task_running_false_when_evicted():
+    es = _es()
+    es.tasks.get.side_effect = _nf()
+    assert await reindex._task_running(es, "t1") is False
+
+
+# ---------------------------------------------------------------------------
+# _find_running_reindex_to
+# ---------------------------------------------------------------------------
+
+async def test_find_running_reindex_to_matches_description():
+    es = _es()
+    es.tasks.list.return_value = {
+        "nodes": {
+            "node1": {
+                "tasks": {
+                    "node1:111": {
+                        "description": "reindex from [posts-2026-w25] to [posts-2026-w25-abc1234]",
+                    },
+                    "node1:112": {  # a slice child — must be ignored
+                        "description": "reindex",
+                    },
+                }
+            }
+        }
+    }
+    found = await reindex._find_running_reindex_to(es, "posts-2026-w25-abc1234")
+    assert found == "node1:111"
+
+
+async def test_find_running_reindex_to_no_match():
+    es = _es()
+    es.tasks.list.return_value = {
+        "nodes": {
+            "node1": {
+                "tasks": {
+                    "node1:111": {
+                        "description": "reindex from [other] to [other-abc1234]",
+                    }
+                }
+            }
+        }
+    }
+    assert await reindex._find_running_reindex_to(es, "posts-2026-w25-abc1234") is None
+
+
+# ---------------------------------------------------------------------------
+# _ensure_reindex
+# ---------------------------------------------------------------------------
+
+async def test_ensure_reindex_reattaches_running_stored_task(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=FAILED, task_id="t1")
+    monkeypatch.setattr(reindex, "_task_running", AsyncMock(return_value=True))
+    start = AsyncMock()
+    monkeypatch.setattr(reindex, "_start_reindex", start)
+
+    assert await reindex._ensure_reindex(es, st, "s") == REINDEXING
+    start.assert_not_awaited()
+
+
+async def test_ensure_reindex_adopts_orphan(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=FAILED, task_id="dead")
+    monkeypatch.setattr(reindex, "_task_running", AsyncMock(return_value=False))
+    monkeypatch.setattr(reindex, "_find_running_reindex_to", AsyncMock(return_value="orphan99"))
+    start = AsyncMock()
+    monkeypatch.setattr(reindex, "_start_reindex", start)
+
+    assert await reindex._ensure_reindex(es, st, "s") == REINDEXING
+    assert st.indices["s"].task_id == "orphan99"
+    start.assert_not_awaited()
+
+
+async def test_ensure_reindex_dst_aliased_returns_done_without_delete(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=FAILED)
+    monkeypatch.setattr(reindex, "_task_running", AsyncMock(return_value=False))
+    monkeypatch.setattr(reindex, "_find_running_reindex_to", AsyncMock(return_value=None))
+    monkeypatch.setattr(reindex, "_index_exists", AsyncMock(return_value=True))
+    monkeypatch.setattr(reindex, "_get_aliases", AsyncMock(return_value={"posts": {}}))
+    start = AsyncMock()
+    monkeypatch.setattr(reindex, "_start_reindex", start)
+
+    assert await reindex._ensure_reindex(es, st, "s") == DONE
+    es.indices.delete.assert_not_awaited()
+    start.assert_not_awaited()
+
+
+async def test_ensure_reindex_complete_dst_skips_to_swap(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=FAILED)
+    monkeypatch.setattr(reindex, "_task_running", AsyncMock(return_value=False))
+    monkeypatch.setattr(reindex, "_find_running_reindex_to", AsyncMock(return_value=None))
+    monkeypatch.setattr(reindex, "_index_exists", AsyncMock(return_value=True))
+    monkeypatch.setattr(reindex, "_get_aliases", AsyncMock(return_value={}))
+    monkeypatch.setattr(reindex, "_doc_count", AsyncMock(side_effect=[100, 100]))  # src, dst
+    start = AsyncMock()
+    monkeypatch.setattr(reindex, "_start_reindex", start)
+
+    assert await reindex._ensure_reindex(es, st, "s") == SWAP_PENDING
+    es.indices.delete.assert_not_awaited()
+    start.assert_not_awaited()
+
+
+async def test_ensure_reindex_partial_dst_deletes_and_restarts(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=FAILED)
+    monkeypatch.setattr(reindex, "_task_running", AsyncMock(return_value=False))
+    monkeypatch.setattr(reindex, "_find_running_reindex_to", AsyncMock(return_value=None))
+    monkeypatch.setattr(reindex, "_index_exists", AsyncMock(return_value=True))
+    monkeypatch.setattr(reindex, "_get_aliases", AsyncMock(return_value={}))
+    monkeypatch.setattr(reindex, "_doc_count", AsyncMock(side_effect=[100, 30]))  # src, dst partial
+    start = AsyncMock(return_value=REINDEXING)
+    monkeypatch.setattr(reindex, "_start_reindex", start)
+
+    assert await reindex._ensure_reindex(es, st, "s") == REINDEXING
+    es.indices.delete.assert_awaited_once()
+    start.assert_awaited_once()
+
+
+async def test_ensure_reindex_missing_dst_starts_fresh(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=PENDING)
+    monkeypatch.setattr(reindex, "_task_running", AsyncMock(return_value=False))
+    monkeypatch.setattr(reindex, "_find_running_reindex_to", AsyncMock(return_value=None))
+    monkeypatch.setattr(reindex, "_index_exists", AsyncMock(return_value=False))
+    start = AsyncMock(return_value=REINDEXING)
+    monkeypatch.setattr(reindex, "_start_reindex", start)
+
+    assert await reindex._ensure_reindex(es, st, "s") == REINDEXING
+    es.indices.delete.assert_not_awaited()
+    start.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _poll_task
+# ---------------------------------------------------------------------------
+
+async def test_poll_task_reports_counts_and_completes(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=REINDEXING, task_id="t1")
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    # src count (pre-loop), then dst counts per iteration
+    monkeypatch.setattr(reindex, "_doc_count", AsyncMock(side_effect=[100, 50, 100]))
+    es.tasks.get.side_effect = [
+        {"completed": False, "task": {"status": {}}},
+        {
+            "completed": True,
+            "task": {"status": {}},
+            "response": {"created": 100, "version_conflicts": 0, "failures": [], "took": 5},
+        },
+    ]
+
+    assert await reindex._poll_task(es, st, "s") == SWAP_PENDING
+
+
+async def test_poll_task_failures_return_failed(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=REINDEXING, task_id="t1")
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(reindex, "_doc_count", AsyncMock(side_effect=[100, 100]))
+    es.tasks.get.side_effect = [
+        {
+            "completed": True,
+            "task": {"status": {}},
+            "response": {"created": 0, "version_conflicts": 5, "failures": [{"x": 1}], "took": 2},
+        },
+    ]
+
+    assert await reindex._poll_task(es, st, "s") == FAILED
+
+
+async def test_poll_task_eviction_complete_returns_swap(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=REINDEXING, task_id="t1")
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(reindex, "_doc_count", AsyncMock(side_effect=[100, 100]))  # src, dst on eviction
+    es.tasks.get.side_effect = _nf()
+
+    assert await reindex._poll_task(es, st, "s") == SWAP_PENDING
+
+
+async def test_poll_task_eviction_partial_returns_failed(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=REINDEXING, task_id="t1")
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(reindex, "_doc_count", AsyncMock(side_effect=[100, 30]))  # src, dst on eviction
+    es.tasks.get.side_effect = _nf()
+
+    assert await reindex._poll_task(es, st, "s") == FAILED
+
+
+# ---------------------------------------------------------------------------
+# _start_force_merge_task
+# ---------------------------------------------------------------------------
+
+async def test_start_force_merge_task_returns_task_id():
+    es = _es()
+    es.indices.forcemerge.return_value = {"task": "node1:42"}
+    result = await reindex._start_force_merge_task(es, "posts-2026-w25-abc1234")
+    assert result == "node1:42"
+    es.indices.forcemerge.assert_awaited_once_with(
+        index="posts-2026-w25-abc1234", max_num_segments=1, wait_for_completion=False
+    )
+
+
+async def test_start_force_merge_task_returns_none_on_error():
+    es = _es()
+    es.indices.forcemerge.side_effect = Exception("timeout")
+    result = await reindex._start_force_merge_task(es, "posts-2026-w25-abc1234")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _poll_all_force_merges
+# ---------------------------------------------------------------------------
+
+async def test_poll_all_force_merges_completes_all(monkeypatch):
+    es = _es()
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    es.tasks.get.side_effect = [
+        # First poll: idx-a running, idx-b done
+        {"completed": False, "task": {"running_time_in_nanos": 1_000_000_000}},
+        {"completed": True, "task": {"running_time_in_nanos": 2_000_000_000},
+         "response": {"_shards": {"failures": []}}},
+        # Second poll: idx-a done
+        {"completed": True, "task": {"running_time_in_nanos": 3_000_000_000},
+         "response": {"_shards": {"failures": []}}},
+    ]
+    await reindex._poll_all_force_merges(es, {"idx-a": "t1", "idx-b": "t2"})
+    assert es.tasks.get.await_count == 3
+
+
+async def test_poll_all_force_merges_eviction_proceeds(monkeypatch):
+    es = _es()
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    es.tasks.get.side_effect = _nf()
+    # Should complete without error even if task is evicted
+    await reindex._poll_all_force_merges(es, {"idx-a": "t1"})
+
+
+async def test_poll_all_force_merges_shard_failures_nonfatal(monkeypatch):
+    es = _es()
+    monkeypatch.setattr(reindex.asyncio, "sleep", AsyncMock())
+    es.tasks.get.return_value = {
+        "completed": True,
+        "task": {"running_time_in_nanos": 1_000_000_000},
+        "response": {"_shards": {"failures": [{"shard": 0, "reason": "disk full"}]}},
+    }
+    # Should not raise even with shard failures
+    await reindex._poll_all_force_merges(es, {"idx-a": "t1"})
+
+
+# ---------------------------------------------------------------------------
+# _process_index — no force_merge parameter (FM handled at caller level)
+# ---------------------------------------------------------------------------
+
+async def test_process_index_completes_reindex_and_swap(monkeypatch):
+    es = _es()
+    st = _state("s", "d", status=SWAP_PENDING)
+    monkeypatch.setattr(reindex, "_ensure_reindex", AsyncMock(return_value=SWAP_PENDING))
+    swap = AsyncMock(return_value=DONE)
+    monkeypatch.setattr(reindex, "_do_swap", swap)
+
+    await reindex._process_index(es, st, "s", "abc1234", dry_run=False)
+    swap.assert_awaited_once()
+    assert st.indices["s"].status == DONE
+
+
+# ---------------------------------------------------------------------------
+# _confirm_include_active
+# ---------------------------------------------------------------------------
+
+def test_confirm_include_active_yes(monkeypatch):
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", lambda _: "y")
+    assert _confirm_include_active("posts-2026-w26", "posts") is True
+
+
+def test_confirm_include_active_no(monkeypatch):
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", lambda _: "n")
+    assert _confirm_include_active("posts-2026-w26", "posts") is False
+
+
+def test_confirm_include_active_empty_defaults_no(monkeypatch):
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", lambda _: "")
+    assert _confirm_include_active("posts-2026-w26", "posts") is False
+
+
+def test_confirm_include_active_eof_returns_false(monkeypatch):
+    def _raise(_):
+        raise EOFError
+    monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__), "input", _raise)
+    assert _confirm_include_active("posts-2026-w26", "posts") is False
+
+
+# ---------------------------------------------------------------------------
+# RunState — explicit_indices field
+# ---------------------------------------------------------------------------
+
+def test_runstate_create_stores_explicit_indices():
+    st = RunState.create("abc1234", [], explicit_indices=["posts-2026-w25", "replies-2026-w25"])
+    assert sorted(st.explicit_indices) == ["posts-2026-w25", "replies-2026-w25"]
+    assert st.types == []
+
+
+def test_runstate_create_without_explicit_indices():
+    st = RunState.create("abc1234", ["posts", "replies"])
+    assert st.explicit_indices == []
+
+
+# ---------------------------------------------------------------------------
+# _compute_dst
+# ---------------------------------------------------------------------------
+
+def test_compute_dst_plain_index():
+    assert reindex._compute_dst("posts-2026-w18", "803b0a1") == "posts-2026-w18-803b0a1"
+
+
+def test_compute_dst_already_has_old_hash():
+    """An index migrated to a previous SHA gets its old suffix replaced."""
+    assert reindex._compute_dst("posts-2026-w18-35592b1", "803b0a1") == "posts-2026-w18-803b0a1"
+
+
+def test_compute_dst_already_at_current_hash():
+    """An index already at the current SHA is idempotent (replaces with same suffix)."""
+    assert reindex._compute_dst("posts-2026-w18-803b0a1", "803b0a1") == "posts-2026-w18-803b0a1"
+
+
+# ---------------------------------------------------------------------------
+# _classify_for_migration — already-migrated detection
+# ---------------------------------------------------------------------------
+
+def test_classify_skips_index_at_current_commit():
+    """Index already at target SHA is skipped."""
+    skipped = reindex._classify_for_migration("posts-2026-w18-803b0a1", None, None, "803b0a1")
+    assert skipped is True
+
+
+def test_classify_does_not_skip_index_at_old_commit():
+    """Index migrated to a different (old) SHA must be re-migrated."""
+    skipped = reindex._classify_for_migration("posts-2026-w18-35592b1", None, None, "803b0a1")
+    assert skipped is False
+
+
+def test_classify_old_sha_sets_correct_dst():
+    """Dst for an old-SHA index strips the old hash rather than appending."""
+    st = RunState.create("803b0a1", ["posts"])
+    st.save = lambda: None
+    reindex._classify_for_migration("posts-2026-w18-35592b1", None, st, "803b0a1")
+    assert st.indices["posts-2026-w18-35592b1"].dst == "posts-2026-w18-803b0a1"
+
+
+def test_classify_plain_index_pending_with_correct_dst():
+    """Plain (never-migrated) index is registered as PENDING with correct dst."""
+    st = RunState.create("803b0a1", ["posts"])
+    st.save = lambda: None
+    skipped = reindex._classify_for_migration("posts-2026-w18", None, st, "803b0a1")
+    assert skipped is False
+    assert st.indices["posts-2026-w18"].dst == "posts-2026-w18-803b0a1"
