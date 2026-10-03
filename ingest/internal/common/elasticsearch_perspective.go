@@ -130,6 +130,7 @@ func BulkUpdatePerspectiveScores(ctx context.Context, client *elasticsearch.Clie
 	)
 	logger.Metric("es.update_perspective_scores.duration_ms", float64(time.Since(start).Milliseconds()))
 	if err != nil {
+		logger.Metric("es.update_perspective_scores.error_count", 1)
 		return 0, fmt.Errorf("bulk update request failed: %w", err)
 	}
 	defer func() {
@@ -139,6 +140,7 @@ func BulkUpdatePerspectiveScores(ctx context.Context, client *elasticsearch.Clie
 	}()
 
 	if res.IsError() {
+		logger.Metric("es.update_perspective_scores.error_count", 1)
 		return 0, fmt.Errorf("bulk update request returned error: %s", res.String())
 	}
 
@@ -182,6 +184,7 @@ func BulkUpdatePerspectiveScores(ctx context.Context, client *elasticsearch.Clie
 
 	if firstError != "" {
 		logger.Error("Some perspective updates failed (first error: %s)", firstError)
+		logger.Metric("es.update_perspective_scores.error_count", 1)
 	}
 
 	// Routine one at a time, a symptom in bulk: a whole batch coming back

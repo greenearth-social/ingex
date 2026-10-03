@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -200,4 +201,56 @@ func TestOTelMetricCollector_MultipleMetrics(t *testing.T) {
 	requireMetric(t, rm, "a.duration_ms")
 	requireMetric(t, rm, "b.hit_rate")
 	requireMetric(t, rm, "c.other")
+}
+
+func TestOTelMetricCollector_ServiceAttribute(t *testing.T) {
+	reader := metric.NewManualReader()
+	collector := newOTelMetricCollectorWithReader(reader, "my-test-service", "local")
+
+	collector.Record("test.error_count", 1.0)
+
+	rm := collectMetrics(t, reader)
+	m := requireMetric(t, rm, "test.error_count")
+	sum, ok := m.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("Expected Sum for _count metric, got %T", m.Data)
+	}
+	if len(sum.DataPoints) != 1 {
+		t.Fatalf("Expected 1 data point, got %d", len(sum.DataPoints))
+	}
+
+	dp := sum.DataPoints[0]
+	serviceAttr, found := dp.Attributes.Value(attribute.Key("service"))
+	if !found {
+		t.Fatal("Expected 'service' attribute on data point, but not found")
+	}
+	if serviceAttr.AsString() != "my-test-service" {
+		t.Errorf("Expected service attribute 'my-test-service', got %q", serviceAttr.AsString())
+	}
+}
+
+func TestOTelMetricCollector_ServiceAttributeOnHistogram(t *testing.T) {
+	reader := metric.NewManualReader()
+	collector := newOTelMetricCollectorWithReader(reader, "hist-service", "local")
+
+	collector.Record("es.bulk_index.duration_ms", 150.0)
+
+	rm := collectMetrics(t, reader)
+	m := requireMetric(t, rm, "es.bulk_index.duration_ms")
+	hist, ok := m.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("Expected Histogram, got %T", m.Data)
+	}
+	if len(hist.DataPoints) != 1 {
+		t.Fatalf("Expected 1 data point, got %d", len(hist.DataPoints))
+	}
+
+	dp := hist.DataPoints[0]
+	serviceAttr, found := dp.Attributes.Value(attribute.Key("service"))
+	if !found {
+		t.Fatal("Expected 'service' attribute on data point, but not found")
+	}
+	if serviceAttr.AsString() != "hist-service" {
+		t.Errorf("Expected service attribute 'hist-service', got %q", serviceAttr.AsString())
+	}
 }

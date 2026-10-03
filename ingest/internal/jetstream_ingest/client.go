@@ -146,6 +146,7 @@ func (c *Client) readLoop(ctx context.Context) {
 			c.mu.Unlock()
 			if shouldReconnect {
 				c.logger.Info("Reconnecting in 5 seconds...")
+				c.logger.Metric("jetstream.ws_reconnect_count", 1)
 				select {
 				case <-time.After(5 * time.Second):
 				case <-ctx.Done():
@@ -159,6 +160,7 @@ func (c *Client) readLoop(ctx context.Context) {
 		case c.msgChan <- string(message):
 		case <-time.After(5 * time.Second):
 			c.logger.Error("Message channel full for 5 seconds, dropping message")
+			c.logger.Metric("jetstream.dropped_messages_count", 1)
 		case <-ctx.Done():
 			return
 		}
