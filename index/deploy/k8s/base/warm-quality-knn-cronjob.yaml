@@ -3,11 +3,10 @@ kind: CronJob
 metadata:
   name: warm-quality-knn
 spec:
-  # Keeps the MiniLM HNSW files of posts_recent_quality in the page cache.
-  # Ingest churn evicts them within ~5 min; a cold kNN walk then takes 10-28 s
-  # and the api's LLM candidate generator times out at 4 s (api#541). The field
-  # gets ~30 real queries a day, so this sweep is the traffic that keeps it warm.
-  # Measured on prod 2026-10-16: 40 s of ES time from cold, 7 s once warm.
+  # Keeps the MiniLM HNSW files of posts_recent_quality in the page cache. Ingest
+  # churn evicts them within ~5 min, a cold kNN walk then takes 10-28 s and the
+  # api's LLM candidate generator times out at 4 s (api#541). The field only gets
+  # ~30 real queries a day, so this sweep is the traffic that keeps it warm.
   schedule: "*/2 * * * *"
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 60
@@ -15,8 +14,7 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      # A run takes 10-20 s (about 2 min from fully cold); this is only the cap.
-      activeDeadlineSeconds: 540
+      activeDeadlineSeconds: 540  # a run takes 10-20 s, ~2 min from fully cold
       backoffLimit: 0
       template:
         spec:
@@ -25,12 +23,8 @@ spec:
           - name: warm
             image: python:3.12-alpine
             resources:
-              requests:
-                cpu: 50m
-                memory: 64Mi
-              limits:
-                cpu: 500m
-                memory: 256Mi
+              requests: {cpu: 50m, memory: 64Mi}
+              limits: {cpu: 500m, memory: 256Mi}
             env:
             - name: ES_SERVICE_PASSWORD
               valueFrom:
@@ -39,7 +33,7 @@ spec:
                   key: password
             - name: WARM_ALIAS
               value: posts_recent_quality
-            - name: WARM_FIELDS
+            - name: WARM_FIELD
               value: embeddings.all_MiniLM_L12_v2
             # Query vectors per run (random recent posts); 60 covered a 1M-doc shard.
             - name: WARM_VECTORS
@@ -49,77 +43,50 @@ spec:
             # ES pins a preference string to one shard copy; four strings reach both.
             - name: WARM_PREFERENCES
               value: "warm-0,warm-1,warm-2,warm-3"
-            # Same freshness filter as the generator.
-            - name: WARM_MAX_AGE_HOURS
+            - name: WARM_MAX_AGE_HOURS  # same freshness filter as the generator
               value: "168"
             command:
             - python3
             - -c
             - |
-              import json, os, ssl, statistics, sys, time, urllib.request, base64
+              import base64, json, os, ssl, statistics, sys, time, urllib.request
 
-              ES = "https://greenearth-es-http:9200"
-              AUTH = "Basic " + base64.b64encode(
-                  ("es-service-user:" + os.environ["ES_SERVICE_PASSWORD"]).encode()
-              ).decode()
-              alias = os.environ["WARM_ALIAS"]
-              fields = [f for f in os.environ["WARM_FIELDS"].split(",") if f]
-              n_vectors = int(os.environ["WARM_VECTORS"])
-              num_candidates = int(os.environ["WARM_NUM_CANDIDATES"])
-              preferences = [p for p in os.environ["WARM_PREFERENCES"].split(",") if p]
-              max_age = os.environ["WARM_MAX_AGE_HOURS"]
-              fresh = {"range": {"created_at": {"gte": f"now-{max_age}h"}}}
-
+              env = os.environ
+              alias, field = env["WARM_ALIAS"], env["WARM_FIELD"]
+              num_candidates = int(env["WARM_NUM_CANDIDATES"])
+              fresh = {"range": {"created_at": {"gte": f"now-{env['WARM_MAX_AGE_HOURS']}h"}}}
+              auth = "Basic " + base64.b64encode(f"es-service-user:{env['ES_SERVICE_PASSWORD']}".encode()).decode()
               ctx = ssl.create_default_context()
-              ctx.check_hostname = False
-              ctx.verify_mode = ssl.CERT_NONE
+              ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
 
-              def search(body, params="", timeout=180):
+              def search(body, params=""):
                   req = urllib.request.Request(
-                      f"{ES}/{alias}/_search{params}",
+                      f"https://greenearth-es-http:9200/{alias}/_search{params}",
                       data=json.dumps(body).encode(),
-                      headers={"Authorization": AUTH, "Content-Type": "application/json"},
+                      headers={"Authorization": auth, "Content-Type": "application/json"},
                   )
-                  with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
+                  with urllib.request.urlopen(req, context=ctx, timeout=180) as resp:
                       return json.load(resp)
 
               # New random sample each run so sweeps cover different regions.
-              sample = search({
-                  "size": n_vectors,
-                  "_source": False,
-                  "fields": fields,
+              hits = search({
+                  "size": int(env["WARM_VECTORS"]), "_source": False, "fields": [field],
                   "query": {"function_score": {
-                      "query": {"bool": {"filter": [fresh] + [{"exists": {"field": f}} for f in fields]}},
+                      "query": {"bool": {"filter": [fresh, {"exists": {"field": field}}]}},
                       "random_score": {"seed": int(time.time()), "field": "_seq_no"},
                   }},
-              })
-              hits = sample["hits"]["hits"]
+              })["hits"]["hits"]
               if not hits:
-                  print(f"{alias}: no documents with {fields} in the last {max_age} h, nothing to warm")
-                  sys.exit(0)
+                  sys.exit(f"{alias}: no {field} documents in the last {env['WARM_MAX_AGE_HOURS']} h")
 
-              started = time.monotonic()
-              tooks = []
-              for field in fields:
-                  for hit in hits:
-                      vector = hit["fields"][field]
-                      for pref in preferences:
-                          resp = search({
-                              "size": 1,
-                              "_source": False,
-                              "knn": {
-                                  "field": field,
-                                  "query_vector": vector,
-                                  "k": min(100, num_candidates),
-                                  "num_candidates": num_candidates,
-                                  "filter": {"bool": {"filter": [fresh]}},
-                              },
-                          }, params=f"?preference={pref}")
-                          tooks.append(resp["took"])
-
-              print(
-                  f"{alias}: warmed {fields} with {len(hits)} vectors x {len(preferences)} copies, "
-                  f"{len(tooks)} queries in {time.monotonic() - started:.0f} s wall; "
-                  f"took median {statistics.median(tooks):.0f} ms, max {max(tooks)} ms, "
-                  f"sum {sum(tooks) / 1000:.1f} s"
-              )
+              started, tooks = time.monotonic(), []
+              for hit in hits:
+                  for pref in env["WARM_PREFERENCES"].split(","):
+                      tooks.append(search({
+                          "size": 1, "_source": False,
+                          "knn": {"field": field, "query_vector": hit["fields"][field],
+                                  "k": min(100, num_candidates), "num_candidates": num_candidates,
+                                  "filter": fresh},
+                      }, params=f"?preference={pref}")["took"])
+              print(f"{alias}: {len(tooks)} kNN queries in {time.monotonic() - started:.0f} s wall; "
+                    f"took median {statistics.median(tooks):.0f} ms, max {max(tooks)} ms, sum {sum(tooks) / 1000:.1f} s")

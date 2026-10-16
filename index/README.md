@@ -434,25 +434,20 @@ The `inferences` index stores per-post inference data extracted from Megastream 
 
 ## Keep-Warm Job for Quality kNN
 
-`deploy/k8s/base/warm-quality-knn-cronjob.yaml` runs every 2 minutes and sweeps
-`posts_recent_quality` with ~60 MiniLM kNN queries (vectors of randomly sampled
-recent posts, every shard copy). Without it the HNSW graph and quantized vectors
-of the MiniLM field fall out of the OS page cache within ~5 minutes, and the
-api's LLM candidate generator, which only queries that field ~30 times a day,
-hits its 4 s budget on a cold walk (api#541). The two-tower field stays warm on
-its own because it is queried ~136k times a day.
-
-Knobs are env vars on the container: `WARM_FIELDS`, `WARM_VECTORS`,
-`WARM_NUM_CANDIDATES`, `WARM_PREFERENCES`, `WARM_MAX_AGE_HOURS`. Deploy with
-`--ctypes resource`. Check it:
+`deploy/k8s/base/warm-quality-knn-cronjob.yaml` sweeps `posts_recent_quality`
+every 2 minutes with ~60 MiniLM kNN queries (random recent posts, every shard
+copy). Without it the MiniLM HNSW files fall out of the page cache within
+~5 minutes and the api's LLM candidate generator, which queries that field only
+~30 times a day, hits its 4 s budget on a cold walk (api#541). The two-tower
+field stays warm on its own (~136k queries a day). Knobs are the `WARM_*` env
+vars on the container. Deploy with `--ctypes resource`; check with:
 
 ```bash
 kubectl get cronjob warm-quality-knn -n $GE_K8S_NAMESPACE
-kubectl logs -l job-name=$(kubectl get jobs -n $GE_K8S_NAMESPACE -o name | grep warm-quality-knn | tail -1 | cut -d/ -f2) -n $GE_K8S_NAMESPACE
+kubectl logs -n $GE_K8S_NAMESPACE -l job-name=$(kubectl get jobs -n $GE_K8S_NAMESPACE -o name | grep warm-quality-knn | tail -1 | cut -d/ -f2)
 ```
 
 A healthy run logs one line, e.g. `took median 25 ms, max 400 ms, sum 10.2 s`.
-The first run after a quiet period takes ~3 minutes; the next ones 10-20 s.
 
 ## Generating API Keys for Ingest Services
 
