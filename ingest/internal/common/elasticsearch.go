@@ -1593,7 +1593,7 @@ func BulkUpdateLikeCounts(ctx context.Context, client *elasticsearch.Client, ind
 // BulkUpdateLikeCountsWithResults is BulkUpdateLikeCounts, additionally
 // returning the post-update like count of every document that was updated.
 // The counts come from the `get._source` the bulk request already asks for
-// via "_source": true, so this costs no extra round trip.
+// (filtered to like_count), so this costs no extra round trip.
 func BulkUpdateLikeCountsWithResults(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) ([]LikeCountResult, error) {
 	if len(updates) == 0 {
 		return nil, nil
@@ -1649,7 +1649,9 @@ func BulkUpdateLikeCountsWithResults(ctx context.Context, client *elasticsearch.
 				},
 				"lang": "painless",
 			},
-			"_source": true, // Return the updated document
+			// Return only the new count. "_source": true would send back the
+			// whole post, embeddings included, for every update in the batch.
+			"_source": []string{"like_count"},
 		}
 
 		updateJSON, err := json.Marshal(updateBody)
