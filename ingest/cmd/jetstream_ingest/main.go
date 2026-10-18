@@ -413,6 +413,32 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			config.QualityLikeThreshold, config.QualityRetentionAge)
 	}
 
+	// Like counts on popular posts are summed and written periodically rather
+	// than on every like; see common.LikeCountCoalescer. nil writes every like.
+	var coalescer *common.LikeCountCoalescer
+	flusherDone := make(chan struct{})
+	if config.LikeCountFlushInterval > 0 {
+		coalescer = common.NewLikeCountCoalescer(config.LikeCountExactBelow, config.LikeCountCacheSize)
+		logger.Info("Like-count coalescing enabled (exact below %d likes, flush every %s, cache %d posts)",
+			config.LikeCountExactBelow, config.LikeCountFlushInterval, config.LikeCountCacheSize)
+		go func() {
+			defer close(flusherDone)
+			ticker := time.NewTicker(config.LikeCountFlushInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					flushLikeCounts(ctx, esClient, coalescer, qualityCfg, dryRun, logger)
+				}
+			}
+		}()
+	} else {
+		close(flusherDone)
+		logger.Info("Like-count coalescing disabled: every like is written immediately")
+	}
+
 	// Start worker pool for parallel Elasticsearch writes
 	const numWorkers = 10
 	workersDone := make(chan struct{})
@@ -420,7 +446,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		var wg sync.WaitGroup
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, qualityCfg, &wg)
+			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, qualityCfg, coalescer, &wg)
 		}
 		wg.Wait()
 		close(workersDone)
@@ -718,11 +744,73 @@ cleanup:
 	// Wait for all workers to complete
 	<-workersDone
 
+	// Write what's held rather than drop it. ctx is already cancelled here,
+	// so this gets its own short deadline; whatever doesn't make it is lost,
+	// which coalescing accepts (the cursor has already moved past those likes).
+	<-flusherDone
+	if coalescer != nil {
+		flushCtx, cancelFlush := context.WithTimeout(context.Background(), 10*time.Second)
+		flushLikeCounts(flushCtx, esClient, coalescer, qualityCfg, dryRun, logger)
+		cancelFlush()
+	}
+
 	logger.Info("Jetstream ingestion complete. Processed: %d, Deleted: %d, Skipped: %d", processedCount, deletedCount, skippedCount)
 }
 
+// writeLikeCounts applies like-count deltas to posts and replies — a subject
+// is one or the other, and the update 404s harmlessly in the index that lacks
+// it — then records the new counts and promotes posts that crossed the quality
+// threshold. Failures are logged, not returned: like counts and the quality
+// corpus are derived data, and must never stall like ingestion.
+func writeLikeCounts(ctx context.Context, esClient *elasticsearch.Client, updates []common.LikeCountUpdate, coalescer *common.LikeCountCoalescer, qualityCfg *common.QualityPromotionConfig, dryRun bool, logger *common.IngestLogger) {
+	if len(updates) == 0 {
+		return
+	}
+	logger.Metric("like_counts.written_count", float64(len(updates)))
+
+	var wg sync.WaitGroup
+	var replyResults []common.LikeCountResult
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var err error
+		if replyResults, err = common.BulkUpdateLikeCountsWithResults(ctx, esClient, "replies", updates, dryRun, logger); err != nil {
+			logger.Error("Failed to update like counts in replies: %v", err)
+		}
+	}()
+	postResults, err := common.BulkUpdateLikeCountsWithResults(ctx, esClient, "posts", updates, dryRun, logger)
+	if err != nil {
+		logger.Error("Failed to update like counts in posts: %v", err)
+	}
+	wg.Wait()
+
+	coalescer.Observe(postResults)
+	coalescer.Observe(replyResults)
+
+	if err == nil && qualityCfg != nil && len(postResults) > 0 {
+		if _, perr := common.PromoteQualityPosts(ctx, esClient, logger, *qualityCfg, postResults, dryRun); perr != nil {
+			logger.Error("Failed to promote posts to the quality corpus: %v", perr)
+		}
+	}
+}
+
+// flushLikeCounts writes every like-count delta the coalescer is holding.
+func flushLikeCounts(ctx context.Context, esClient *elasticsearch.Client, coalescer *common.LikeCountCoalescer, qualityCfg *common.QualityPromotionConfig, dryRun bool, logger *common.IngestLogger) {
+	updates := coalescer.Drain()
+	_, cached := coalescer.Stats()
+	logger.Metric("like_counts.flushed_count", float64(len(updates)))
+	logger.Metric("like_counts.cached_count", float64(cached))
+	// Chunked to the size of a worker batch (100 likes), so one flush can't
+	// build a request big enough to time out.
+	const chunk = 100
+	for start := 0; start < len(updates); start += chunk {
+		writeLikeCounts(ctx, esClient, updates[start:min(start+chunk, len(updates))], coalescer, qualityCfg, dryRun, logger)
+	}
+	logger.Info("Flushed held like counts for %d posts (%d counts cached)", len(updates), cached)
+}
+
 // esWorker processes batches of documents and writes them to Elasticsearch
-func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, qualityCfg *common.QualityPromotionConfig, wg *sync.WaitGroup) {
+func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, qualityCfg *common.QualityPromotionConfig, coalescer *common.LikeCountCoalescer, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	batchCounter := 0
@@ -767,11 +855,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 							}
 						}
 
-						var wg sync.WaitGroup
-						wg.Add(2)
-						go common.BulkIndexWorker(&wg, ctx, esClient, "posts", updates, dryRun, logger, common.BulkUpdateLikeCounts, "decrement like counts in")
-						go common.BulkIndexWorker(&wg, ctx, esClient, "replies", updates, dryRun, logger, common.BulkUpdateLikeCounts, "decrement like counts in")
-						wg.Wait()
+						writeLikeCounts(ctx, esClient, coalescer.Route(updates), coalescer, qualityCfg, dryRun, logger)
 					}
 				}
 			}
@@ -798,28 +882,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 					}
 				}
 
-				// The posts update runs inline rather than through
-				// BulkIndexWorker so its results are available: they carry each
-				// post's new like count, which is what identifies a threshold
-				// crossing without a second read.
-				var wg sync.WaitGroup
-				wg.Add(1)
-				go common.BulkIndexWorker(&wg, ctx, esClient, "replies", updates, dryRun, logger, common.BulkUpdateLikeCounts, "increment like counts in")
-
-				likeResults, err := common.BulkUpdateLikeCountsWithResults(ctx, esClient, "posts", updates, dryRun, logger)
-				if err != nil {
-					logger.Error("Worker %d: Failed to increment like counts in posts: %v", id, err)
-				}
-				wg.Wait()
-
-				// Promotion failures are logged, not fatal: the quality corpus is
-				// a derived view that the backfill script can rebuild, and a
-				// missed promotion must never stall like ingestion.
-				if err == nil && qualityCfg != nil && len(likeResults) > 0 {
-					if _, perr := common.PromoteQualityPosts(ctx, esClient, logger, *qualityCfg, likeResults, dryRun); perr != nil {
-						logger.Error("Worker %d: Failed to promote posts to the quality corpus: %v", id, perr)
-					}
-				}
+				writeLikeCounts(ctx, esClient, coalescer.Route(updates), coalescer, qualityCfg, dryRun, logger)
 			}
 		}
 

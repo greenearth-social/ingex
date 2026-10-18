@@ -389,6 +389,40 @@ func TestBulkUpdateLikeCountsWithResults_ParsesUpdatedCounts(t *testing.T) {
 	}
 }
 
+// Asking for the whole updated document would send back both embedding
+// vectors for every post in every batch; only the new count is read.
+func TestBulkUpdateLikeCountsWithResults_RequestsOnlyLikeCount(t *testing.T) {
+	var body string
+	client, srv := newMockESClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"took":1,"errors":false,"items":[]}`))
+	}))
+	defer srv.Close()
+
+	updates := []LikeCountUpdate{{SubjectURI: "at://did:plc:a/app.bsky.feed.post/1", Increment: 1}}
+	if _, err := BulkUpdateLikeCountsWithResults(t.Context(), client, "posts", updates, false, NewLogger(false)); err != nil {
+		t.Fatalf("BulkUpdateLikeCountsWithResults: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected one action and one body line, got %q", body)
+	}
+	var update struct {
+		Source json.RawMessage `json:"_source"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &update); err != nil {
+		t.Fatalf("update body isn't JSON: %v", err)
+	}
+	if string(update.Source) != `["like_count"]` {
+		t.Errorf(`expected "_source":["like_count"], got %s`, update.Source)
+	}
+}
+
 // The quality corpus is what two_tower candidates come back from, so if it
 // does not carry the perspective fields every two_tower candidate arrives at
 // the api uncached and is scored live — defeating the point of scoring at

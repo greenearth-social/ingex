@@ -26,6 +26,9 @@ Configuration is done through environment variables:
 
 - `GE_LOGGING_ENABLED` - Enable detailed logging (default: `true`)
 - `GE_JETSTREAM_STATE_FILE` - Path to state file for cursor tracking (default: `.jetstream_state.json`)
+- `GE_LIKE_COUNT_FLUSH_INTERVAL` - How often held like counts for popular posts are written (default: `10m`; `0` writes every like immediately)
+- `GE_LIKE_COUNT_EXACT_BELOW` - Posts with fewer likes than this are written on every like (default: `10`; keep at or above `GE_QUALITY_LIKE_THRESHOLD`)
+- `GE_LIKE_COUNT_CACHE_SIZE` - How many posts' like counts are remembered to make that decision (default: `200000`)
 
 ## Usage
 
@@ -63,6 +66,12 @@ The client automatically reconnects if the WebSocket connection is lost, with a 
 ### Batch Processing
 
 Likes are batched and indexed in groups of 100 to optimize Elasticsearch performance.
+
+### Like Count Coalescing
+
+Every like-count update re-indexes the whole post, including its embedding vectors, so writing each like as it arrives is the most expensive part of like ingestion. Posts with fewer than `GE_LIKE_COUNT_EXACT_BELOW` likes, or whose count the service hasn't seen yet, are still written on every like, which keeps small counts exact and quality-corpus promotion immediate. More popular posts have their likes summed in memory and written every `GE_LIKE_COUNT_FLUSH_INTERVAL`.
+
+Held counts are written on shutdown, but anything that doesn't finish within the shutdown window is lost: the cursor has already moved past those likes. Popular posts can therefore drift low by up to one interval's likes per restart, which is accepted.
 
 ### Graceful Shutdown
 
