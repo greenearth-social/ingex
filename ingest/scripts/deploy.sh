@@ -288,6 +288,13 @@ deploy_jetstream_service() {
         es_api_key_secret="elasticsearch-api-key-prod"
     fi
 
+    # GOMEMLIMIT makes the Go GC work harder as the heap nears the container
+    # limit instead of letting it grow until Cloud Run OOM-kills the instance.
+    # ~80% of the limit leaves headroom for non-heap memory (goroutine stacks,
+    # cgo, the runtime itself).
+    local memory_mib=2048
+    local gomemlimit_mib=$((memory_mib * 8 / 10))
+
     # Set max-rewind based on environment
     # Stage: 15 minutes (prevent disk overflow on restart)
     # Prod: 0 (unlimited rewind for data integrity)
@@ -425,11 +432,12 @@ deploy_megastream_service() {
         --set-env-vars="GE_INFERENCE_BASE_URL=$inference_base_url" \
         --set-env-vars="GE_PERSPECTIVE_QPS=$perspective_qps" \
         --set-env-vars="GE_PERSPECTIVE_ON_QUOTA=$perspective_on_quota" \
+        --set-env-vars="GOMEMLIMIT=${gomemlimit_mib}MiB" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest,GE_AWS_S3_ACCESS_KEY=$aws_access_key_secret:latest,GE_AWS_S3_SECRET_KEY=$aws_secret_key_secret:latest,GE_INFERENCE_API_KEY=$inference_api_key_secret:latest,GE_PERSPECTIVE_API_KEY=$perspective_api_key_secret:latest" \
         --labels="git-sha=$GIT_SHA" \
         --scaling="$GE_MEGASTREAM_INSTANCES" \
         --cpu=1 \
-        --memory=1Gi \
+        --memory="${memory_mib}Mi" \
         --timeout=3600 \
         --concurrency=1000 \
         --no-cpu-throttling \
