@@ -491,7 +491,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 						pendingFlush = nil
 						processedCount += flushCount
 						if flushLastMsg != nil && flushLastMsg.GetTimeUs() > 0 {
-							logger.Metric("freshness_sec", float64(common.CalculateFreshness(flushLastMsg.GetTimeUs())))
+							freshness := float64(common.CalculateFreshness(flushLastMsg.GetTimeUs()))
+							logger.Metric("freshness_sec", freshness)
+							logger.Metric("freshness_sec_gauge", freshness)
 						}
 						if processedCount%1000 == 0 {
 							if stateManager.CheckForNewerInstance(myStartTime) {
