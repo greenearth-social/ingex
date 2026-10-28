@@ -288,13 +288,6 @@ deploy_jetstream_service() {
         es_api_key_secret="elasticsearch-api-key-prod"
     fi
 
-    # GOMEMLIMIT makes the Go GC work harder as the heap nears the container
-    # limit instead of letting it grow until Cloud Run OOM-kills the instance.
-    # ~80% of the limit leaves headroom for non-heap memory (goroutine stacks,
-    # cgo, the runtime itself).
-    local memory_mib=2048
-    local gomemlimit_mib=$((memory_mib * 8 / 10))
-
     # Set max-rewind based on environment
     # Stage: 15 minutes (prevent disk overflow on restart)
     # Prod: 0 (unlimited rewind for data integrity)
@@ -397,6 +390,13 @@ deploy_megastream_service() {
     fi
     local perspective_qps="${GE_PERSPECTIVE_QPS:-$perspective_qps_default}"
     local perspective_on_quota="${GE_PERSPECTIVE_ON_QUOTA:-wait}"
+
+    # GOMEMLIMIT makes the Go GC work harder as the heap nears the container
+    # limit instead of letting it grow until Cloud Run OOM-kills the instance.
+    # ~80% of the limit leaves headroom for non-heap memory (goroutine stacks,
+    # cgo, the runtime itself).
+    local memory_mib=1024
+    local gomemlimit_mib=$((memory_mib * 8 / 10))
 
     # Set max-rewind based on environment
     # Stage: 15 minutes (prevent disk overflow on restart)
