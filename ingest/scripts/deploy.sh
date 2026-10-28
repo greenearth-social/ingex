@@ -370,7 +370,7 @@ deploy_megastream_service() {
     # from serving. GE_PERSPECTIVE_ON_QUOTA=wait throttles ingest to stay
     # inside that slice; set it to "skip" to index posts unscored instead, and
     # recover them later with cmd/backfill_perspective. Watch
-    # perspective.rate_limit.skipped.count to know when that is owed.
+    # perspective.rate_limit.skipped_count to know when that is owed.
     #
     # 141, not 150, because the limiter's bucket carries a batch-sized burst
     # (perspectiveBurst, 512) on top of the refill rate. A token bucket admits

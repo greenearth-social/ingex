@@ -4,7 +4,7 @@
 // that leaves: posts ingested before that shipped, and posts the ingest path
 // skipped or failed to score — which is the expected outcome whenever
 // GE_PERSPECTIVE_ON_QUOTA is "skip" and the shared quota is under pressure.
-// Watch perspective.rate_limit.skipped.count to know when a run is owed.
+// Watch perspective.rate_limit.skipped_count to know when a run is owed.
 //
 // Safe to re-run and safe to interrupt: it selects on the absence of
 // perspective_scored_at, and writes are partial updates keyed by at_uri.

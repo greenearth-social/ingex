@@ -172,7 +172,7 @@ func (c *Client) doOnce(ctx context.Context, body []byte) (map[string]float64, b
 		// Counted separately so a rise here reads as "the budget is set too
 		// high", not as flaky transport.
 		if resp.StatusCode == http.StatusTooManyRequests {
-			c.logger.Metric("perspective.score.rate_limited.count", 1)
+			c.logger.Metric("perspective.score.rate_limited_count", 1)
 			return nil, false, fmt.Errorf("perspective API returned status %d: %s", resp.StatusCode, string(respBody))
 		}
 		return nil, resp.StatusCode >= 500, fmt.Errorf("perspective API returned status %d: %s", resp.StatusCode, string(respBody))
