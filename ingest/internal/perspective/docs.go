@@ -69,10 +69,10 @@ func AttachPerspectiveScores(ctx context.Context, b *BatchScorer, docs []common.
 		}
 	}
 
-	b.logger.Metric("posts.perspective.scored.count", float64(scored))
-	b.logger.Metric("posts.perspective.unscorable.count", float64(unscorable))
-	b.logger.Metric("posts.perspective.skipped.count", float64(skipped))
-	b.logger.Metric("posts.perspective.failed.count", float64(failed))
+	b.logger.Metric("posts.perspective.scored_count", float64(scored))
+	b.logger.Metric("posts.perspective.unscorable_count", float64(unscorable))
+	b.logger.Metric("posts.perspective.skipped_count", float64(skipped))
+	b.logger.Metric("posts.perspective.failed_count", float64(failed))
 
 	return scored, unscorable, skipped, failed
 }
