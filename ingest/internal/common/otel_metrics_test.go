@@ -116,6 +116,27 @@ func TestOTelMetricCollector_GaugeForHitRateMetrics(t *testing.T) {
 	}
 }
 
+// The freshness histogram's buckets double in width past a few hours, so its
+// percentiles plateau at bucket midpoints during a long catch-up. The gauge
+// carries the exact latest lag alongside it.
+func TestOTelMetricCollector_GaugeForGaugeSuffix(t *testing.T) {
+	reader := metric.NewManualReader()
+	collector := newOTelMetricCollectorWithReader(reader, "test-service", "local")
+
+	collector.Record("freshness_sec_gauge", 200_000)
+	collector.Record("freshness_sec_gauge", 150_000)
+
+	rm := collectMetrics(t, reader)
+	m := requireMetric(t, rm, "freshness_sec_gauge")
+	g, ok := m.Data.(metricdata.Gauge[float64])
+	if !ok {
+		t.Fatalf("Expected gauge for _gauge metric, got %T", m.Data)
+	}
+	if got := g.DataPoints[0].Value; got != 150_000 {
+		t.Errorf("Expected latest value 150000, got %f", got)
+	}
+}
+
 func TestOTelMetricCollector_DefaultHistogram(t *testing.T) {
 	reader := metric.NewManualReader()
 	collector := newOTelMetricCollectorWithReader(reader, "test-service", "local")
