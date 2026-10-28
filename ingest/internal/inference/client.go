@@ -22,15 +22,16 @@ const postTowerPredictPath = "/models/post-tower/predict"
 // ClientConfig configures the inference service client
 type ClientConfig struct {
 	BaseURL        string        // e.g. https://inference-stage.greenearth.social; empty disables the client
-	APIKey         string //nolint:gosec // G117: struct field name, not a secret value; sent as the X-API-Key header
+	APIKey         string        //nolint:gosec // G117: struct field name, not a secret value; sent as the X-API-Key header
 	Timeout        time.Duration // per-request HTTP timeout
 	MaxRetries     int           // retries beyond the first attempt
 	RetryBaseDelay time.Duration // base delay for exponential backoff
+	MaxConnections int           // requests in flight at once; sizes the connection pool
 }
 
 // Client is an HTTP client for the inference service. Construct one per
-// process with NewClient and share it; the underlying http.Client pools
-// connections.
+// process with NewClient and share it; the underlying http.Client pools up to
+// MaxConnections connections, which should match the embedder's concurrency.
 type Client struct {
 	httpClient *http.Client
 	config     ClientConfig
@@ -43,7 +44,7 @@ func NewClient(config ClientConfig, logger *common.IngestLogger) *Client {
 		config.RetryBaseDelay = 200 * time.Millisecond
 	}
 	return &Client{
-		httpClient: &http.Client{Timeout: config.Timeout},
+		httpClient: common.NewHTTPClient(config.Timeout, config.MaxConnections),
 		config:     config,
 		logger:     logger,
 	}

@@ -29,10 +29,12 @@ type ClientConfig struct {
 	Timeout        time.Duration // per-request HTTP timeout
 	MaxRetries     int           // retries beyond the first attempt
 	RetryBaseDelay time.Duration // base delay for exponential backoff
+	MaxConnections int           // requests in flight at once; sizes the connection pool
 }
 
 // Client is an HTTP client for the Perspective API. Construct one per process
-// and share it; the underlying http.Client pools connections.
+// and share it; the underlying http.Client pools up to MaxConnections
+// connections, which should match the scorer's concurrency.
 type Client struct {
 	httpClient *http.Client
 	config     ClientConfig
@@ -48,7 +50,7 @@ func NewClient(config ClientConfig, logger *common.IngestLogger) *Client {
 		config.RetryBaseDelay = 200 * time.Millisecond
 	}
 	return &Client{
-		httpClient: &http.Client{Timeout: config.Timeout},
+		httpClient: common.NewHTTPClient(config.Timeout, config.MaxConnections),
 		config:     config,
 		logger:     logger,
 	}
