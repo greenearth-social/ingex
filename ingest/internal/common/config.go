@@ -74,6 +74,14 @@ type Config struct {
 	QualityLikeThreshold int           // GE_QUALITY_LIKE_THRESHOLD, default 10
 	QualityRetentionAge  time.Duration // GE_QUALITY_RETENTION_AGE, default 336h (14d)
 
+	// Like-count coalescing (jetstream_ingest). Posts under LikeCountExactBelow
+	// likes are written on every like; more popular posts have their deltas
+	// summed and written every LikeCountFlushInterval. 0 disables coalescing.
+	// Keep LikeCountExactBelow at or above QualityLikeThreshold so promotion
+	// into the quality corpus isn't delayed.
+	LikeCountFlushInterval time.Duration // GE_LIKE_COUNT_FLUSH_INTERVAL, default 10m
+	LikeCountExactBelow    int           // GE_LIKE_COUNT_EXACT_BELOW, default 10
+	LikeCountCacheSize     int           // GE_LIKE_COUNT_CACHE_SIZE, posts whose counts are remembered, default 200000
 
 	// Inference service configuration
 	InferenceBaseURL        string        // GE_INFERENCE_BASE_URL; empty disables post-tower embeddings
@@ -170,6 +178,9 @@ func LoadConfig() *Config {
 		QualityIndexEnabled:        getEnvBool("GE_QUALITY_INDEX_ENABLED", true),
 		QualityLikeThreshold:       getEnvInt("GE_QUALITY_LIKE_THRESHOLD", 10),
 		QualityRetentionAge:        getEnvDuration("GE_QUALITY_RETENTION_AGE", 14*24*time.Hour),
+		LikeCountFlushInterval:     getEnvDuration("GE_LIKE_COUNT_FLUSH_INTERVAL", 10*time.Minute),
+		LikeCountExactBelow:        getEnvInt("GE_LIKE_COUNT_EXACT_BELOW", 10),
+		LikeCountCacheSize:         getEnvInt("GE_LIKE_COUNT_CACHE_SIZE", 200000),
 		InferenceBaseURL:           getEnv("GE_INFERENCE_BASE_URL", ""),
 		InferenceAPIKey:            getEnv("GE_INFERENCE_API_KEY", ""),
 		InferenceTimeout:           getEnvDuration("GE_INFERENCE_TIMEOUT", 10*time.Second),
