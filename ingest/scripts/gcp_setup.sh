@@ -334,6 +334,29 @@ create_extract_storage() {
     # Grant service account objectAdmin permission
     gsutil iam ch serviceAccount:"ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com":objectAdmin gs://"$BUCKET_NAME"
     log_info "Granted objectAdmin to service account for bucket: $BUCKET_NAME"
+
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        # Turn on requester pays for prod extract bucket
+        if ! gcloud storage buckets update "gs://$BUCKET_NAME" \
+            --project="$GE_GCP_PROJECT_ID" \
+            --requester-pays; then
+            log_error "Failed to enable Requester Pays for bucket: $BUCKET_NAME"
+            return 1
+        fi
+
+        # Make the bucket publicly readable (given a billing project is specified).
+        # Note: if Public Access Prevention blocks this grant, this will fail without disabling it.
+        if ! gcloud storage buckets add-iam-policy-binding "gs://$BUCKET_NAME" \
+            --project="$GE_GCP_PROJECT_ID" \
+            --member=allUsers \
+            --role=roles/storage.objectViewer \
+            --condition=None; then
+            log_error "Failed to grant public read access to $BUCKET_NAME. Check IAM permissions and Public Access Prevention."
+            return 1
+        fi
+
+        log_info "Public read access configured for Requester Pays bucket: $BUCKET_NAME"
+    fi
 }
 
 create_blocklist_storage() {
