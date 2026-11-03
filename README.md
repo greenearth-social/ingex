@@ -2,6 +2,67 @@
 
 A data ingestion and indexing system for BlueSky content. This project provides real-time streaming or batch processing capabilities to capture, process, and search BlueSky posts and likes in an ElasticSearch backend.
 
+## Accessing the public dataset
+
+Researchers can list and download our Parquet exports from this Google Cloud Storage bucket:
+
+```text
+gs://greenearth-471522-ingex-extract-prod
+```
+
+The bucket is publicly readable and uses [Requester Pays](https://docs.cloud.google.com/storage/docs/requester-pays). You must authenticate and supply **your own billing project** when listing or downloading files. Your project pays for the associated request, data retrieval, and network charges; Green Earth pays to store the source dataset. No additional access grant from Green Earth is needed.
+
+### Available files and Perspective scores
+
+| Filename pattern | Contents |
+| --- | --- |
+| `bsky_posts_*.parquet` | Posts, including text, identifiers, embeddings, and Perspective scores when available |
+| `bsky_replies_*.parquet` | Replies, including text and parent/root post references |
+| `bsky_likes_*.parquet` | Like events, including the liker and the liked post's URI |
+| `bsky_hashtags_*.parquet` | Hourly hashtag counts |
+| `bsky_inferences_*.parquet` | Other model inference outputs as JSON, keyed by post URI |
+
+**For Perspective scores, use the posts files.** The fields are `perspective_scores` (per-attribute scores), `combined_perspective_score`, and `perspective_scored_at`. Scores are not available for every post; a missing score must not be treated as zero. The current pipeline does **not** score replies: reply files share the post schema and can contain the same columns, but those columns are unpopulated. Perspective scores are stored directly in posts files, separately from the inference exports.
+
+Historical files can have different schemas, and overlapping exports can repeat records. When combining posts or replies across files, deduplicate by `at_uri`. See the [Parquet field definitions](ingest/internal/common/parquet.go) for the current schema.
+
+### Prerequisites
+
+1. Install the [Google Cloud CLI](https://docs.cloud.google.com/sdk/docs/install-sdk).
+2. Have a Google Cloud project linked to an active billing account.
+3. Your Google account must have `serviceusage.services.use` on that billing project. The **Service Usage Consumer** role (`roles/serviceusage.serviceUsageConsumer`) provides this permission; your project's administrator can grant it if needed.
+
+### List and download files
+
+Run the following in a Bash or zsh terminal. Sign in with the account authorized to charge your billing project, and replace `your-billing-project-id` with that project's ID, not its billing account ID:
+
+```bash
+gcloud auth login
+RESEARCH_BILLING_PROJECT="your-billing-project-id"
+GE_DATA_DATE="20261103"
+```
+
+List post files by filename date, including their sizes. Change `GE_DATA_DATE` to the date you want in `YYYYMMDD` format, or change `bsky_posts` to another file family from the table above:
+
+```bash
+gcloud storage ls --long \
+  "gs://greenearth-471522-ingex-extract-prod/bsky_posts_${GE_DATA_DATE}_*.parquet" \
+  --billing-project="$RESEARCH_BILLING_PROJECT"
+```
+
+Choose a filename from the listing and replace the placeholder below to download that file. Start with selected files rather than downloading the entire bucket, which contains a large volume of data:
+
+```bash
+GE_DATA_FILE="replace-with-a-filename-from-the-list.parquet"
+mkdir -p ./ingex-data
+gcloud storage cp \
+  "gs://greenearth-471522-ingex-extract-prod/${GE_DATA_FILE}" \
+  ./ingex-data/ \
+  --billing-project="$RESEARCH_BILLING_PROJECT"
+```
+
+Include `--billing-project` on each listing or download command. A `UserProjectMissing` error means the request did not supply a billing project. If access is denied with a billing project supplied, check that billing is active and your signed-in account has `serviceusage.services.use` on that project. See Google's [Requester Pays access instructions](https://docs.cloud.google.com/storage/docs/using-requester-pays#access) for other clients.
+
 ## Contributing
 
 Interested in contributing? We'd love to have you! 
