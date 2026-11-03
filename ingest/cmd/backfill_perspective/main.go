@@ -72,10 +72,11 @@ func main() {
 
 	scorer := perspective.NewBatchScorer(
 		perspective.NewClient(perspective.ClientConfig{
-			Host:       config.PerspectiveHost,
-			APIKey:     config.PerspectiveAPIKey,
-			Timeout:    config.PerspectiveTimeout,
-			MaxRetries: config.PerspectiveRetryMax,
+			Host:           config.PerspectiveHost,
+			APIKey:         config.PerspectiveAPIKey,
+			Timeout:        config.PerspectiveTimeout,
+			MaxRetries:     config.PerspectiveRetryMax,
+			MaxConnections: config.PerspectiveMaxConcurrency,
 		}, logger),
 		config.PerspectiveQPS, config.PerspectiveMaxConcurrency, policy, logger,
 	)

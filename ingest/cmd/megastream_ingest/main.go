@@ -229,10 +229,11 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	var embedder *inference.BatchEmbedder
 	if !dryRun {
 		inferenceClient := inference.NewClient(inference.ClientConfig{
-			BaseURL:    config.InferenceBaseURL,
-			APIKey:     config.InferenceAPIKey,
-			Timeout:    config.InferenceTimeout,
-			MaxRetries: config.InferenceRetryMax,
+			BaseURL:        config.InferenceBaseURL,
+			APIKey:         config.InferenceAPIKey,
+			Timeout:        config.InferenceTimeout,
+			MaxRetries:     config.InferenceRetryMax,
+			MaxConnections: config.InferenceMaxConcurrency,
 		}, logger)
 		embedder = inference.NewBatchEmbedder(inferenceClient, config.InferenceChunkSize, config.InferenceMaxConcurrency, logger)
 		logger.Info("Post-tower embeddings enabled (inference service: %s)", config.InferenceBaseURL)
@@ -251,10 +252,11 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			return fmt.Errorf("GE_PERSPECTIVE_ON_QUOTA: %w", err)
 		}
 		perspectiveClient := perspective.NewClient(perspective.ClientConfig{
-			Host:       config.PerspectiveHost,
-			APIKey:     config.PerspectiveAPIKey,
-			Timeout:    config.PerspectiveTimeout,
-			MaxRetries: config.PerspectiveRetryMax,
+			Host:           config.PerspectiveHost,
+			APIKey:         config.PerspectiveAPIKey,
+			Timeout:        config.PerspectiveTimeout,
+			MaxRetries:     config.PerspectiveRetryMax,
+			MaxConnections: config.PerspectiveMaxConcurrency,
 		}, logger)
 		scorer = perspective.NewBatchScorer(perspectiveClient, config.PerspectiveQPS, config.PerspectiveMaxConcurrency, policy, logger)
 		logger.Info("Perspective scoring enabled (%d qps of the shared quota, on-quota policy: %s)", config.PerspectiveQPS, policy)
