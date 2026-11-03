@@ -144,6 +144,28 @@ create_service_account() {
         --member="serviceAccount:$SA_EMAIL" \
         --role="roles/storage.objectViewer"
 
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        # This project permission allows owner-billed access to Requester Pays
+        # buckets without supplying a billing project. Storage IAM is still required.
+        # https://cloud.google.com/storage/docs/requester-pays
+        if ! gcloud iam roles describe requesterPaysExempt --project="$GE_GCP_PROJECT_ID" > /dev/null 2>&1; then
+            gcloud iam roles create requesterPaysExempt \
+                --project="$GE_GCP_PROJECT_ID" \
+                --title="Requester Pays exemption" \
+                --description="Allow owner-billed access to Requester Pays buckets in this project" \
+                --permissions="resourcemanager.projects.createBillingAssignment" \
+                --stage=GA
+            log_info "Requester Pays exemption role created."
+        else
+            log_info "Requester Pays exemption role already exists."
+        fi
+
+        gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
+            --member="serviceAccount:$SA_EMAIL" \
+            --role="projects/$GE_GCP_PROJECT_ID/roles/requesterPaysExempt" \
+            --condition=None
+    fi
+
     # Permission to access secrets
     gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
         --member="serviceAccount:$SA_EMAIL" \
