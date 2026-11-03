@@ -39,24 +39,23 @@ Run the following in a Bash or zsh terminal. Sign in with the account authorized
 ```bash
 gcloud auth login
 RESEARCH_BILLING_PROJECT="your-billing-project-id"
-GE_DATA_DATE="20261103"
+GE_DATA_PATTERN="bsky_posts_20261103_*.parquet"
 ```
 
-List post files by filename date, including their sizes. Change `GE_DATA_DATE` to the date you want in `YYYYMMDD` format, or change `bsky_posts` to another file family from the table above:
+Set `GE_DATA_PATTERN` to select the files you need. The example selects posts by filename date (`YYYYMMDD`); use `bsky_posts_*.parquet` for all post files, or `bsky_replies_202611*.parquet` for reply files with November 2026 dates in their filenames. List the matching files and their sizes before downloading:
 
 ```bash
 gcloud storage ls --long \
-  "gs://greenearth-471522-ingex-extract-prod/bsky_posts_${GE_DATA_DATE}_*.parquet" \
+  "gs://greenearth-471522-ingex-extract-prod/${GE_DATA_PATTERN}" \
   --billing-project="$RESEARCH_BILLING_PROJECT"
 ```
 
-Choose a filename from the listing and replace the placeholder below to download that file. Start with selected files rather than downloading the entire bucket, which contains a large volume of data:
+Download all files matching the same pattern to a local directory. The dataset is large, so choose the file families and date ranges relevant to your research:
 
 ```bash
-GE_DATA_FILE="replace-with-a-filename-from-the-list.parquet"
 mkdir -p ./ingex-data
 gcloud storage cp \
-  "gs://greenearth-471522-ingex-extract-prod/${GE_DATA_FILE}" \
+  "gs://greenearth-471522-ingex-extract-prod/${GE_DATA_PATTERN}" \
   ./ingex-data/ \
   --billing-project="$RESEARCH_BILLING_PROJECT"
 ```
