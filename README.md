@@ -205,7 +205,7 @@ RESEARCH_BILLING_PROJECT="your-billing-project-id"
 GE_DATA_PATTERN="bsky_posts_20261103_*.parquet"
 ```
 
-Set `GE_DATA_PATTERN` to select the files you need. The example selects posts by filename date (`YYYYMMDD`); use `bsky_posts_*.parquet` for all post files, or `bsky_replies_202611*.parquet` for reply files with November 2026 dates in their filenames. List the matching files and their sizes before downloading:
+Set `GE_DATA_PATTERN` to select the files you need. The example selects posts by filename date (`YYYYMMDD`); `bsky_replies_202611*.parquet` would select reply files with November 2026 dates in their filenames. List the matching files and their sizes before downloading:
 
 ```bash
 gcloud storage ls --long \
