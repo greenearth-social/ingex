@@ -1,9 +1,16 @@
 package common
 
 import (
+	"context"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"cloud.google.com/go/storage"
+	"google.golang.org/api/option"
 )
 
 func TestStateManager_LoadState(t *testing.T) {
@@ -74,6 +81,138 @@ func TestStateManager_SaveAndLoad(t *testing.T) {
 
 	if cursor.LastTimeUs != timeUs {
 		t.Errorf("Expected cursor time %d after reload, got %d", timeUs, cursor.LastTimeUs)
+	}
+}
+
+func TestStateManager_ContextSaveAndLoad(t *testing.T) {
+	ctx := context.Background()
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	logger := NewLogger(false)
+	sm, err := NewStateManagerWithContext(ctx, stateFile, logger)
+	if err != nil {
+		t.Fatalf("NewStateManagerWithContext: %v", err)
+	}
+	if err := sm.UpdateCursorContext(ctx, 123); err != nil {
+		t.Fatalf("UpdateCursorContext: %v", err)
+	}
+	reloaded, err := NewStateManagerWithContext(ctx, stateFile, logger)
+	if err != nil {
+		t.Fatalf("reload state manager: %v", err)
+	}
+	if got := reloaded.GetCursor().LastTimeUs; got != 123 {
+		t.Fatalf("persisted cursor = %d, want 123", got)
+	}
+	if err := sm.UpdateCursorContext(ctx, 456); err != nil {
+		t.Fatalf("second UpdateCursorContext: %v", err)
+	}
+	if err := reloaded.LoadStateContext(ctx); err != nil {
+		t.Fatalf("LoadStateContext: %v", err)
+	}
+	if got := reloaded.GetCursor().LastTimeUs; got != 456 {
+		t.Fatalf("reloaded cursor = %d, want 456", got)
+	}
+	if err := sm.Close(); err != nil {
+		t.Fatalf("Close local state manager: %v", err)
+	}
+}
+
+func TestStateManager_CancelledContextDoesNotWriteCursor(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	logger := NewLogger(false)
+	sm, err := NewStateManager(stateFile, logger)
+	if err != nil {
+		t.Fatalf("NewStateManager: %v", err)
+	}
+	if err := sm.UpdateCursor(123); err != nil {
+		t.Fatalf("UpdateCursor: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sm.UpdateCursorContext(ctx, 456); !errors.Is(err, context.Canceled) {
+		t.Fatalf("UpdateCursorContext error = %v, want context.Canceled", err)
+	}
+	if got := sm.GetCursor().LastTimeUs; got != 123 {
+		t.Fatalf("cached cursor changed after cancellation: %d", got)
+	}
+	reloaded, err := NewStateManager(stateFile, logger)
+	if err != nil {
+		t.Fatalf("reload state manager: %v", err)
+	}
+	if got := reloaded.GetCursor().LastTimeUs; got != 123 {
+		t.Fatalf("persisted cursor changed after cancellation: %d", got)
+	}
+	if err := sm.LoadStateContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("LoadStateContext error = %v, want context.Canceled", err)
+	}
+	if _, err := NewStateManagerWithContext(ctx, stateFile, logger); !errors.Is(err, context.Canceled) {
+		t.Fatalf("NewStateManagerWithContext error = %v, want context.Canceled", err)
+	}
+}
+
+type stateContextTransport func(*http.Request) (*http.Response, error)
+
+func (f stateContextTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestStateManager_GCSOperationsCancelInFlight(t *testing.T) {
+	for _, operation := range []string{"load", "update"} {
+		t.Run(operation, func(t *testing.T) {
+			started := make(chan struct{}, 1)
+			client, err := storage.NewClient(context.Background(), option.WithHTTPClient(&http.Client{
+				Transport: stateContextTransport(func(req *http.Request) (*http.Response, error) {
+					select {
+					case started <- struct{}{}:
+					default:
+					}
+					<-req.Context().Done()
+					return nil, req.Context().Err()
+				}),
+			}))
+			if err != nil {
+				t.Fatalf("storage.NewClient: %v", err)
+			}
+			sm := &StateManager{
+				gcsClient: client,
+				gcsBucket: "test-bucket",
+				gcsObject: "state.json",
+				useGCS:    true,
+				logger:    NewLogger(false),
+				cursor:    &CursorState{LastTimeUs: 123},
+			}
+			t.Cleanup(func() {
+				if err := sm.Close(); err != nil {
+					t.Errorf("Close: %v", err)
+				}
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				if operation == "load" {
+					done <- sm.LoadStateContext(ctx)
+				} else {
+					done <- sm.UpdateCursorContext(ctx, 456)
+				}
+			}()
+			select {
+			case <-started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("GCS operation did not start")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("GCS operation error = %v, want context.Canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("GCS operation did not stop after cancellation")
+			}
+			if got := sm.GetCursor().LastTimeUs; got != 123 {
+				t.Fatalf("cached cursor changed after failed GCS operation: %d", got)
+			}
+		})
 	}
 }
 

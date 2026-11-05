@@ -75,7 +75,13 @@ Held counts are written on shutdown, but anything that doesn't finish within the
 
 ### Graceful Shutdown
 
-The service responds to SIGINT and SIGTERM signals, completing the current batch before shutting down.
+The service responds to SIGINT and SIGTERM by stopping intake, allowing up to eight seconds to drain queued work and save the cursor, then releasing ownership.
+
+### Instance Coordination
+
+For GCS state paths, instances acquire a renewable lease at `<state path>.lease` before loading the cursor or starting ingestion. The lease lasts 60 seconds and is renewed every 20 seconds using GCS generation preconditions. Other instances remain healthy and check for ownership every five seconds. A failed renewal stops ingestion; a separate deadline stops work ten seconds before the confirmed expiry if renewal stalls. Local state paths use an OS file lock.
+
+The first deployment of this version requires a controlled cutover: stop all instances running the old timestamp-based coordination code before starting the lease version. Old instances do not honor the lease. Later deployments between lease-aware versions can hand off through the lease normally. This coordinates ownership; it does not make event processing exactly once.
 
 ### Use of the Jetstream cursor
 
@@ -92,7 +98,7 @@ guarantee that we don't miss any data.
 ## Building
 
 ```bash
-go build -o jetstream_ingest cmd/jetstream_ingest/main.go
+go build -o jetstream_ingest ./cmd/jetstream_ingest
 ```
 
 ## Example

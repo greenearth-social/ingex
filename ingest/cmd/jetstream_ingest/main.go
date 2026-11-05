@@ -105,26 +105,36 @@ func main() {
 	}()
 
 	logger.Info("Starting Jetstream likes ingestion")
-	runIngestion(ctx, config, logger, healthServer, *dryRun, *skipTLSVerify, *noRewind, *maxRewindMinutes)
+	if err := withIngestionLease(ctx, config.JetstreamStateFile, logger, healthServer, func(intakeCtx, workCtx context.Context) error {
+		return runIngestion(intakeCtx, workCtx, config, logger, healthServer, *dryRun, *skipTLSVerify, *noRewind, *maxRewindMinutes)
+	}); err != nil {
+		logger.Error("Jetstream ingestion failed: %v", err)
+		os.Exit(1)
+	}
 }
 
-// checkForNewerInstance checks if another instance has started after us
-// Returns true if a newer instance is detected
-func runIngestion(ctx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify, noRewind bool, maxRewindMinutes int) {
-	stateManager, err := common.NewStateManager(config.JetstreamStateFile, logger)
+func runIngestion(ctx, workCtx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify, noRewind bool, maxRewindMinutes int) error {
+	ctx, stopIntake := context.WithCancel(ctx)
+	workCtx, stopWork := context.WithCancel(workCtx)
+	var drainTimer *time.Timer
+	defer func() {
+		if drainTimer != nil {
+			drainTimer.Stop()
+		}
+		stopWork()
+	}()
+	var background sync.WaitGroup
+	defer func() {
+		stopIntake()
+		background.Wait()
+	}()
+	// Reload the cursor only after ownership has been acquired: the previous
+	// owner may have advanced it while this instance was waiting.
+	stateManager, err := common.NewStateManagerWithContext(ctx, config.JetstreamStateFile, logger)
 	if err != nil {
-		logger.Error("Failed to initialize state manager: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("initialize state manager: %w", err)
 	}
-
-	// Write instance coordination file with current timestamp
-	// This allows other instances to detect when a new instance has started
-	myStartTime := time.Now().UnixMicro()
-	if err := stateManager.WriteInstanceInfo(myStartTime); err != nil {
-		logger.Error("Failed to write instance info: %v", err)
-		os.Exit(1)
-	}
-	logger.Info("Wrote instance coordination file with start time: %d", myStartTime)
+	defer func() { _ = stateManager.Close() }()
 
 	// Initialize Elasticsearch client
 	esConfig := common.ElasticsearchConfig{
@@ -133,10 +143,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		SkipTLSVerify: skipTLSVerify || config.ElasticsearchTLSSkipVerify,
 	}
 
-	esClient, err := common.NewElasticsearchClient(esConfig, logger)
+	esClient, err := common.NewElasticsearchClientWithContext(ctx, esConfig, logger)
 	if err != nil {
-		logger.Error("%v", err)
-		os.Exit(1)
+		return err
 	}
 
 	// Ensure period-based indices exist and are the write target for likes,
@@ -146,7 +155,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	// are detected promptly without waiting for the next batch flush.
 	if !dryRun {
 		ensureIndices := func() error {
-			indexCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			indexCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			for _, alias := range []string{"likes", "like_tombstones", "posts", "replies"} {
 				name := common.CurrentIndexName(alias, config.IndexPeriod)
@@ -168,7 +177,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				select {
 				case <-time.After(backoff):
 				case <-ctx.Done():
-					return
+					return ctx.Err()
 				}
 				if backoff < 60*time.Second {
 					backoff *= 2
@@ -176,7 +185,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			}
 		}
 
+		background.Add(1)
 		go func() {
+			defer background.Done()
 			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
 			for {
@@ -212,10 +223,21 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		} else {
 			followStore := common.NewFirestoreFollowStore(followFirestore, logger)
 			trackedUsers := jetstream_ingest.NewTrackedUsers(followStore, logger)
-			go trackedUsers.Run(ctx, time.Duration(config.FollowsTrackedRefreshSec)*time.Second)
+			background.Add(1)
+			go func() {
+				defer background.Done()
+				trackedUsers.Run(ctx, time.Duration(config.FollowsTrackedRefreshSec)*time.Second)
+			}()
 
 			followWriter = jetstream_ingest.NewFollowWriter(followStore, trackedUsers, logger, config.FollowsWriteBuffer)
-			go followWriter.Run(ctx)
+			go followWriter.Run(workCtx)
+			defer func() {
+				followWriter.Close()
+				<-followWriter.Done()
+				if err := followFirestore.Close(); err != nil {
+					logger.Error("Failed to close Firestore client: %v", err)
+				}
+			}()
 			logger.Info("Follow-delta writer started (database=%s)", config.FirestoreDatabase)
 		}
 	}
@@ -242,7 +264,9 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 			var historyMu sync.Mutex
 			blocklistHistory := make(map[string][]BlockWindow)
 
+			background.Add(1)
 			go func() {
+				defer background.Done()
 				defer func() {
 					if cerr := gcsClient.Close(); cerr != nil {
 						logger.Error("Failed to close GCS client: %v", cerr)
@@ -326,8 +350,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	}
 
 	if err := client.Start(ctx); err != nil {
-		logger.Error("Failed to start Jetstream client: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("start Jetstream client: %w", err)
 	}
 	defer func() {
 		if err := client.Close(); err != nil {
@@ -353,29 +376,21 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	var pendingSkipCount int
 
 	// Start throttled state writer (writes at most once every 10 seconds)
+	cursorWriterDone := make(chan struct{})
 	if !dryRun {
 		go func() {
+			defer close(cursorWriterDone)
 			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
 
 			for {
 				select {
 				case <-ctx.Done():
-					// Flush any pending update before exiting
-					cursorMu.Lock()
-					if hasPendingUpdate {
-						if err := stateManager.UpdateCursor(pendingCursor); err != nil {
-							logger.Error("Failed to flush final cursor update: %v", err)
-							logger.Metric("jetstream.state_update_error_count", 1)
-						}
-						client.UpdateCursor(pendingCursor)
-					}
-					cursorMu.Unlock()
 					return
 				case <-ticker.C:
 					cursorMu.Lock()
 					if hasPendingUpdate {
-						if err := stateManager.UpdateCursor(pendingCursor); err != nil {
+						if err := stateManager.UpdateCursorContext(ctx, pendingCursor); err != nil {
 							logger.Error("Failed to update cursor: %v", err)
 							logger.Metric("jetstream.state_update_error_count", 1)
 						} else {
@@ -397,6 +412,8 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 				}
 			}
 		}()
+	} else {
+		close(cursorWriterDone)
 	}
 
 	// Posts join the lean two-tower corpus the moment a like pushes them over
@@ -446,7 +463,7 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 		var wg sync.WaitGroup
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go esWorker(ctx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, qualityCfg, coalescer, &wg)
+			go esWorker(workCtx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, qualityCfg, coalescer, &wg)
 		}
 		wg.Wait()
 		close(workersDone)
@@ -626,14 +643,6 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 					select {
 					case batchChan <- job:
 						processedCount += len(batch)
-
-						// Check if a newer instance has started (every 10 batches to avoid excessive GCS reads)
-						if processedCount%1000 == 0 {
-							if stateManager.CheckForNewerInstance(myStartTime) {
-								logger.Info("Newer instance detected, exiting")
-								goto cleanup
-							}
-						}
 					case <-ctx.Done():
 						goto cleanup
 					}
@@ -646,21 +655,11 @@ func runIngestion(ctx context.Context, config *common.Config, logger *common.Ing
 	}
 
 cleanup:
-	// Let queued follow deltas land before the Firestore client closes.
+	stopIntake()
+	drainTimer = time.AfterFunc(ingestionLeaseTiming.drain, stopWork)
+	// Stop accepting follow deltas; the deferred cleanup joins the writer.
 	if followWriter != nil {
 		followWriter.Close()
-		select {
-		case <-followWriter.Done():
-		case <-time.After(5 * time.Second):
-			logger.Error("Timeout draining follow-delta writer")
-		}
-		logger.Info("Follow-delta writer stopped (written: %d, dropped: %d)",
-			followWriter.Written(), followWriter.Dropped())
-	}
-	if followFirestore != nil {
-		if err := followFirestore.Close(); err != nil {
-			logger.Error("Failed to close Firestore client: %v", err)
-		}
 	}
 
 	// Send final like batch to workers
@@ -678,8 +677,8 @@ cleanup:
 		select {
 		case batchChan <- job:
 			processedCount += len(batch)
-		case <-time.After(5 * time.Second):
-			logger.Error("Timeout sending final like batch to workers")
+		case <-workCtx.Done():
+			logger.Error("Stopped before final like batch could be queued")
 		}
 	}
 
@@ -694,7 +693,7 @@ cleanup:
 			}
 		}
 
-		likeDocs, err := common.BulkGetLikes(ctx, esClient, "likes", likeIDs, logger)
+		likeDocs, err := common.BulkGetLikes(workCtx, esClient, "likes", likeIDs, logger)
 		if err != nil {
 			logger.Error("Failed to fetch like documents for final deletion batch: %v", err)
 		}
@@ -733,8 +732,8 @@ cleanup:
 		select {
 		case batchChan <- job:
 			deletedCount += len(deleteBatch)
-		case <-time.After(5 * time.Second):
-			logger.Error("Timeout sending final delete batch to workers")
+		case <-workCtx.Done():
+			logger.Error("Stopped before final delete batch could be queued")
 		}
 	}
 
@@ -744,17 +743,23 @@ cleanup:
 	// Wait for all workers to complete
 	<-workersDone
 
-	// Write what's held rather than drop it. ctx is already cancelled here,
-	// so this gets its own short deadline; whatever doesn't make it is lost,
-	// which coalescing accepts (the cursor has already moved past those likes).
 	<-flusherDone
-	if coalescer != nil {
-		flushCtx, cancelFlush := context.WithTimeout(context.Background(), 10*time.Second)
-		flushLikeCounts(flushCtx, esClient, coalescer, qualityCfg, dryRun, logger)
-		cancelFlush()
+	if coalescer != nil && workCtx.Err() == nil {
+		flushLikeCounts(workCtx, esClient, coalescer, qualityCfg, dryRun, logger)
+	}
+
+	// Join the periodic writer and workers before saving the final cursor.
+	// A lost lease cancels workCtx, including checkpoint writes, immediately.
+	<-cursorWriterDone
+	if !dryRun && hasPendingUpdate && workCtx.Err() == nil {
+		if err := stateManager.UpdateCursorContext(workCtx, pendingCursor); err != nil {
+			logger.Error("Failed to flush final cursor update: %v", err)
+			logger.Metric("jetstream.state_update_error_count", 1)
+		}
 	}
 
 	logger.Info("Jetstream ingestion complete. Processed: %d, Deleted: %d, Skipped: %d", processedCount, deletedCount, skippedCount)
+	return nil
 }
 
 // writeLikeCounts applies like-count deltas to posts and replies — a subject
@@ -804,6 +809,9 @@ func flushLikeCounts(ctx context.Context, esClient *elasticsearch.Client, coales
 	// build a request big enough to time out.
 	const chunk = 100
 	for start := 0; start < len(updates); start += chunk {
+		if ctx.Err() != nil {
+			return
+		}
 		writeLikeCounts(ctx, esClient, updates[start:min(start+chunk, len(updates))], coalescer, qualityCfg, dryRun, logger)
 	}
 	logger.Info("Flushed held like counts for %d posts (%d counts cached)", len(updates), cached)
@@ -815,6 +823,9 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 
 	batchCounter := 0
 	for job := range batchChan {
+		if ctx.Err() != nil {
+			return
+		}
 		batchCounter++
 		// Calculate freshness once at start
 		freshnessSeconds := common.CalculateFreshness(job.timeUs)

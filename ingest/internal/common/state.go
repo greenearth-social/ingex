@@ -33,6 +33,15 @@ type StateManager struct {
 // NewStateManager creates a new state manager with the given state file path
 // Supports both local file paths and GCS paths (gs://bucket/path/to/file)
 func NewStateManager(stateFilePath string, logger *IngestLogger) (*StateManager, error) {
+	return NewStateManagerWithContext(context.Background(), stateFilePath, logger)
+}
+
+// NewStateManagerWithContext creates a state manager and loads its cursor using ctx.
+func NewStateManagerWithContext(ctx context.Context, stateFilePath string, logger *IngestLogger) (*StateManager, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	sm := &StateManager{
 		stateFilePath: stateFilePath,
 		logger:        logger,
@@ -51,7 +60,6 @@ func NewStateManager(stateFilePath string, logger *IngestLogger) (*StateManager,
 		sm.gcsObject = parts[1]
 
 		// Initialize GCS client
-		ctx := context.Background()
 		client, err := storage.NewClient(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create GCS client: %w", err)
@@ -62,7 +70,8 @@ func NewStateManager(stateFilePath string, logger *IngestLogger) (*StateManager,
 		logger.Info("Using local filesystem for state storage: %s", stateFilePath)
 	}
 
-	if err := sm.LoadState(); err != nil {
+	if err := sm.LoadStateContext(ctx); err != nil {
+		_ = sm.Close() // Preserve the error that prevented the state from loading.
 		return nil, err
 	}
 
@@ -78,17 +87,33 @@ func NewStateManager(stateFilePath string, logger *IngestLogger) (*StateManager,
 	return sm, nil
 }
 
+// Close releases the GCS client when the state manager is no longer in use.
+func (sm *StateManager) Close() error {
+	if sm.gcsClient != nil {
+		return sm.gcsClient.Close()
+	}
+	return nil
+}
+
 // LoadState loads the processing state from the state file
 func (sm *StateManager) LoadState() error {
+	return sm.LoadStateContext(context.Background())
+}
+
+// LoadStateContext loads the cursor while allowing GCS reads to be cancelled.
+func (sm *StateManager) LoadStateContext(ctx context.Context) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	var data []byte
 	var err error
 
 	if sm.useGCS {
 		// Load from GCS
-		ctx := context.Background()
 		reader, err := sm.gcsClient.Bucket(sm.gcsBucket).Object(sm.gcsObject).NewReader(ctx)
 		if err != nil {
 			if err == storage.ErrObjectNotExist {
@@ -143,22 +168,30 @@ func (sm *StateManager) GetCursor() *CursorState {
 
 // UpdateCursor updates the cursor state with a new timestamp
 func (sm *StateManager) UpdateCursor(timeUs int64) error {
+	return sm.UpdateCursorContext(context.Background(), timeUs)
+}
+
+// UpdateCursorContext persists a cursor using ctx, then updates the cached cursor.
+func (sm *StateManager) UpdateCursorContext(ctx context.Context, timeUs int64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	sm.cursor = &CursorState{
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	cursor := &CursorState{
 		LastTimeUs: timeUs,
 		UpdatedAt:  time.Now().UTC(),
 	}
 
-	data, err := json.MarshalIndent(sm.cursor, "", "  ")
+	data, err := json.MarshalIndent(cursor, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
 	if sm.useGCS {
 		// Write to GCS
-		ctx := context.Background()
 		writer := sm.gcsClient.Bucket(sm.gcsBucket).Object(sm.gcsObject).NewWriter(ctx)
 		if _, err := writer.Write(data); err != nil {
 			_ = writer.Close() // Best-effort close on error
@@ -169,11 +202,15 @@ func (sm *StateManager) UpdateCursor(timeUs int64) error {
 		}
 	} else {
 		// Write to local filesystem
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.WriteFile(sm.stateFilePath, data, 0600); err != nil {
 			return fmt.Errorf("failed to write state file: %w", err)
 		}
 	}
 
+	sm.cursor = cursor
 	return nil
 }
 
