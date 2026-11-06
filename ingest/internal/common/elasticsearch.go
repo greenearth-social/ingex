@@ -186,6 +186,8 @@ func NewElasticsearchClient(config ElasticsearchConfig, logger *IngestLogger) (*
 }
 
 // NewElasticsearchClientWithContext creates a client and checks its connection using ctx.
+// The startup request must honor cancellation too: ownership can be lost before
+// ingestion reaches its normal processing loop. Later requests supply their own contexts.
 func NewElasticsearchClientWithContext(ctx context.Context, config ElasticsearchConfig, logger *IngestLogger) (*elasticsearch.Client, error) {
 	opts := []elasticsearch.Option{
 		elasticsearch.WithAddresses(config.URL),

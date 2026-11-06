@@ -105,6 +105,8 @@ func main() {
 	}()
 
 	logger.Info("Starting Jetstream likes ingestion")
+	// Acquire ownership before invoking ingestion. A waiting instance serves
+	// health checks without opening a Jetstream subscription.
 	if err := withIngestionLease(ctx, config.JetstreamStateFile, logger, healthServer, func(intakeCtx, workCtx context.Context) error {
 		return runIngestion(intakeCtx, workCtx, config, logger, healthServer, *dryRun, *skipTLSVerify, *noRewind, *maxRewindMinutes)
 	}); err != nil {
@@ -113,16 +115,23 @@ func main() {
 	}
 }
 
+// runIngestion uses ctx to stop intake and workCtx to bound draining and writes.
+// It must finish its writers before returning: the caller releases ownership
+// afterward, allowing a successor to load the cursor and start processing.
 func runIngestion(ctx, workCtx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify, noRewind bool, maxRewindMinutes int) error {
 	ctx, stopIntake := context.WithCancel(ctx)
 	workCtx, stopWork := context.WithCancel(workCtx)
 	var drainTimer *time.Timer
+	// Defers run in reverse order. Register this first so the drain deadline
+	// remains active while later deferred writer cleanup is still running.
 	defer func() {
 		if drainTimer != nil {
 			drainTimer.Stop()
 		}
 		stopWork()
 	}()
+	// Cancellation signals these loops to stop; waiting ensures they have
+	// actually finished before this ownership session can return.
 	var background sync.WaitGroup
 	defer func() {
 		stopIntake()
@@ -386,6 +395,8 @@ func runIngestion(ctx, workCtx context.Context, config *common.Config, logger *c
 			for {
 				select {
 				case <-ctx.Done():
+					// Cleanup saves the final cursor after workers finish; they may
+					// still advance pendingCursor while draining queued batches.
 					return
 				case <-ticker.C:
 					cursorMu.Lock()
@@ -456,7 +467,8 @@ func runIngestion(ctx, workCtx context.Context, config *common.Config, logger *c
 		logger.Info("Like-count coalescing disabled: every like is written immediately")
 	}
 
-	// Start worker pool for parallel Elasticsearch writes
+	// Workers use workCtx so queued writes can finish after intake stops,
+	// but are canceled when ownership is lost or the drain deadline expires.
 	const numWorkers = 10
 	workersDone := make(chan struct{})
 	go func() {
@@ -656,6 +668,8 @@ func runIngestion(ctx, workCtx context.Context, config *common.Config, logger *c
 
 cleanup:
 	stopIntake()
+	// Also bound cleanup when the stream ends without a service shutdown.
+	// An earlier cancellation from the ownership controller still takes priority.
 	drainTimer = time.AfterFunc(ingestionLeaseTiming.drain, stopWork)
 	// Stop accepting follow deltas; the deferred cleanup joins the writer.
 	if followWriter != nil {
@@ -737,7 +751,8 @@ cleanup:
 		}
 	}
 
-	// Close batch channel to signal workers to finish
+	// Closing the channel lets workers drain buffered jobs, then finish.
+	// workCtx can still cancel the drain before all queued jobs are processed.
 	close(batchChan)
 
 	// Wait for all workers to complete
@@ -748,8 +763,9 @@ cleanup:
 		flushLikeCounts(workCtx, esClient, coalescer, qualityCfg, dryRun, logger)
 	}
 
-	// Join the periodic writer and workers before saving the final cursor.
-	// A lost lease cancels workCtx, including checkpoint writes, immediately.
+	// After workers and the periodic writer finish, pendingCursor is no longer
+	// changing. Only checkpoint while workCtx still permits writes; lease loss
+	// cancels it without granting a graceful drain period.
 	<-cursorWriterDone
 	if !dryRun && hasPendingUpdate && workCtx.Err() == nil {
 		if err := stateManager.UpdateCursorContext(workCtx, pendingCursor); err != nil {
@@ -823,6 +839,7 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 
 	batchCounter := 0
 	for job := range batchChan {
+		// Buffered jobs may remain after cancellation; do not start another write.
 		if ctx.Err() != nil {
 			return
 		}

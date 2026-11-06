@@ -156,6 +156,8 @@ func (f stateContextTransport) RoundTrip(req *http.Request) (*http.Response, err
 }
 
 func TestStateManager_GCSOperationsCancelInFlight(t *testing.T) {
+	// Hold the HTTP operation open until its own context is canceled. This checks
+	// propagation through the GCS client, rather than only the initial ctx.Err check.
 	for _, operation := range []string{"load", "update"} {
 		t.Run(operation, func(t *testing.T) {
 			started := make(chan struct{}, 1)

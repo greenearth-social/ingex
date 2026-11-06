@@ -18,6 +18,8 @@ import (
 	"github.com/greenearth/ingest/internal/common"
 )
 
+// ingestionMetricHook triggers cancellation at known processing steps instead
+// of relying on sleeps to race ingestion against shutdown.
 type ingestionMetricHook func(string)
 
 func (hook ingestionMetricHook) Record(name string, _ float64) { hook(name) }
@@ -46,6 +48,9 @@ func readTestCursor(t *testing.T, path string) int64 {
 	return state.LastTimeUs
 }
 
+// ingestionTestConfig runs real ingestion code against local WebSocket and
+// Elasticsearch servers. The saved cursor starts at 100 and the next event is
+// at 300; expectedCursor is the checkpoint ingestion must read before connecting.
 func ingestionTestConfig(t *testing.T, expectedCursor int64) (*common.Config, *common.IngestLogger, *common.HealthServer, *atomic.Int64) {
 	t.Helper()
 	statePath := filepath.Join(t.TempDir(), "jetstream_state.json")
@@ -149,6 +154,8 @@ func TestRunIngestionFinalCheckpoint(t *testing.T) {
 	}
 }
 
+// cursorHandoffLease lets the old owner's final checkpoint happen exactly when
+// acquisition succeeds, exposing any cursor read performed before ownership.
 type cursorHandoffLease struct {
 	acquire func()
 	expires time.Time

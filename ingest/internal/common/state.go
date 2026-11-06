@@ -18,7 +18,9 @@ type CursorState struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-// StateManager manages file processing state and cursor position
+// StateManager manages file processing state and cursor position.
+// Its mutex coordinates goroutines within this process; callers must coordinate
+// ownership separately when multiple processes share the same state file.
 type StateManager struct {
 	stateFilePath string
 	mu            sync.RWMutex
@@ -37,6 +39,8 @@ func NewStateManager(stateFilePath string, logger *IngestLogger) (*StateManager,
 }
 
 // NewStateManagerWithContext creates a state manager and loads its cursor using ctx.
+// Callers coordinating ingestion must acquire ownership before loading the cursor,
+// since the previous owner can advance it until handoff completes.
 func NewStateManagerWithContext(ctx context.Context, stateFilePath string, logger *IngestLogger) (*StateManager, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -210,6 +214,8 @@ func (sm *StateManager) UpdateCursorContext(ctx context.Context, timeUs int64) e
 		}
 	}
 
+	// Publish the cached cursor only after persistence succeeds, so a failed or
+	// canceled write cannot make memory appear further ahead than stored state.
 	sm.cursor = cursor
 	return nil
 }

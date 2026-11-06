@@ -15,6 +15,7 @@ import (
 // ErrLeaseLost means this instance can no longer use its acquired lease.
 var ErrLeaseLost = errors.New("ingestion lease lost")
 
+// leaseRecord is shared in GCS; Lease below keeps this process's confirmed state.
 type leaseRecord struct {
 	OwnerID   string    `json:"owner_id"`
 	ExpiresAt time.Time `json:"expires_at"`
@@ -22,6 +23,7 @@ type leaseRecord struct {
 
 // Lease coordinates one active ingester using GCS generation preconditions.
 // Calls must be serialized; the worker must stop before ExpiresAt if renewal fails.
+// ownerID identifies the process for inspection; generation preconditions decide ownership.
 type Lease struct {
 	object     *storage.ObjectHandle
 	ownerID    string
@@ -42,7 +44,9 @@ func NewLease(client *storage.Client, bucket, object, ownerID string) *Lease {
 // TryAcquire returns false when another instance owns the lease or wins the race
 // to acquire it. It never changes an unexpired lease held by another instance.
 func (l *Lease) TryAcquire(ctx context.Context, ttl time.Duration) (bool, error) {
+	// Creation and takeover both use a conditional write so only one contender wins.
 	conditions := storage.Conditions{DoesNotExist: true}
+	// NewReader supplies the body and generation from the same response.
 	reader, err := l.object.NewReader(ctx)
 	if err == nil {
 		var record leaseRecord
@@ -60,6 +64,8 @@ func (l *Lease) TryAcquire(ctx context.Context, ttl time.Duration) (bool, error)
 		return false, fmt.Errorf("read ingestion lease: %w", err)
 	}
 
+	// Count upload time against the lease lifetime rather than extending local
+	// permission beyond the expiration written to GCS.
 	expiresAt := l.now().Add(ttl)
 	generation, err := l.write(ctx, conditions, expiresAt)
 	if leasePreconditionFailed(err) {
@@ -68,8 +74,10 @@ func (l *Lease) TryAcquire(ctx context.Context, ttl time.Duration) (bool, error)
 	if err != nil {
 		return false, err
 	}
+	// Remember ownership only after GCS confirms the write.
 	l.generation = generation
 	l.expiresAt = expiresAt
+	// A delayed response can arrive after the permission it granted has expired.
 	if !l.now().Before(expiresAt) {
 		return false, ErrLeaseLost
 	}
@@ -91,6 +99,7 @@ func (l *Lease) Renew(ctx context.Context, ttl time.Duration) error {
 	if err != nil {
 		return err
 	}
+	// Keep the previous deadline unless GCS confirms the renewal write.
 	l.generation = generation
 	l.expiresAt = expiresAt
 	if !l.now().Before(expiresAt) {
@@ -105,6 +114,7 @@ func (l *Lease) Release(ctx context.Context) error {
 	if l.generation == 0 {
 		return ErrLeaseLost
 	}
+	// Expiring the record allows immediate takeover without deleting the object.
 	_, err := l.write(ctx, storage.Conditions{GenerationMatch: l.generation}, time.Time{})
 	if leasePreconditionFailed(err) {
 		l.generation = 0
@@ -137,6 +147,8 @@ func (l *Lease) write(ctx context.Context, conditions storage.Conditions, expire
 		_ = writer.Close()
 		return 0, fmt.Errorf("write ingestion lease: %w", err)
 	}
+	// Write can return before the upload finishes. Close confirms success and
+	// makes the new generation available.
 	if err := writer.Close(); err != nil {
 		return 0, fmt.Errorf("write ingestion lease: %w", err)
 	}

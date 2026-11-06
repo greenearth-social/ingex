@@ -10,6 +10,8 @@ import (
 )
 
 func TestNewElasticsearchClientWithContext_CancelsConnectionCheck(t *testing.T) {
+	// Cancel after the server receives the connection check, proving that startup
+	// can stop an in-flight request. release also unblocks cleanup if the test fails.
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {

@@ -53,6 +53,8 @@ func (s *leaseStorage) RoundTrip(r *http.Request) (*http.Response, error) {
 		reads := s.reads
 		s.mu.Unlock()
 		if reads != nil {
+			// Both requests capture their snapshot before either may attempt a write.
+			// This forces the race instead of relying on goroutine scheduling.
 			reads.Done()
 			reads.Wait()
 		}
@@ -207,6 +209,7 @@ func TestLeaseExpiresAndRejectsStaleOwner(t *testing.T) {
 	a := newTestLease(t, store, "a", clock)
 	b := newTestLease(t, store, "b", clock)
 	acquireLease(t, a)
+	// Simulate a crashed owner: its lease expires without an explicit release.
 	now = now.Add(time.Minute)
 	if err := a.Renew(context.Background(), time.Minute); !errors.Is(err, ErrLeaseLost) {
 		t.Fatalf("expired owner renewed: %v", err)
@@ -225,6 +228,7 @@ func TestLeaseRenewalRejectsChangedGeneration(t *testing.T) {
 	now := time.Now()
 	lease := newTestLease(t, store, "a", func() time.Time { return now })
 	acquireLease(t, lease)
+	// Simulate another writer replacing the object before this owner renews.
 	store.generation++
 	if err := lease.Renew(context.Background(), time.Minute); !errors.Is(err, ErrLeaseLost) {
 		t.Fatalf("renewal should reject changed generation: %v", err)
@@ -259,6 +263,7 @@ func TestLeaseExpirationIncludesUploadTime(t *testing.T) {
 	now := time.Now()
 	startedAt := now
 	lease := newTestLease(t, store, "a", func() time.Time { return now })
+	// Advance the fake clock during upload, without making the test sleep.
 	store.beforeWrite = func() { now = now.Add(10 * time.Second) }
 	acquireLease(t, lease)
 	if !lease.ExpiresAt().Equal(startedAt.Add(time.Minute)) {

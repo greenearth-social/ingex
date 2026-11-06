@@ -14,6 +14,8 @@ import (
 	"github.com/greenearth/ingest/internal/jetstream_ingest"
 )
 
+// Hooks let each test control ownership failures independently of storage.
+// The mutex protects expiry updates made by the renewal goroutine.
 type testIngestionLease struct {
 	mu      sync.Mutex
 	expires time.Time
@@ -120,6 +122,8 @@ func TestRunLeaseSessionShutdownDrainsBeforeRelease(t *testing.T) {
 	started := make(chan struct{})
 	intakeStopped := make(chan struct{})
 	renewedDuringDrain := make(chan struct{}, 1)
+	// Hold simulated writer cleanup open so the test can check renewal and
+	// confirm that ownership has not been released while cleanup is unfinished.
 	finishCleanup := make(chan struct{})
 	defer func() {
 		select {
@@ -182,6 +186,8 @@ func TestRunLeaseSessionShutdownDrainsBeforeRelease(t *testing.T) {
 }
 
 func TestRunWithLeaseRenewalFailureStopsWritersAndReturnsToWaiting(t *testing.T) {
+	// Explicit ownership loss and an uncertain storage failure both require
+	// writers to stop before the still-running process can wait for ownership again.
 	for _, renewErr := range []error{jetstream_ingest.ErrLeaseLost, errors.New("storage unavailable")} {
 		t.Run(renewErr.Error(), func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -244,6 +250,8 @@ func TestRunLeaseSessionBoundsGracefulDrain(t *testing.T) {
 	timing := testLeaseTiming()
 	timing.drain = 40 * time.Millisecond
 	started := make(chan struct{})
+	// Successful renewals keep ownership alive. Only the drain deadline should
+	// end the callback that deliberately waits for work cancellation below.
 	lease := &testIngestionLease{expires: time.Now().Add(time.Second)}
 	result := make(chan error, 1)
 	go func() {
@@ -302,6 +310,7 @@ func TestLocalLeaseContentionAndHandoff(t *testing.T) {
 		t.Cleanup(func() { _ = file.Close() })
 		return &localLease{file: file}
 	}
+	// Separate opens contend for the same OS lock, as separate local processes do.
 	first, second := openLease(), openLease()
 	ctx := context.Background()
 	if acquired, err := first.TryAcquire(ctx, time.Second); err != nil || !acquired {
