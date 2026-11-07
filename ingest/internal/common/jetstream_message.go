@@ -17,6 +17,7 @@ type JetstreamMessage interface {
 	IsFollow() bool
 	IsFollowDelete() bool
 	GetFollowSubjectDID() string
+	GetRKey() string
 }
 
 // jetstreamMessage is the implementation of JetstreamMessage
@@ -31,6 +32,7 @@ type jetstreamMessage struct {
 	isFollow         bool
 	isFollowDelete   bool
 	followSubjectDID string
+	rkey             string
 	parseError       error
 }
 
@@ -107,6 +109,7 @@ func (m *jetstreamMessage) parseRawEvent(rawJSON string, logger *IngestLogger) {
 	// extra bandwidth; the follow writer drops everything but our own users.
 	if event.Kind == "commit" && event.Commit.Collection == "app.bsky.graph.follow" {
 		m.uri = fmt.Sprintf("at://%s/%s/%s", event.Did, event.Commit.Collection, event.Commit.RKey)
+		m.rkey = event.Commit.RKey
 
 		switch event.Commit.Operation {
 		case "create":
@@ -120,9 +123,9 @@ func (m *jetstreamMessage) parseRawEvent(rawJSON string, logger *IngestLogger) {
 			m.isFollow = true
 			m.followSubjectDID = subjectDID
 		case "delete":
-			// Deletes carry only did, collection and rkey — there is no way
-			// to tell *who* was unfollowed without a record of the rkey. The
-			// API handles this by invalidating the user's entry instead.
+			// Deletes carry only did, collection and rkey. The API's cache
+			// keeps each follow's rkey, which is how it maps this back to the
+			// account that was unfollowed.
 			m.isFollowDelete = true
 		}
 	}
@@ -168,4 +171,9 @@ func (m *jetstreamMessage) IsFollowDelete() bool {
 
 func (m *jetstreamMessage) GetFollowSubjectDID() string {
 	return m.followSubjectDID
+}
+
+// GetRKey returns the record key of a follow create or delete event.
+func (m *jetstreamMessage) GetRKey() string {
+	return m.rkey
 }

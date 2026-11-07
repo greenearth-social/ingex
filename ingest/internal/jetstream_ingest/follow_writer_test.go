@@ -13,33 +13,33 @@ import (
 
 // fakeFollowStore records the writes the writer would make to Firestore.
 type fakeFollowStore struct {
-	mu          sync.Mutex
-	appends     [][2]string // {userDocID, subjectDID}
-	invalidated []string
-	appendErr   error
+	mu        sync.Mutex
+	appends   [][3]string // {userDocID, rkey, subjectDID}
+	removes   [][2]string // {userDocID, rkey}
+	appendErr error
 }
 
-func (f *fakeFollowStore) AppendPendingFollow(ctx context.Context, userDocID, subjectDID string) error {
+func (f *fakeFollowStore) AppendFollow(ctx context.Context, userDocID, rkey, subjectDID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.appendErr != nil {
 		return f.appendErr
 	}
-	f.appends = append(f.appends, [2]string{userDocID, subjectDID})
+	f.appends = append(f.appends, [3]string{userDocID, rkey, subjectDID})
 	return nil
 }
 
-func (f *fakeFollowStore) InvalidateFollows(ctx context.Context, userDocID string) error {
+func (f *fakeFollowStore) AppendUnfollow(ctx context.Context, userDocID, rkey string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.invalidated = append(f.invalidated, userDocID)
+	f.removes = append(f.removes, [2]string{userDocID, rkey})
 	return nil
 }
 
-func (f *fakeFollowStore) snapshot() ([][2]string, []string) {
+func (f *fakeFollowStore) snapshot() ([][3]string, [][2]string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([][2]string(nil), f.appends...), append([]string(nil), f.invalidated...)
+	return append([][3]string(nil), f.appends...), append([][2]string(nil), f.removes...)
 }
 
 type fakeUserLister struct {
@@ -120,8 +120,8 @@ func TestFollowWriter_AppendsFollowsForTrackedUsers(t *testing.T) {
 	drain(t, w)
 
 	appends, _ := store.snapshot()
-	if len(appends) != 1 || appends[0] != [2]string{"ours", "did:plc:newfollow"} {
-		t.Fatalf("appends = %v, want one {ours did:plc:newfollow}", appends)
+	if len(appends) != 1 || appends[0] != [3]string{"ours", "abc", "did:plc:newfollow"} {
+		t.Fatalf("appends = %v, want one {ours abc did:plc:newfollow}", appends)
 	}
 }
 
@@ -139,13 +139,13 @@ func TestFollowWriter_IgnoresUsersWeDoNotServe(t *testing.T) {
 	w.Enqueue(makeUnfollow("did:plc:stranger"))
 	drain(t, w)
 
-	appends, invalidated := store.snapshot()
-	if len(appends) != 0 || len(invalidated) != 0 {
-		t.Fatalf("wrote for an untracked user: appends=%v invalidated=%v", appends, invalidated)
+	appends, removes := store.snapshot()
+	if len(appends) != 0 || len(removes) != 0 {
+		t.Fatalf("wrote for an untracked user: appends=%v removes=%v", appends, removes)
 	}
 }
 
-func TestFollowWriter_UnfollowInvalidatesTheEntry(t *testing.T) {
+func TestFollowWriter_UnfollowRecordsTheDeletedRKey(t *testing.T) {
 	store := &fakeFollowStore{}
 	tracked := NewTrackedUsers(&fakeUserLister{dids: []string{"did:plc:ours"}}, common.NewLogger(false))
 	if err := tracked.Refresh(context.Background()); err != nil {
@@ -156,9 +156,31 @@ func TestFollowWriter_UnfollowInvalidatesTheEntry(t *testing.T) {
 	w.Enqueue(makeUnfollow("did:plc:ours"))
 	drain(t, w)
 
-	_, invalidated := store.snapshot()
-	if len(invalidated) != 1 || invalidated[0] != "ours" {
-		t.Fatalf("invalidated = %v, want [ours]", invalidated)
+	_, removes := store.snapshot()
+	if len(removes) != 1 || removes[0] != [2]string{"ours", "abc"} {
+		t.Fatalf("removes = %v, want [{ours abc}]", removes)
+	}
+}
+
+func TestFollowWriter_DropsEventsWithoutAnRKey(t *testing.T) {
+	// A delta without its rkey can't be matched to a follow by the API.
+	store := &fakeFollowStore{}
+	tracked := NewTrackedUsers(&fakeUserLister{dids: []string{"did:plc:ours"}}, common.NewLogger(false))
+	if err := tracked.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	w := newTestWriter(store, tracked)
+
+	w.Enqueue(common.NewJetstreamMessage(`{
+		"did": "did:plc:ours",
+		"kind": "commit",
+		"commit": {"operation": "delete", "collection": "app.bsky.graph.follow"}
+	}`, common.NewLogger(false)))
+	drain(t, w)
+
+	appends, removes := store.snapshot()
+	if len(appends) != 0 || len(removes) != 0 {
+		t.Fatalf("wrote a delta without an rkey: appends=%v removes=%v", appends, removes)
 	}
 }
 
@@ -183,9 +205,9 @@ func TestFollowWriter_NonFollowEventsAreIgnored(t *testing.T) {
 	w.Enqueue(like)
 	drain(t, w)
 
-	appends, invalidated := store.snapshot()
-	if len(appends) != 0 || len(invalidated) != 0 {
-		t.Fatalf("wrote for a like event: appends=%v invalidated=%v", appends, invalidated)
+	appends, removes := store.snapshot()
+	if len(appends) != 0 || len(removes) != 0 {
+		t.Fatalf("wrote for a like event: appends=%v removes=%v", appends, removes)
 	}
 }
 

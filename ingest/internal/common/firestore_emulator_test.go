@@ -38,7 +38,7 @@ func emulatorStore(t *testing.T) (*FirestoreFollowStore, *firestore.Client) {
 	return NewFirestoreFollowStore(client, NewLogger(false)), client
 }
 
-func TestEmulator_AppendPendingFollowIsAdditiveAndIdempotent(t *testing.T) {
+func TestEmulator_AppendFollowIsAdditiveAndIdempotent(t *testing.T) {
 	store, client := emulatorStore(t)
 	ctx := context.Background()
 	docID := fmt.Sprintf("test-append-%d", time.Now().UnixNano())
@@ -47,32 +47,32 @@ func TestEmulator_AppendPendingFollowIsAdditiveAndIdempotent(t *testing.T) {
 	// The API only ever writes entries that have actually been populated.
 	if _, err := ref.Set(ctx, map[string]interface{}{
 		"follows":      []string{"did:plc:existing"},
+		"follow_rkeys": []string{"rexisting"},
 		"complete":     true,
 		"generated_at": time.Now().UTC(),
-		"pending_adds": []string{},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	t.Cleanup(func() { _, _ = ref.Delete(ctx) })
 
-	if err := store.AppendPendingFollow(ctx, docID, "did:plc:new1"); err != nil {
-		t.Fatalf("AppendPendingFollow: %v", err)
+	if err := store.AppendFollow(ctx, docID, "r1", "did:plc:new1"); err != nil {
+		t.Fatalf("AppendFollow: %v", err)
 	}
-	// Redelivery of the same event must not duplicate the DID.
-	if err := store.AppendPendingFollow(ctx, docID, "did:plc:new1"); err != nil {
-		t.Fatalf("AppendPendingFollow (repeat): %v", err)
+	// Redelivery of the same event must not duplicate the record.
+	if err := store.AppendFollow(ctx, docID, "r1", "did:plc:new1"); err != nil {
+		t.Fatalf("AppendFollow (repeat): %v", err)
 	}
-	if err := store.AppendPendingFollow(ctx, docID, "did:plc:new2"); err != nil {
-		t.Fatalf("AppendPendingFollow: %v", err)
+	if err := store.AppendFollow(ctx, docID, "r2", "did:plc:new2"); err != nil {
+		t.Fatalf("AppendFollow: %v", err)
 	}
 
 	snap, err := ref.Get(ctx)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	pending, _ := snap.Data()["pending_adds"].([]interface{})
-	if len(pending) != 2 {
-		t.Fatalf("pending_adds = %v, want 2 distinct entries", pending)
+	pending, _ := snap.Data()["pending_add_records"].([]interface{})
+	if len(pending) != 2 || pending[0] != "r1:did:plc:new1" || pending[1] != "r2:did:plc:new2" {
+		t.Fatalf("pending_add_records = %v, want [r1:did:plc:new1 r2:did:plc:new2]", pending)
 	}
 	// The API's own field must be untouched by our writes.
 	follows, _ := snap.Data()["follows"].([]interface{})
@@ -81,14 +81,15 @@ func TestEmulator_AppendPendingFollowIsAdditiveAndIdempotent(t *testing.T) {
 	}
 }
 
-func TestEmulator_InvalidateStampsWithoutTouchingFollows(t *testing.T) {
+func TestEmulator_AppendUnfollowRecordsTheRKeyWithoutTouchingFollows(t *testing.T) {
 	store, client := emulatorStore(t)
 	ctx := context.Background()
-	docID := fmt.Sprintf("test-invalidate-%d", time.Now().UnixNano())
+	docID := fmt.Sprintf("test-unfollow-%d", time.Now().UnixNano())
 	ref := client.Collection(followedUsersCacheCollection).Doc(docID)
 
 	if _, err := ref.Set(ctx, map[string]interface{}{
 		"follows":      []string{"did:plc:a", "did:plc:b"},
+		"follow_rkeys": []string{"ra", "rb"},
 		"complete":     true,
 		"generated_at": time.Now().UTC(),
 	}); err != nil {
@@ -96,123 +97,24 @@ func TestEmulator_InvalidateStampsWithoutTouchingFollows(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = ref.Delete(ctx) })
 
-	if err := store.InvalidateFollows(ctx, docID); err != nil {
-		t.Fatalf("InvalidateFollows: %v", err)
+	for range 2 { // redelivery is idempotent
+		if err := store.AppendUnfollow(ctx, docID, "rb"); err != nil {
+			t.Fatalf("AppendUnfollow: %v", err)
+		}
 	}
 
 	snap, err := ref.Get(ctx)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if snap.Data()["invalidated_at"] == nil {
-		t.Fatal("invalidated_at was not stamped")
+	removes, _ := snap.Data()["pending_removes"].([]interface{})
+	if len(removes) != 1 || removes[0] != "rb" {
+		t.Fatalf("pending_removes = %v, want [rb]", removes)
 	}
+	// The API's own fields are left for it to reconcile on read.
 	follows, _ := snap.Data()["follows"].([]interface{})
 	if len(follows) != 2 {
-		t.Fatalf("follows = %v, want both entries still served while the refresh runs", follows)
-	}
-}
-
-func TestEmulator_WriteFollowsThenReadEntry(t *testing.T) {
-	store, client := emulatorStore(t)
-	ctx := context.Background()
-	docID := fmt.Sprintf("test-write-%d", time.Now().UnixNano())
-	ref := client.Collection(followedUsersCacheCollection).Doc(docID)
-	t.Cleanup(func() { _, _ = ref.Delete(ctx) })
-
-	if err := store.WriteFollows(ctx, docID, []string{"did:plc:a", "did:plc:b"}, true, 30); err != nil {
-		t.Fatalf("WriteFollows: %v", err)
-	}
-
-	entry, err := store.ReadEntry(ctx, docID)
-	if err != nil {
-		t.Fatalf("ReadEntry: %v", err)
-	}
-	if entry == nil {
-		t.Fatal("expected entry, got nil")
-	}
-	if len(entry.Follows) != 2 || !entry.Complete {
-		t.Errorf("unexpected entry: %+v", entry)
-	}
-	if entry.GeneratedAt == nil {
-		t.Error("expected GeneratedAt to be set")
-	}
-	if len(entry.PendingAdds) != 0 {
-		t.Errorf("expected pending_adds reset to empty, got %v", entry.PendingAdds)
-	}
-}
-
-func TestEmulator_ReadEntryMissingDocReturnsNil(t *testing.T) {
-	store, _ := emulatorStore(t)
-	entry, err := store.ReadEntry(context.Background(), "does-not-exist")
-	if err != nil {
-		t.Fatalf("ReadEntry: %v", err)
-	}
-	if entry != nil {
-		t.Errorf("expected nil entry, got %+v", entry)
-	}
-}
-
-func TestEmulator_WriteFollowsResetsPendingAddsAndInvalidatedAt(t *testing.T) {
-	store, client := emulatorStore(t)
-	ctx := context.Background()
-	docID := fmt.Sprintf("test-reset-%d", time.Now().UnixNano())
-	ref := client.Collection(followedUsersCacheCollection).Doc(docID)
-	t.Cleanup(func() { _, _ = ref.Delete(ctx) })
-
-	if _, err := ref.Set(ctx, map[string]interface{}{
-		"follows": []string{"did:plc:old"}, "complete": true,
-		"generated_at": time.Now().UTC(), "pending_adds": []string{"did:plc:new"},
-		"invalidated_at": time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	if err := store.WriteFollows(ctx, docID, []string{"did:plc:old", "did:plc:new"}, true, 30); err != nil {
-		t.Fatalf("WriteFollows: %v", err)
-	}
-
-	entry, err := store.ReadEntry(ctx, docID)
-	if err != nil {
-		t.Fatalf("ReadEntry: %v", err)
-	}
-	if entry.InvalidatedAt != nil {
-		t.Error("expected invalidated_at cleared after a fresh walk")
-	}
-	if len(entry.PendingAdds) != 0 {
-		t.Errorf("expected pending_adds cleared, got %v", entry.PendingAdds)
-	}
-}
-
-// TestEmulator_ReadEntryWithMalformedFollowsReturnsNil covers the correction
-// applied to the brief: an unreadable document (wrong-typed field) is a miss,
-// not an error, mirroring api's FollowedUsersCache._read comment — "An
-// unreadable document is a miss, not an error: it will be overwritten by the
-// next refresh." Without this, a malformed document would get permanently
-// stuck in the batch job's read_error/failed outcome instead of being
-// refreshed.
-func TestEmulator_ReadEntryWithMalformedFollowsReturnsNil(t *testing.T) {
-	store, client := emulatorStore(t)
-	ctx := context.Background()
-	docID := fmt.Sprintf("test-malformed-%d", time.Now().UnixNano())
-	ref := client.Collection(followedUsersCacheCollection).Doc(docID)
-	t.Cleanup(func() { _, _ = ref.Delete(ctx) })
-
-	// `follows` should be an array; write it as a string to force a decode error.
-	if _, err := ref.Set(ctx, map[string]interface{}{
-		"follows":      "not-an-array",
-		"complete":     true,
-		"generated_at": time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	entry, err := store.ReadEntry(ctx, docID)
-	if err != nil {
-		t.Fatalf("ReadEntry: expected nil error for malformed document, got %v", err)
-	}
-	if entry != nil {
-		t.Errorf("expected nil entry for malformed document, got %+v", entry)
+		t.Fatalf("follows = %v, want both entries left alone", follows)
 	}
 }
 
@@ -294,159 +196,6 @@ func TestEmulator_ListUserDIDsProjectsUserDIDField(t *testing.T) {
 	}
 }
 
-func TestEmulator_QueryIncompleteDocIDsFindsOnlyIncompleteEntries(t *testing.T) {
-	store, client := emulatorStore(t)
-	ctx := context.Background()
-	completeID := fmt.Sprintf("test-complete-%d", time.Now().UnixNano())
-	incompleteID := fmt.Sprintf("test-incomplete-%d", time.Now().UnixNano())
-	for id, complete := range map[string]bool{completeID: true, incompleteID: false} {
-		ref := client.Collection(followedUsersCacheCollection).Doc(id)
-		if _, err := ref.Set(ctx, map[string]interface{}{
-			"follows": []string{}, "complete": complete, "generated_at": time.Now().UTC(), "pending_adds": []string{},
-		}); err != nil {
-			t.Fatalf("seed %s: %v", id, err)
-		}
-		t.Cleanup(func() { _, _ = ref.Delete(ctx) })
-	}
-
-	ids, err := store.QueryIncompleteDocIDs(ctx)
-	if err != nil {
-		t.Fatalf("QueryIncompleteDocIDs: %v", err)
-	}
-	found := map[string]bool{}
-	for _, id := range ids {
-		found[id] = true
-	}
-	if !found[incompleteID] {
-		t.Errorf("expected %s in results, got %v", incompleteID, ids)
-	}
-	if found[completeID] {
-		t.Errorf("did not expect %s (complete=true) in results", completeID)
-	}
-}
-
-func TestEmulator_QueryInvalidatedDocIDsFindsOnlyInvalidatedEntries(t *testing.T) {
-	store, client := emulatorStore(t)
-	ctx := context.Background()
-	invalidatedID := fmt.Sprintf("test-invalidated-%d", time.Now().UnixNano())
-	untouchedID := fmt.Sprintf("test-untouched-%d", time.Now().UnixNano())
-
-	refInvalidated := client.Collection(followedUsersCacheCollection).Doc(invalidatedID)
-	if _, err := refInvalidated.Set(ctx, map[string]interface{}{
-		"follows": []string{}, "complete": true, "generated_at": time.Now().UTC(),
-		"pending_adds": []string{}, "invalidated_at": time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("seed %s: %v", invalidatedID, err)
-	}
-	t.Cleanup(func() { _, _ = refInvalidated.Delete(ctx) })
-
-	refUntouched := client.Collection(followedUsersCacheCollection).Doc(untouchedID)
-	if _, err := refUntouched.Set(ctx, map[string]interface{}{
-		"follows": []string{}, "complete": true, "generated_at": time.Now().UTC(),
-		"pending_adds": []string{}, "invalidated_at": nil,
-	}); err != nil {
-		t.Fatalf("seed %s: %v", untouchedID, err)
-	}
-	t.Cleanup(func() { _, _ = refUntouched.Delete(ctx) })
-
-	ids, err := store.QueryInvalidatedDocIDs(ctx)
-	if err != nil {
-		t.Fatalf("QueryInvalidatedDocIDs: %v", err)
-	}
-	found := map[string]bool{}
-	for _, id := range ids {
-		found[id] = true
-	}
-	if !found[invalidatedID] {
-		t.Errorf("expected %s in results, got %v", invalidatedID, ids)
-	}
-	if found[untouchedID] {
-		t.Errorf("did not expect %s (invalidated_at=nil) in results", untouchedID)
-	}
-}
-
-func TestEmulator_QueryStaleDocIDsFindsOnlyEntriesOlderThanCutoff(t *testing.T) {
-	store, client := emulatorStore(t)
-	ctx := context.Background()
-	staleID := fmt.Sprintf("test-stale-%d", time.Now().UnixNano())
-	freshID := fmt.Sprintf("test-fresh-%d", time.Now().UnixNano())
-	cutoff := time.Now().UTC()
-
-	refStale := client.Collection(followedUsersCacheCollection).Doc(staleID)
-	if _, err := refStale.Set(ctx, map[string]interface{}{
-		"follows": []string{}, "complete": true, "generated_at": cutoff.Add(-time.Hour),
-		"pending_adds": []string{},
-	}); err != nil {
-		t.Fatalf("seed %s: %v", staleID, err)
-	}
-	t.Cleanup(func() { _, _ = refStale.Delete(ctx) })
-
-	refFresh := client.Collection(followedUsersCacheCollection).Doc(freshID)
-	if _, err := refFresh.Set(ctx, map[string]interface{}{
-		"follows": []string{}, "complete": true, "generated_at": cutoff.Add(time.Hour),
-		"pending_adds": []string{},
-	}); err != nil {
-		t.Fatalf("seed %s: %v", freshID, err)
-	}
-	t.Cleanup(func() { _, _ = refFresh.Delete(ctx) })
-
-	ids, err := store.QueryStaleDocIDs(ctx, cutoff)
-	if err != nil {
-		t.Fatalf("QueryStaleDocIDs: %v", err)
-	}
-	found := map[string]bool{}
-	for _, id := range ids {
-		found[id] = true
-	}
-	if !found[staleID] {
-		t.Errorf("expected %s in results, got %v", staleID, ids)
-	}
-	if found[freshID] {
-		t.Errorf("did not expect %s (newer than cutoff) in results", freshID)
-	}
-}
-
-func TestEmulator_LookupUserDIDReturnsFieldOrFallsBackToDocID(t *testing.T) {
-	store, client := emulatorStore(t)
-	ctx := context.Background()
-	suffix := time.Now().UnixNano()
-	withField := fmt.Sprintf("lookupwithfield%d", suffix)
-	legacyID := fmt.Sprintf("lookuplegacy%d", suffix)
-
-	refWithField := client.Collection(usersCollection).Doc(withField)
-	if _, err := refWithField.Set(ctx, map[string]interface{}{
-		"user_did": fmt.Sprintf("did:plc:%s", withField),
-	}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	t.Cleanup(func() { _, _ = refWithField.Delete(ctx) })
-
-	refLegacy := client.Collection(usersCollection).Doc(legacyID)
-	if _, err := refLegacy.Set(ctx, map[string]interface{}{
-		"some_other_field": "irrelevant",
-	}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	t.Cleanup(func() { _, _ = refLegacy.Delete(ctx) })
-
-	did, err := store.LookupUserDID(ctx, withField)
-	if err != nil {
-		t.Fatalf("LookupUserDID: %v", err)
-	}
-	wantWithField := fmt.Sprintf("did:plc:%s", withField)
-	if did != wantWithField {
-		t.Errorf("LookupUserDID(%q) = %q, want %q", withField, did, wantWithField)
-	}
-
-	legacyDID, err := store.LookupUserDID(ctx, legacyID)
-	if err != nil {
-		t.Fatalf("LookupUserDID: %v", err)
-	}
-	if legacyDID != legacyID {
-		t.Errorf("LookupUserDID(%q) = %q, want fallback to doc ID %q", legacyID, legacyDID, legacyID)
-	}
-}
-
 func TestEmulator_MissingDocumentIsTolerated(t *testing.T) {
 	store, _ := emulatorStore(t)
 	ctx := context.Background()
@@ -455,10 +204,10 @@ func TestEmulator_MissingDocumentIsTolerated(t *testing.T) {
 	// A user who has never loaded a feed has no entry. Using Update (not Set)
 	// means we skip them rather than creating a document holding deltas but no
 	// follows, which the API would have to treat as a miss anyway.
-	if err := store.AppendPendingFollow(ctx, docID, "did:plc:new"); err != nil {
-		t.Fatalf("AppendPendingFollow on a missing document: %v", err)
+	if err := store.AppendFollow(ctx, docID, "r1", "did:plc:new"); err != nil {
+		t.Fatalf("AppendFollow on a missing document: %v", err)
 	}
-	if err := store.InvalidateFollows(ctx, docID); err != nil {
-		t.Fatalf("InvalidateFollows on a missing document: %v", err)
+	if err := store.AppendUnfollow(ctx, docID, "r1"); err != nil {
+		t.Fatalf("AppendUnfollow on a missing document: %v", err)
 	}
 }
