@@ -222,17 +222,20 @@ func TestEmulator_ReadEntryWithMalformedFollowsReturnsNil(t *testing.T) {
 // not the Firestore document ID (which is that DID with its did:plc: prefix
 // already stripped, and gets rejected by Bluesky with a 400 if passed as an
 // actor identifier). It also verifies the fallback for a legacy document
-// that lacks user_did.
+// that lacks user_did, and that only precompute_artifacts users are listed.
 func TestEmulator_ListUserDIDsProjectsUserDIDField(t *testing.T) {
 	store, client := emulatorStore(t)
 	ctx := context.Background()
 	suffix := time.Now().UnixNano()
 	withField := fmt.Sprintf("userwithfield%d", suffix)
 	legacyID := fmt.Sprintf("userlegacy%d", suffix)
+	exploreID := fmt.Sprintf("userexplore%d", suffix)
+	unsetID := fmt.Sprintf("userunset%d", suffix)
 
 	refWithField := client.Collection(usersCollection).Doc(withField)
 	if _, err := refWithField.Set(ctx, map[string]interface{}{
-		"user_did": fmt.Sprintf("did:plc:%s", withField),
+		"user_did":             fmt.Sprintf("did:plc:%s", withField),
+		"precompute_artifacts": true,
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -242,11 +245,24 @@ func TestEmulator_ListUserDIDsProjectsUserDIDField(t *testing.T) {
 	// document ID rather than dropping the user entirely.
 	refLegacy := client.Collection(usersCollection).Doc(legacyID)
 	if _, err := refLegacy.Set(ctx, map[string]interface{}{
-		"some_other_field": "irrelevant",
+		"precompute_artifacts": true,
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	t.Cleanup(func() { _, _ = refLegacy.Delete(ctx) })
+
+	// Explore-only users — flag explicitly false, or never set — are not ours
+	// and must not be listed.
+	for id, data := range map[string]map[string]interface{}{
+		exploreID: {"user_did": fmt.Sprintf("did:plc:%s", exploreID), "precompute_artifacts": false},
+		unsetID:   {"user_did": fmt.Sprintf("did:plc:%s", unsetID)},
+	} {
+		ref := client.Collection(usersCollection).Doc(id)
+		if _, err := ref.Set(ctx, data); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+		t.Cleanup(func() { _, _ = ref.Delete(ctx) })
+	}
 
 	dids, err := store.ListUserDIDs(ctx)
 	if err != nil {
@@ -265,6 +281,9 @@ func TestEmulator_ListUserDIDsProjectsUserDIDField(t *testing.T) {
 		}
 		if did == withField {
 			t.Errorf("ListUserDIDs returned the bare Firestore document ID %q instead of the user_did field %q", withField, wantWithField)
+		}
+		if did == fmt.Sprintf("did:plc:%s", exploreID) || did == fmt.Sprintf("did:plc:%s", unsetID) {
+			t.Errorf("ListUserDIDs returned %q, which is not flagged precompute_artifacts", did)
 		}
 	}
 	if !foundWithField {
