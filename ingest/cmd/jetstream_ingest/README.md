@@ -79,7 +79,7 @@ The service responds to SIGINT and SIGTERM by stopping intake, allowing up to ei
 
 ### Instance Coordination
 
-For GCS state paths, instances acquire a renewable lease at `<state path>.lease` before loading the cursor or starting ingestion. The lease lasts 60 seconds and is renewed every 20 seconds using GCS generation preconditions. Other instances remain healthy and check for ownership every five seconds. A failed renewal stops ingestion; a separate deadline stops work ten seconds before the confirmed expiry if renewal stalls. Local state paths use an OS file lock.
+For GCS state paths, instances acquire a renewable lease at `<state path>.lease` before loading the cursor or starting ingestion. The lease lasts 60 seconds and is renewed every 20 seconds using GCS generation preconditions. Other instances remain healthy and check for ownership every five seconds. A failed renewal stops ingestion; a separate deadline stops work ten seconds before the confirmed expiry if renewal stalls. Local state paths skip ownership coordination and assume a single process.
 
 The first deployment of this version requires a controlled cutover: stop all instances running the old timestamp-based coordination code before starting the lease version. Old instances do not honor the lease. Later deployments between lease-aware versions can hand off through the lease normally. This coordinates ownership; it does not make event processing exactly once.
 

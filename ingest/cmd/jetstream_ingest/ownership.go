@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
-	"syscall"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -15,8 +13,8 @@ import (
 	"github.com/greenearth/ingest/internal/jetstream_ingest"
 )
 
-// ingestionLease lets the ownership loop use either a shared GCS lease or a
-// local process lock. Ingestion may run only after acquiring ownership.
+// ingestionLease separates the ownership loop from GCS operations so tests can
+// exercise contention and renewal failures without a storage service.
 type ingestionLease interface {
 	TryAcquire(context.Context, time.Duration) (bool, error)
 	Renew(context.Context, time.Duration) error
@@ -38,27 +36,25 @@ var ingestionLeaseTiming = leaseTiming{
 }
 
 func withIngestionLease(ctx context.Context, statePath string, logger *common.IngestLogger, health *common.HealthServer, run func(context.Context, context.Context) error) error {
-	var lease ingestionLease
-	if strings.HasPrefix(statePath, "gs://") {
-		parts := strings.SplitN(strings.TrimPrefix(statePath, "gs://"), "/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("invalid GCS state path: %s", statePath)
+	if !strings.HasPrefix(statePath, "gs://") {
+		// Local state assumes one process. Keep work alive after intake stops;
+		// runIngestion bounds its own drain and saves the final cursor.
+		err := run(ctx, context.WithoutCancel(ctx))
+		if ctx.Err() != nil {
+			return nil
 		}
-		client, err := storage.NewClient(ctx)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = client.Close() }()
-		lease = jetstream_ingest.NewLease(client, parts[0], parts[1]+".lease", uuid.NewString())
-	} else {
-		// Local development uses a process lock, released by the OS on exit.
-		file, err := os.OpenFile(statePath+".lease", os.O_CREATE|os.O_RDWR, 0600) // #nosec G304 - statePath is controlled service configuration.
-		if err != nil {
-			return err
-		}
-		defer func() { _ = file.Close() }()
-		lease = &localLease{file: file}
+		return err
 	}
+	parts := strings.SplitN(strings.TrimPrefix(statePath, "gs://"), "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("invalid GCS state path: %s", statePath)
+	}
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+	lease := jetstream_ingest.NewLease(client, parts[0], parts[1]+".lease", uuid.NewString())
 	return runWithLease(ctx, lease, ingestionLeaseTiming, logger, func() {
 		// Standby is a healthy role: the instance can take over when the owner leaves.
 		health.SetHealthy(true, "Waiting for ingestion lease")
@@ -179,39 +175,3 @@ func runLeaseSession(ctx context.Context, lease ingestionLease, timing leaseTimi
 	}
 	return err
 }
-
-// The OS lock enforces local ownership. expires only supplies the bookkeeping
-// needed by the same renewal and expiry watchdog used for a GCS lease.
-type localLease struct {
-	file    *os.File
-	expires time.Time
-}
-
-func (l *localLease) TryAcquire(ctx context.Context, ttl time.Duration) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	err := syscall.Flock(int(l.file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) // #nosec G115 - OS file descriptors fit in a POSIX int.
-	if errors.Is(err, syscall.EWOULDBLOCK) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	l.expires = time.Now().Add(ttl)
-	return true, nil
-}
-
-func (l *localLease) Renew(ctx context.Context, ttl time.Duration) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	l.expires = time.Now().Add(ttl)
-	return nil
-}
-
-func (l *localLease) Release(context.Context) error {
-	return syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN) // #nosec G115 - OS file descriptors fit in a POSIX int.
-}
-
-func (l *localLease) ExpiresAt() time.Time { return l.expires }

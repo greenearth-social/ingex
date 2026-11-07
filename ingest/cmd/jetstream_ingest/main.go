@@ -105,7 +105,7 @@ func main() {
 	}()
 
 	logger.Info("Starting Jetstream likes ingestion")
-	// Acquire ownership before invoking ingestion. A waiting instance serves
+	// GCS state requires ownership before ingestion. A waiting instance serves
 	// health checks without opening a Jetstream subscription.
 	if err := withIngestionLease(ctx, config.JetstreamStateFile, logger, healthServer, func(intakeCtx, workCtx context.Context) error {
 		return runIngestion(intakeCtx, workCtx, config, logger, healthServer, *dryRun, *skipTLSVerify, *noRewind, *maxRewindMinutes)
@@ -116,8 +116,8 @@ func main() {
 }
 
 // runIngestion uses ctx to stop intake and workCtx to bound draining and writes.
-// It must finish its writers before returning: the caller releases ownership
-// afterward, allowing a successor to load the cursor and start processing.
+// It must finish its writers before returning so the caller can safely release
+// a GCS lease. Local runs use the same cleanup without ownership coordination.
 func runIngestion(ctx, workCtx context.Context, config *common.Config, logger *common.IngestLogger, healthServer *common.HealthServer, dryRun, skipTLSVerify, noRewind bool, maxRewindMinutes int) error {
 	ctx, stopIntake := context.WithCancel(ctx)
 	workCtx, stopWork := context.WithCancel(workCtx)
@@ -131,14 +131,14 @@ func runIngestion(ctx, workCtx context.Context, config *common.Config, logger *c
 		stopWork()
 	}()
 	// Cancellation signals these loops to stop; waiting ensures they have
-	// actually finished before this ownership session can return.
+	// actually finished before ingestion can return.
 	var background sync.WaitGroup
 	defer func() {
 		stopIntake()
 		background.Wait()
 	}()
-	// Reload the cursor only after ownership has been acquired: the previous
-	// owner may have advanced it while this instance was waiting.
+	// With GCS state, ownership has already been acquired. Read the cursor now
+	// because the previous owner may have advanced it while this instance waited.
 	stateManager, err := common.NewStateManagerWithContext(ctx, config.JetstreamStateFile, logger)
 	if err != nil {
 		return fmt.Errorf("initialize state manager: %w", err)

@@ -300,35 +300,39 @@ func TestRunLeaseSessionExpiryCancelsStalledRenewal(t *testing.T) {
 	waitForOwnershipResult(t, result)
 }
 
-func TestLocalLeaseContentionAndHandoff(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "jetstream_state.json.lease")
-	openLease := func() *localLease {
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = file.Close() })
-		return &localLease{file: file}
+func TestWithIngestionLeaseLocalPathRunsWithoutLease(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "jetstream_state.json")
+	wantErr := errors.New("ingestion failed")
+	runs := 0
+	// Local ingestion has no standby role, so it does not need a health server.
+	err := withIngestionLease(context.Background(), statePath, common.NewLogger(false), nil, func(context.Context, context.Context) error {
+		runs++
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ingestion error = %v, want %v", err, wantErr)
 	}
-	// Separate opens contend for the same OS lock, as separate local processes do.
-	first, second := openLease(), openLease()
-	ctx := context.Background()
-	if acquired, err := first.TryAcquire(ctx, time.Second); err != nil || !acquired {
-		t.Fatalf("first acquisition = %v, %v", acquired, err)
+	if runs != 1 {
+		t.Fatalf("ingestion runs = %d, want 1", runs)
 	}
-	if acquired, err := second.TryAcquire(ctx, time.Second); err != nil || acquired {
-		t.Fatalf("contending acquisition = %v, %v", acquired, err)
+	if _, err := os.Stat(statePath + ".lease"); !os.IsNotExist(err) {
+		t.Fatalf("local ingestion created a lease file or could not check its absence: %v", err)
 	}
-	if err := first.Release(ctx); err != nil {
-		t.Fatal(err)
+}
+
+func TestWithIngestionLeaseLocalCancellationIsNormalShutdown(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "jetstream_state.json")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := withIngestionLease(ctx, statePath, common.NewLogger(false), nil, func(intakeCtx, _ context.Context) error {
+		// Startup may return cancellation before ingestion reaches its normal drain path.
+		cancel()
+		return intakeCtx.Err()
+	})
+	if ctx.Err() != context.Canceled {
+		t.Fatal("ingestion callback did not cancel the process context")
 	}
-	if acquired, err := second.TryAcquire(ctx, time.Second); err != nil || !acquired {
-		t.Fatalf("successor acquisition = %v, %v", acquired, err)
-	}
-	if err := second.Renew(ctx, time.Second); err != nil {
-		t.Fatal(err)
-	}
-	if acquired, err := first.TryAcquire(ctx, time.Second); err != nil || acquired {
-		t.Fatalf("previous owner reacquisition = %v, %v", acquired, err)
+	if err != nil {
+		t.Fatalf("normal shutdown returned an error: %v", err)
 	}
 }

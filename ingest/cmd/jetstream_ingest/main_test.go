@@ -154,6 +154,36 @@ func TestRunIngestionFinalCheckpoint(t *testing.T) {
 	}
 }
 
+func TestRunLocalIngestionDrainsOnShutdown(t *testing.T) {
+	config, logger, health, likesWritten := ingestionTestConfig(t, 100)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	logger.SetMetricCollector(ingestionMetricHook(func(name string) {
+		if name == "jetstream.inbound_count" {
+			// Cancel the process context with a partial batch still waiting to write.
+			cancel()
+		}
+	}))
+	err := withIngestionLease(ctx, config.JetstreamStateFile, logger, health, func(intakeCtx, workCtx context.Context) error {
+		return runIngestion(intakeCtx, workCtx, config, logger, health, false, false, false, 0)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("process context error = %v, want cancellation after the event", ctx.Err())
+	}
+	if got := likesWritten.Load(); got != 1 {
+		t.Fatalf("local final partial batch writes = %d, want 1", got)
+	}
+	if got := readTestCursor(t, config.JetstreamStateFile); got != 300 {
+		t.Fatalf("local final cursor = %d, want 300", got)
+	}
+	if _, err := os.Stat(config.JetstreamStateFile + ".lease"); !os.IsNotExist(err) {
+		t.Fatalf("local ingestion created a lease file or could not check its absence: %v", err)
+	}
+}
+
 // cursorHandoffLease lets the old owner's final checkpoint happen exactly when
 // acquisition succeeds, exposing any cursor read performed before ownership.
 type cursorHandoffLease struct {
