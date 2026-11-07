@@ -120,7 +120,7 @@ type Config struct {
 	FirestoreProject         string // GE_FIRESTORE_PROJECT; empty disables follow-delta writes
 	FirestoreDatabase        string // GE_FIRESTORE_DATABASE, e.g. greenearth-prod
 	FirestoreEmulatorHost    string // GE_FIRESTORE_EMULATOR_HOST, for devenv
-	FollowsTrackedRefreshSec int    // GE_FOLLOWS_TRACKED_REFRESH_SEC, default 300
+	FollowsTrackedRefreshSec int    // GE_FOLLOWS_TRACKED_REFRESH_SEC, default 3600
 	FollowsWriteBuffer       int    // GE_FOLLOWS_WRITE_BUFFER, default 1024
 	FollowsCacheTTLSec       int    // GE_FOLLOWS_CACHE_TTL_SEC — shared with api's ttl_seconds(); do not diverge
 }
@@ -197,7 +197,7 @@ func LoadConfig() *Config {
 		FirestoreProject:           getEnv("GE_FIRESTORE_PROJECT", ""),
 		FirestoreDatabase:          getEnv("GE_FIRESTORE_DATABASE", ""),
 		FirestoreEmulatorHost:      getEnv("GE_FIRESTORE_EMULATOR_HOST", ""),
-		FollowsTrackedRefreshSec:   getEnvInt("GE_FOLLOWS_TRACKED_REFRESH_SEC", 300),
+		FollowsTrackedRefreshSec:   getEnvInt("GE_FOLLOWS_TRACKED_REFRESH_SEC", 3600),
 		FollowsWriteBuffer:         getEnvInt("GE_FOLLOWS_WRITE_BUFFER", 1024),
 		FollowsCacheTTLSec:         getEnvInt("GE_FOLLOWS_CACHE_TTL_SEC", 21_600),
 	}
