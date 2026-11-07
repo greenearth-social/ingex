@@ -21,16 +21,16 @@ import (
 // so the set is re-read hourly; a user flagged in between misses at most an
 // hour of deltas, which the API's TTL refresh reconciles.
 //
-// Writes are deliberately narrow. A follow appends to pending_adds; an
-// unfollow only stamps invalidated_at, because a jetstream delete carries just
-// did/collection/rkey and there is no way to tell who was unfollowed. The API
-// reconciles both on its next refresh.
+// Writes are deliberately narrow and append-only. A follow appends
+// "rkey:subjectDID" to pending_add_records; an unfollow appends its rkey to
+// pending_removes, because a jetstream delete carries just did/collection/rkey.
+// The API's cache keeps each follow's rkey, so both apply on its next read.
 
 // followStore is the Firestore surface the writer needs. An interface so the
 // writer can be tested without a Firestore client.
 type followStore interface {
-	AppendPendingFollow(ctx context.Context, userDocID, subjectDID string) error
-	InvalidateFollows(ctx context.Context, userDocID string) error
+	AppendFollow(ctx context.Context, userDocID, rkey, subjectDID string) error
+	AppendUnfollow(ctx context.Context, userDocID, rkey string) error
 }
 
 // UserLister enumerates the DIDs of users we serve feeds to.
@@ -113,6 +113,7 @@ const (
 type followEvent struct {
 	kind       followEventKind
 	userDocID  string
+	rkey       string
 	subjectDID string
 }
 
@@ -156,18 +157,26 @@ func (w *FollowWriter) Enqueue(msg common.JetstreamMessage) bool {
 		event = followEvent{
 			kind:       followCreate,
 			userDocID:  common.UserDocID(msg.GetAuthorDID()),
+			rkey:       msg.GetRKey(),
 			subjectDID: msg.GetFollowSubjectDID(),
 		}
 	case msg.IsFollowDelete():
 		event = followEvent{
 			kind:      followDelete,
 			userDocID: common.UserDocID(msg.GetAuthorDID()),
+			rkey:      msg.GetRKey(),
 		}
 	default:
 		return false
 	}
 
 	if !w.tracked.Contains(event.userDocID) {
+		return false
+	}
+	if event.rkey == "" {
+		// Without its rkey a delta can't be matched to a follow; the API's
+		// TTL refresh reconciles whatever this event changed.
+		w.logger.Error("Follow event without an rkey for %s; dropped", event.userDocID)
 		return false
 	}
 
@@ -202,9 +211,9 @@ func (w *FollowWriter) apply(ctx context.Context, event followEvent) {
 	var err error
 	switch event.kind {
 	case followCreate:
-		err = w.store.AppendPendingFollow(ctx, event.userDocID, event.subjectDID)
+		err = w.store.AppendFollow(ctx, event.userDocID, event.rkey, event.subjectDID)
 	case followDelete:
-		err = w.store.InvalidateFollows(ctx, event.userDocID)
+		err = w.store.AppendUnfollow(ctx, event.userDocID, event.rkey)
 	}
 	if err != nil {
 		// Never fatal: the API refreshes on a TTL regardless. Counted so a

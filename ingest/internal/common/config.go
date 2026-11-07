@@ -122,7 +122,6 @@ type Config struct {
 	FirestoreEmulatorHost    string // GE_FIRESTORE_EMULATOR_HOST, for devenv
 	FollowsTrackedRefreshSec int    // GE_FOLLOWS_TRACKED_REFRESH_SEC, default 3600
 	FollowsWriteBuffer       int    // GE_FOLLOWS_WRITE_BUFFER, default 1024
-	FollowsCacheTTLSec       int    // GE_FOLLOWS_CACHE_TTL_SEC — shared with api's ttl_seconds(); do not diverge
 }
 
 // PerspectiveEnabled reports whether posts should be scored at ingest. An
@@ -199,7 +198,6 @@ func LoadConfig() *Config {
 		FirestoreEmulatorHost:      getEnv("GE_FIRESTORE_EMULATOR_HOST", ""),
 		FollowsTrackedRefreshSec:   getEnvInt("GE_FOLLOWS_TRACKED_REFRESH_SEC", 3600),
 		FollowsWriteBuffer:         getEnvInt("GE_FOLLOWS_WRITE_BUFFER", 1024),
-		FollowsCacheTTLSec:         getEnvInt("GE_FOLLOWS_CACHE_TTL_SEC", 21_600),
 	}
 }
 
