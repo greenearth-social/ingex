@@ -182,6 +182,13 @@ type ElasticsearchConfig struct {
 
 // NewElasticsearchClient creates and tests a new Elasticsearch client
 func NewElasticsearchClient(config ElasticsearchConfig, logger *IngestLogger) (*elasticsearch.Client, error) {
+	return NewElasticsearchClientWithContext(context.Background(), config, logger)
+}
+
+// NewElasticsearchClientWithContext creates a client and checks its connection using ctx.
+// The startup request must honor cancellation too: ownership can be lost before
+// ingestion reaches its normal processing loop. Later requests supply their own contexts.
+func NewElasticsearchClientWithContext(ctx context.Context, config ElasticsearchConfig, logger *IngestLogger) (*elasticsearch.Client, error) {
 	opts := []elasticsearch.Option{
 		elasticsearch.WithAddresses(config.URL),
 		elasticsearch.WithAPIKey(config.APIKey),
@@ -203,7 +210,7 @@ func NewElasticsearchClient(config ElasticsearchConfig, logger *IngestLogger) (*
 		return nil, fmt.Errorf("failed to create Elasticsearch client: %w", err)
 	}
 
-	res, err := client.Info()
+	res, err := client.Info(client.Info.WithContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Elasticsearch: %w", err)
 	}
