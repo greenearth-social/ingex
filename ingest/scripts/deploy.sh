@@ -770,6 +770,7 @@ main() {
 }
 
 # Parse command line arguments
+SERVICE=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --project-id)
@@ -806,6 +807,8 @@ while [[ $# -gt 0 ]]; do
             echo "Examples:"
             echo "  $0 jetstream                Deploy only jetstream-ingest"
             echo "  $0 megastream               Deploy only megastream-ingest"
+            echo "  $0 jetstream --environment prod"
+            echo "                              Deploy only jetstream-ingest to prod"
             echo "  $0                          Deploy all services"
             echo
             echo "Prerequisites:"
@@ -832,9 +835,16 @@ while [[ $# -gt 0 ]]; do
             echo
             exit 0
             ;;
-        jetstream|megastream|expiry|followed-users-backfill|extract|all)
-            # Handle service as first positional argument
-            break
+        jetstream|jetstream-ingest|megastream|megastream-ingest|expiry|elasticsearch-expiry|followed-users-backfill|follows-backfill|extract|extract-job|all)
+            # The service may appear anywhere among the options. Stopping the
+            # loop here used to drop every option after it, so
+            # `deploy.sh jetstream --environment prod` deployed to stage.
+            if [ -n "$SERVICE" ]; then
+                log_error "Only one service may be given (got '$SERVICE' and '$1')"
+                exit 1
+            fi
+            SERVICE="$1"
+            shift
             ;;
         *)
             log_error "Unknown option: $1"
@@ -844,4 +854,4 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-main "$@"
+main "${SERVICE:-all}"
