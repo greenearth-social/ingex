@@ -182,6 +182,13 @@ type ElasticsearchConfig struct {
 
 // NewElasticsearchClient creates and tests a new Elasticsearch client
 func NewElasticsearchClient(config ElasticsearchConfig, logger *IngestLogger) (*elasticsearch.Client, error) {
+	return NewElasticsearchClientWithContext(context.Background(), config, logger)
+}
+
+// NewElasticsearchClientWithContext creates a client and checks its connection using ctx.
+// The startup request must honor cancellation too: ownership can be lost before
+// ingestion reaches its normal processing loop. Later requests supply their own contexts.
+func NewElasticsearchClientWithContext(ctx context.Context, config ElasticsearchConfig, logger *IngestLogger) (*elasticsearch.Client, error) {
 	opts := []elasticsearch.Option{
 		elasticsearch.WithAddresses(config.URL),
 		elasticsearch.WithAPIKey(config.APIKey),
@@ -203,7 +210,7 @@ func NewElasticsearchClient(config ElasticsearchConfig, logger *IngestLogger) (*
 		return nil, fmt.Errorf("failed to create Elasticsearch client: %w", err)
 	}
 
-	res, err := client.Info()
+	res, err := client.Info(client.Info.WithContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Elasticsearch: %w", err)
 	}
@@ -1271,6 +1278,28 @@ func FetchLikes(ctx context.Context, client *elasticsearch.Client, logger *Inges
 	return response, nil
 }
 
+// clearScroll releases a scroll context on the server. Its response body must
+// be closed like any other: an open body pins the connection, and account
+// deletion clears three scrolls per deleted account, so a dropped body leaks
+// sockets (and the memory behind them) until the process runs out of fds.
+func clearScroll(client *elasticsearch.Client, scrollID string, logger *IngestLogger) {
+	if scrollID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := client.ClearScroll(
+		client.ClearScroll.WithContext(ctx),
+		client.ClearScroll.WithScrollID(scrollID),
+	)
+	if err != nil {
+		logger.Error("Failed to clear scroll: %v", err)
+		return
+	}
+	_, _ = io.Copy(io.Discard, res.Body)
+	_ = res.Body.Close()
+}
+
 // QueryPostsByAuthorDID retrieves all post at_uris for a given author_did using scroll API
 func QueryPostsByAuthorDID(ctx context.Context, client *elasticsearch.Client, index string, authorDID string, logger *IngestLogger) ([]string, error) {
 	// Build search query
@@ -1398,8 +1427,7 @@ func QueryPostsByAuthorDID(ctx context.Context, client *elasticsearch.Client, in
 		}
 	}
 
-	// Clear scroll context
-	_, _ = client.ClearScroll(client.ClearScroll.WithScrollID(scrollID))
+	clearScroll(client, scrollID, logger)
 
 	logger.Info("QueryPostsByAuthorDID complete: found %d posts for DID %s", len(atURIs), authorDID)
 	return atURIs, nil
@@ -1535,8 +1563,7 @@ func QueryLikesByAuthorDID(ctx context.Context, client *elasticsearch.Client, in
 		}
 	}
 
-	// Clear scroll context
-	_, _ = client.ClearScroll(client.ClearScroll.WithScrollID(scrollID))
+	clearScroll(client, scrollID, logger)
 
 	logger.Info("QueryLikesByAuthorDID complete: found %d likes for DID %s", len(likes), authorDID)
 	return likes, nil
@@ -1593,7 +1620,7 @@ func BulkUpdateLikeCounts(ctx context.Context, client *elasticsearch.Client, ind
 // BulkUpdateLikeCountsWithResults is BulkUpdateLikeCounts, additionally
 // returning the post-update like count of every document that was updated.
 // The counts come from the `get._source` the bulk request already asks for
-// via "_source": true, so this costs no extra round trip.
+// (filtered to like_count), so this costs no extra round trip.
 func BulkUpdateLikeCountsWithResults(ctx context.Context, client *elasticsearch.Client, index string, updates []LikeCountUpdate, dryRun bool, logger *IngestLogger) ([]LikeCountResult, error) {
 	if len(updates) == 0 {
 		return nil, nil
@@ -1649,7 +1676,9 @@ func BulkUpdateLikeCountsWithResults(ctx context.Context, client *elasticsearch.
 				},
 				"lang": "painless",
 			},
-			"_source": true, // Return the updated document
+			// Return only the new count. "_source": true would send back the
+			// whole post, embeddings included, for every update in the batch.
+			"_source": []string{"like_count"},
 		}
 
 		updateJSON, err := json.Marshal(updateBody)

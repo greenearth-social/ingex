@@ -304,7 +304,7 @@ deploy_jetstream_service() {
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest,GOOGLE_RUNTIME_VERSION=1.25.7" \
+        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest,GOOGLE_RUNTIME_VERSION=1.27.3" \
         --set-env-vars="GE_JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
@@ -370,7 +370,7 @@ deploy_megastream_service() {
     # from serving. GE_PERSPECTIVE_ON_QUOTA=wait throttles ingest to stay
     # inside that slice; set it to "skip" to index posts unscored instead, and
     # recover them later with cmd/backfill_perspective. Watch
-    # perspective.rate_limit.skipped.count to know when that is owed.
+    # perspective.rate_limit.skipped_count to know when that is owed.
     #
     # 141, not 150, because the limiter's bucket carries a batch-sized burst
     # (perspectiveBurst, 512) on top of the refill rate. A token bucket admits
@@ -391,6 +391,13 @@ deploy_megastream_service() {
     local perspective_qps="${GE_PERSPECTIVE_QPS:-$perspective_qps_default}"
     local perspective_on_quota="${GE_PERSPECTIVE_ON_QUOTA:-wait}"
 
+    # GOMEMLIMIT makes the Go GC work harder as the heap nears the container
+    # limit instead of letting it grow until Cloud Run OOM-kills the instance.
+    # ~80% of the limit leaves headroom for non-heap memory (goroutine stacks,
+    # cgo, the runtime itself).
+    local memory_mib=1024
+    local gomemlimit_mib=$((memory_mib * 8 / 10))
+
     # Set max-rewind based on environment
     # Stage: 15 minutes (prevent disk overflow on restart)
     # Prod: 0 (unlimited rewind for data integrity)
@@ -407,7 +414,7 @@ deploy_megastream_service() {
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest,GOOGLE_RUNTIME_VERSION=1.25.7" \
+        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest,GOOGLE_RUNTIME_VERSION=1.27.3" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --set-env-vars="GE_SPOOL_INTERVAL_SEC=60" \
@@ -425,11 +432,12 @@ deploy_megastream_service() {
         --set-env-vars="GE_INFERENCE_BASE_URL=$inference_base_url" \
         --set-env-vars="GE_PERSPECTIVE_QPS=$perspective_qps" \
         --set-env-vars="GE_PERSPECTIVE_ON_QUOTA=$perspective_on_quota" \
+        --set-env-vars="GOMEMLIMIT=${gomemlimit_mib}MiB" \
         --set-secrets="GE_ELASTICSEARCH_API_KEY=$es_api_key_secret:latest,GE_AWS_S3_ACCESS_KEY=$aws_access_key_secret:latest,GE_AWS_S3_SECRET_KEY=$aws_secret_key_secret:latest,GE_INFERENCE_API_KEY=$inference_api_key_secret:latest,GE_PERSPECTIVE_API_KEY=$perspective_api_key_secret:latest" \
         --labels="git-sha=$GIT_SHA" \
         --scaling="$GE_MEGASTREAM_INSTANCES" \
         --cpu=1 \
-        --memory=1Gi \
+        --memory="${memory_mib}Mi" \
         --timeout=3600 \
         --concurrency=1000 \
         --no-cpu-throttling \
@@ -762,6 +770,7 @@ main() {
 }
 
 # Parse command line arguments
+SERVICE=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --project-id)
@@ -798,6 +807,8 @@ while [[ $# -gt 0 ]]; do
             echo "Examples:"
             echo "  $0 jetstream                Deploy only jetstream-ingest"
             echo "  $0 megastream               Deploy only megastream-ingest"
+            echo "  $0 jetstream --environment prod"
+            echo "                              Deploy only jetstream-ingest to prod"
             echo "  $0                          Deploy all services"
             echo
             echo "Prerequisites:"
@@ -824,9 +835,16 @@ while [[ $# -gt 0 ]]; do
             echo
             exit 0
             ;;
-        jetstream|megastream|expiry|followed-users-backfill|extract|all)
-            # Handle service as first positional argument
-            break
+        jetstream|jetstream-ingest|megastream|megastream-ingest|expiry|elasticsearch-expiry|followed-users-backfill|follows-backfill|extract|extract-job|all)
+            # The service may appear anywhere among the options. Stopping the
+            # loop here used to drop every option after it, so
+            # `deploy.sh jetstream --environment prod` deployed to stage.
+            if [ -n "$SERVICE" ]; then
+                log_error "Only one service may be given (got '$SERVICE' and '$1')"
+                exit 1
+            fi
+            SERVICE="$1"
+            shift
             ;;
         *)
             log_error "Unknown option: $1"
@@ -836,4 +854,4 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-main "$@"
+main "${SERVICE:-all}"

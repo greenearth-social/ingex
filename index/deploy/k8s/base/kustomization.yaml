@@ -20,6 +20,7 @@ resources:
   - templates/replies-ilm-index-template.yaml
   - templates/reply-tombstones-ilm-index-template.yaml
   - update-recent-alias-cronjob.yaml
+  - warm-quality-knn-cronjob.yaml
 
 configMapGenerator:
   - name: snapshot-settings

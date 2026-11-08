@@ -112,7 +112,7 @@ func (l *limiter) acquire(ctx context.Context) error {
 		if l.rl.Allow() {
 			return nil
 		}
-		l.logger.Metric("perspective.rate_limit.skipped.count", 1)
+		l.logger.Metric("perspective.rate_limit.skipped_count", 1)
 		return ErrQuotaExhausted
 	}
 
@@ -121,7 +121,7 @@ func (l *limiter) acquire(ctx context.Context) error {
 	// deadline) is cancelled so it does not consume budget.
 	reservation := l.rl.Reserve()
 	if !reservation.OK() {
-		l.logger.Metric("perspective.rate_limit.skipped.count", 1)
+		l.logger.Metric("perspective.rate_limit.skipped_count", 1)
 		return ErrQuotaExhausted
 	}
 
@@ -130,7 +130,7 @@ func (l *limiter) acquire(ctx context.Context) error {
 		return nil
 	}
 
-	l.logger.Metric("perspective.rate_limit.throttled.count", 1)
+	l.logger.Metric("perspective.rate_limit.throttled_count", 1)
 	l.logger.Metric("perspective.rate_limit.wait_ms", float64(delay.Milliseconds()))
 
 	timer := time.NewTimer(delay)
@@ -147,8 +147,8 @@ func (l *limiter) acquire(ctx context.Context) error {
 		// "we ran out of batch time" from "the budget refused us", which want
 		// different responses -- the first is shedding working as intended, the
 		// second means the configured rate is too low.
-		l.logger.Metric("perspective.rate_limit.skipped.count", 1)
-		l.logger.Metric("perspective.rate_limit.deadline_skipped.count", 1)
+		l.logger.Metric("perspective.rate_limit.skipped_count", 1)
+		l.logger.Metric("perspective.rate_limit.deadline_skipped_count", 1)
 		return ctx.Err()
 	}
 }

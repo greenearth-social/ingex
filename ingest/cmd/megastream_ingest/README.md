@@ -218,12 +218,12 @@ destination index mapping the fields (below).
 > `0` past the following boundary means the template never landed.
 
 **Metrics.** `perspective.rate_limit.wait_ms` rises first when the budget starts
-binding; `perspective.rate_limit.throttled.count` shows how often. A non-zero
-`perspective.rate_limit.skipped.count` means posts were indexed unscored and a
+binding; `perspective.rate_limit.throttled_count` shows how often. A non-zero
+`perspective.rate_limit.skipped_count` means posts were indexed unscored and a
 `backfill_perspective` run is owed. `perspective.index_gate.ready` at `0` means
 nothing is being scored at all — see rollout ordering above.
 
-Read `skipped.count` against `perspective.rate_limit.deadline_skipped.count`,
+Read `skipped_count` against `perspective.rate_limit.deadline_skipped_count`,
 which is the subset shed because the batch ran out of scoring budget rather than
 because the rate refused them. **Bursty is the mechanism working; sustained is a
 problem.** A spike defers work out of a contended window, and the backfill

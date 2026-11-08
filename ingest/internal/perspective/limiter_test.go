@@ -50,7 +50,7 @@ func TestLimiterAllowsWithinBudget(t *testing.T) {
 	if err := l.acquire(context.Background()); err != nil {
 		t.Fatalf("acquire() error = %v", err)
 	}
-	if collector.count("perspective.rate_limit.throttled.count") != 0 {
+	if collector.count("perspective.rate_limit.throttled_count") != 0 {
 		t.Error("a request inside the budget was reported as throttled")
 	}
 }
@@ -74,14 +74,14 @@ func TestLimiterWaitModeBlocksAndReportsWait(t *testing.T) {
 		t.Errorf("second acquire returned after %v, expected it to block", elapsed)
 	}
 
-	if collector.count("perspective.rate_limit.throttled.count") != 1 {
+	if collector.count("perspective.rate_limit.throttled_count") != 1 {
 		t.Error("a blocked request was not counted as throttled")
 	}
 	if collector.count("perspective.rate_limit.wait_ms") != 1 {
 		t.Error("a blocked request did not report its wait time")
 	}
 	// Waiting is not dropping.
-	if collector.count("perspective.rate_limit.skipped.count") != 0 {
+	if collector.count("perspective.rate_limit.skipped_count") != 0 {
 		t.Error("wait mode reported a skip")
 	}
 }
@@ -106,7 +106,7 @@ func TestLimiterSkipModeDropsAndCounts(t *testing.T) {
 	}
 
 	// This is the metric that says a backfill is owed.
-	if collector.count("perspective.rate_limit.skipped.count") != 1 {
+	if collector.count("perspective.rate_limit.skipped_count") != 1 {
 		t.Error("a dropped request was not counted as skipped")
 	}
 }
@@ -124,7 +124,7 @@ func TestLimiterWaitModeRespectsContextCancellation(t *testing.T) {
 	if err := l.acquire(ctx); err == nil {
 		t.Fatal("acquire() error = nil, want the context error")
 	}
-	if collector.count("perspective.rate_limit.skipped.count") != 1 {
+	if collector.count("perspective.rate_limit.skipped_count") != 1 {
 		t.Error("a request abandoned mid-wait was not counted as skipped")
 	}
 }
@@ -174,7 +174,7 @@ func TestLimiterAdmitsAWholeBatchWithoutWaiting(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("admitting %d requests took %v; a batch-sized burst should not pace them", batch, elapsed)
 	}
-	if n := collector.count("perspective.rate_limit.throttled.count"); n != 0 {
+	if n := collector.count("perspective.rate_limit.throttled_count"); n != 0 {
 		t.Errorf("throttled %d requests inside the burst", n)
 	}
 }
@@ -191,7 +191,7 @@ func TestLimiterStillPacesOnceBurstIsSpent(t *testing.T) {
 			t.Fatalf("acquire(%d) error = %v", i, err)
 		}
 	}
-	if n := collector.count("perspective.rate_limit.throttled.count"); n != 0 {
+	if n := collector.count("perspective.rate_limit.throttled_count"); n != 0 {
 		t.Fatalf("throttled %d requests inside the burst of 4", n)
 	}
 
@@ -202,7 +202,7 @@ func TestLimiterStillPacesOnceBurstIsSpent(t *testing.T) {
 	if elapsed := time.Since(start); elapsed < 500*time.Millisecond {
 		t.Errorf("the request past the burst returned after %v; it should be paced at 1/s", elapsed)
 	}
-	if collector.count("perspective.rate_limit.throttled.count") != 1 {
+	if collector.count("perspective.rate_limit.throttled_count") != 1 {
 		t.Error("the request past the burst was not counted as throttled")
 	}
 }

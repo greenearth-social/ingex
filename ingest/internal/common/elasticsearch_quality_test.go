@@ -134,12 +134,12 @@ func TestQualityDocFromHit(t *testing.T) {
 		t.Errorf("media filter fields not carried: %+v", doc)
 	}
 
-	// Only ge_post_embedding belongs in the quality index: it is the only vector
-	// two-tower kNN searches, and the api hydrates L12 separately from
-	// posts_recent. Copying the others would multiply the index's footprint,
-	// which defeats the point of a lean, cache-resident corpus.
-	if len(doc.Embeddings) != 1 {
-		t.Fatalf("expected exactly one embedding family, got %v", keysOf(doc.Embeddings))
+	// Both retrieval vectors are retained; unused embedding families are dropped.
+	if len(doc.Embeddings) != 2 {
+		t.Fatalf("expected two embedding families, got %v", keysOf(doc.Embeddings))
+	}
+	if vec := doc.Embeddings[ContentEmbeddingFamily]; len(vec) != 3 || vec[0] != 9 {
+		t.Errorf("MiniLM vector not carried from doc values: %v", vec)
 	}
 	if len(doc.Embeddings[GEPostEmbeddingField]) != 3 {
 		t.Errorf("ge_post_embedding not carried: %v", doc.Embeddings)
@@ -386,6 +386,40 @@ func TestBulkUpdateLikeCountsWithResults_ParsesUpdatedCounts(t *testing.T) {
 	}
 	if results[0].Increment != 1 {
 		t.Errorf("increment must be carried through so crossings can be detected: %+v", results[0])
+	}
+}
+
+// Asking for the whole updated document would send back both embedding
+// vectors for every post in every batch; only the new count is read.
+func TestBulkUpdateLikeCountsWithResults_RequestsOnlyLikeCount(t *testing.T) {
+	var body string
+	client, srv := newMockESClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"took":1,"errors":false,"items":[]}`))
+	}))
+	defer srv.Close()
+
+	updates := []LikeCountUpdate{{SubjectURI: "at://did:plc:a/app.bsky.feed.post/1", Increment: 1}}
+	if _, err := BulkUpdateLikeCountsWithResults(t.Context(), client, "posts", updates, false, NewLogger(false)); err != nil {
+		t.Fatalf("BulkUpdateLikeCountsWithResults: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected one action and one body line, got %q", body)
+	}
+	var update struct {
+		Source json.RawMessage `json:"_source"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &update); err != nil {
+		t.Fatalf("update body isn't JSON: %v", err)
+	}
+	if string(update.Source) != `["like_count"]` {
+		t.Errorf(`expected "_source":["like_count"], got %s`, update.Source)
 	}
 }
 

@@ -7,7 +7,7 @@ data:
     {
       "index_patterns": ["posts-quality-*"],
       "_meta": {
-        "description": "Lean two-week retrieval corpus for two-tower kNN (greenearth-social/ingex#442). Holds only posts at or above the quality like threshold, so the like_count filter is non-selective here and Lucene keeps using the HNSW graph instead of exact-scanning every matching vector."
+        "description": "Lean two-week retrieval corpus for two-tower and MiniLM kNN (greenearth-social/ingex#442). Holds only posts at or above the quality like threshold, so the like_count filter is non-selective here and Lucene keeps using the HNSW graph instead of exact-scanning every matching vector."
       },
       "priority": 200,
       "template": {
@@ -47,6 +47,12 @@ data:
               "type": "object",
               "dynamic": false,
               "properties": {
+                "all_MiniLM_L12_v2": {
+                  "type": "dense_vector",
+                  "dims": 384,
+                  "index": true,
+                  "similarity": "cosine"
+                },
                 "ge_post_embedding": {
                   "type": "dense_vector",
                   "dims": 128,

@@ -124,7 +124,7 @@ func newOTelMetricCollectorWithReader(reader sdkmetric.Reader, serviceName, env 
 
 // Record records a metric value. Instruments are lazily created based on the metric name suffix:
 // - Names ending in "_count" → counter (cumulative sum)
-// - Names ending in "_rate" → gauge
+// - Names ending in "_rate" or "_gauge" → gauge
 // - All others → histogram
 //   - E.g., names ending in "_ms" or "_sec" → histogram
 func (c *OTelMetricCollector) Record(name string, value float64) {
@@ -151,7 +151,7 @@ func isCounterMetric(name string) bool {
 }
 
 func isGaugeMetric(name string) bool {
-	return strings.HasSuffix(name, "_rate")
+	return strings.HasSuffix(name, "_rate") || strings.HasSuffix(name, "_gauge")
 }
 
 func freshnessSecView() sdkmetric.View {

@@ -216,7 +216,7 @@ func TestScoreDoesNotRetryRateLimits(t *testing.T) {
 	if got := attempts.Load(); got != 1 {
 		t.Errorf("made %d attempts, want 1 — a 429 must not be retried", got)
 	}
-	if n := collector.count("perspective.score.rate_limited.count"); n != 1 {
+	if n := collector.count("perspective.score.rate_limited_count"); n != 1 {
 		t.Errorf("rate_limited.count = %d, want 1", n)
 	}
 }

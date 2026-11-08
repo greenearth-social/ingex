@@ -10,14 +10,12 @@ import (
 	"github.com/elastic/go-elasticsearch/v9"
 )
 
-// GEPostEmbeddingField is the only embedding family the quality corpus carries:
-// it is the vector two-tower kNN searches. The api hydrates MiniLM L12
-// separately from posts_recent (see routers/xrpc.py), so copying the other
-// families here would multiply the index footprint for no read.
+// GEPostEmbeddingField is the vector used by two-tower retrieval. The quality
+// corpus also carries ContentEmbeddingFamily for MiniLM LLM retrieval (api#541).
 const GEPostEmbeddingField = "ge_post_embedding"
 
 // QualityPostDoc is the lean document written to the quality corpus. It carries
-// the fields two-tower kNN filters on (created_at, ge_post_embedding_model_uuid,
+// the fields retrieval filters on (created_at, ge_post_embedding_model_uuid,
 // contains_video, like_count) plus the fields the api reads back off a kNN hit
 // (CANDIDATE_SOURCE_FIELDS in api's lib/candidates/utils.py) — and nothing else.
 //
@@ -118,9 +116,15 @@ func qualityDocFromHit(hit Hit) (QualityPostDoc, bool) {
 		return QualityPostDoc{}, false
 	}
 
-	vec := embeddingsFromHit(hit)[GEPostEmbeddingField]
+	embeddings := embeddingsFromHit(hit)
+	vec := embeddings[GEPostEmbeddingField]
 	if len(vec) == 0 {
 		return QualityPostDoc{}, false
+	}
+
+	searchVectors := map[string]Float32Array{GEPostEmbeddingField: Float32Array(vec)}
+	if contentVec := embeddings[ContentEmbeddingFamily]; len(contentVec) > 0 {
+		searchVectors[ContentEmbeddingFamily] = Float32Array(contentVec)
 	}
 
 	return QualityPostDoc{
@@ -128,7 +132,7 @@ func qualityDocFromHit(hit Hit) (QualityPostDoc, bool) {
 		AuthorDID:              src.AuthorDID,
 		Content:                src.Content,
 		CreatedAt:              src.CreatedAt,
-		Embeddings:             map[string]Float32Array{GEPostEmbeddingField: Float32Array(vec)},
+		Embeddings:             searchVectors,
 		PostEmbeddingModelUUID: src.PostEmbeddingModelUUID,
 		IndexedAt:              src.IndexedAt,
 		LikeCount:              src.LikeCount,

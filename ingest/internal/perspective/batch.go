@@ -151,10 +151,10 @@ func (b *BatchScorer) scoreOne(ctx context.Context, input ScoreInput) ScoreResul
 		result.Outcome = OutcomeScored
 		result.Scores = scores
 		result.Combined = PRCScore(scores)
-		b.logger.Metric("perspective.score.count", 1)
+		b.logger.Metric("perspective.score_count", 1)
 	case errors.Is(err, ErrLanguageNotSupported):
 		result.Outcome = OutcomeUnsupportedLanguage
-		b.logger.Metric("perspective.score.unsupported_language.count", 1)
+		b.logger.Metric("perspective.score.unsupported_language_count", 1)
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		// The scoring budget ran out with this request in flight. That is the
 		// same event as a post that never got a slot, not an API fault, and
@@ -164,7 +164,7 @@ func (b *BatchScorer) scoreOne(ctx context.Context, input ScoreInput) ScoreResul
 	default:
 		result.Outcome = OutcomeFailed
 		result.Err = err
-		b.logger.Metric("perspective.score.failed.count", 1)
+		b.logger.Metric("perspective.score.failed_count", 1)
 		b.logger.Debug("Perspective scoring failed for %s: %v", input.AtURI, err)
 	}
 	return result
