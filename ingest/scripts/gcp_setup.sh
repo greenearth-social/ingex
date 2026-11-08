@@ -144,6 +144,28 @@ create_service_account() {
         --member="serviceAccount:$SA_EMAIL" \
         --role="roles/storage.objectViewer"
 
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        # This project permission allows owner-billed access to Requester Pays
+        # buckets without supplying a billing project. Storage IAM is still required.
+        # https://cloud.google.com/storage/docs/requester-pays
+        if ! gcloud iam roles describe requesterPaysExempt --project="$GE_GCP_PROJECT_ID" > /dev/null 2>&1; then
+            gcloud iam roles create requesterPaysExempt \
+                --project="$GE_GCP_PROJECT_ID" \
+                --title="Requester Pays exemption" \
+                --description="Allow owner-billed access to Requester Pays buckets in this project" \
+                --permissions="resourcemanager.projects.createBillingAssignment" \
+                --stage=GA
+            log_info "Requester Pays exemption role created."
+        else
+            log_info "Requester Pays exemption role already exists."
+        fi
+
+        gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
+            --member="serviceAccount:$SA_EMAIL" \
+            --role="projects/$GE_GCP_PROJECT_ID/roles/requesterPaysExempt" \
+            --condition=None
+    fi
+
     # Permission to access secrets
     gcloud projects add-iam-policy-binding "$GE_GCP_PROJECT_ID" \
         --member="serviceAccount:$SA_EMAIL" \
@@ -312,6 +334,29 @@ create_extract_storage() {
     # Grant service account objectAdmin permission
     gsutil iam ch serviceAccount:"ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com":objectAdmin gs://"$BUCKET_NAME"
     log_info "Granted objectAdmin to service account for bucket: $BUCKET_NAME"
+
+    if [ "$GE_ENVIRONMENT" = "prod" ]; then
+        # Turn on requester pays for prod extract bucket
+        if ! gcloud storage buckets update "gs://$BUCKET_NAME" \
+            --project="$GE_GCP_PROJECT_ID" \
+            --requester-pays; then
+            log_error "Failed to enable Requester Pays for bucket: $BUCKET_NAME"
+            return 1
+        fi
+
+        # Make the bucket publicly readable (given a billing project is specified).
+        # Note: if Public Access Prevention blocks this grant, this will fail without disabling it.
+        if ! gcloud storage buckets add-iam-policy-binding "gs://$BUCKET_NAME" \
+            --project="$GE_GCP_PROJECT_ID" \
+            --member=allUsers \
+            --role=roles/storage.objectViewer \
+            --condition=None; then
+            log_error "Failed to grant public read access to $BUCKET_NAME. Check IAM permissions and Public Access Prevention."
+            return 1
+        fi
+
+        log_info "Public read access configured for Requester Pays bucket: $BUCKET_NAME"
+    fi
 }
 
 create_blocklist_storage() {

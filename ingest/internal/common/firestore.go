@@ -58,7 +58,16 @@ func NewFirestoreFollowStore(client *firestore.Client, logger *IngestLogger) *Fi
 	return &FirestoreFollowStore{client: client, logger: logger}
 }
 
-// ListUserDIDs returns the DIDs of every user the API serves.
+// ListUserDIDs returns the DIDs of the users the API precomputes artifacts
+// for (precompute_artifacts == true, set by the API on a user's first real
+// PostSeen; api#489).
+//
+// Not every user: the users collection also holds every account that has
+// ever loaded a feed preview in Bluesky's Explore tab — well over a million
+// documents, against a few thousand real users. Listing all of them exceeded
+// Firestore's deadline on every attempt while still billing for each document
+// read before it gave up. The equality filter is served by Firestore's
+// automatic single-field index, so the read cost is one per real user.
 //
 // Projected to the user_did field only — the documents themselves are large
 // and no other field matters here. user_did is the real Bluesky DID (with
@@ -68,7 +77,10 @@ func NewFirestoreFollowStore(client *firestore.Client, logger *IngestLogger) *Fi
 // back to doc.Ref.ID only for a legacy/malformed document missing user_did.
 func (s *FirestoreFollowStore) ListUserDIDs(ctx context.Context) ([]string, error) {
 	var dids []string
-	iter := s.client.Collection(usersCollection).Select("user_did").Documents(ctx)
+	iter := s.client.Collection(usersCollection).
+		Where("precompute_artifacts", "==", true).
+		Select("user_did").
+		Documents(ctx)
 	defer iter.Stop()
 	for {
 		doc, err := iter.Next()

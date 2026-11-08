@@ -407,6 +407,16 @@ main() {
     local command=$1
     local target=$2
 
+    # The environment comes only from GE_ENVIRONMENT. Reject anything beyond
+    # [target] so a flag like `--environment prod` can't be silently ignored
+    # (or taken as the target) while the command acts on stage.
+    if [[ $# -gt 2 || "$target" == -* ]]; then
+        echo -e "${RED}Error: unexpected arguments: ${*:2}${NC}" >&2
+        echo "Usage: $0 {start|stop|status|details|restart} [target]" >&2
+        echo "Set the environment with GE_ENVIRONMENT (currently: $GE_ENVIRONMENT), e.g. GE_ENVIRONMENT=prod $0 status" >&2
+        return 1
+    fi
+
     case "$command" in
         "start")
             if [[ -n "$target" ]]; then

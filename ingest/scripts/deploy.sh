@@ -304,7 +304,7 @@ deploy_jetstream_service() {
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest,GOOGLE_RUNTIME_VERSION=1.25.7" \
+        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest,GOOGLE_RUNTIME_VERSION=1.27.3" \
         --set-env-vars="GE_JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
@@ -414,7 +414,7 @@ deploy_megastream_service() {
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest,GOOGLE_RUNTIME_VERSION=1.25.7" \
+        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest,GOOGLE_RUNTIME_VERSION=1.27.3" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --set-env-vars="GE_SPOOL_INTERVAL_SEC=60" \
@@ -770,6 +770,7 @@ main() {
 }
 
 # Parse command line arguments
+SERVICE=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --project-id)
@@ -806,6 +807,8 @@ while [[ $# -gt 0 ]]; do
             echo "Examples:"
             echo "  $0 jetstream                Deploy only jetstream-ingest"
             echo "  $0 megastream               Deploy only megastream-ingest"
+            echo "  $0 jetstream --environment prod"
+            echo "                              Deploy only jetstream-ingest to prod"
             echo "  $0                          Deploy all services"
             echo
             echo "Prerequisites:"
@@ -832,9 +835,16 @@ while [[ $# -gt 0 ]]; do
             echo
             exit 0
             ;;
-        jetstream|megastream|expiry|followed-users-backfill|extract|all)
-            # Handle service as first positional argument
-            break
+        jetstream|jetstream-ingest|megastream|megastream-ingest|expiry|elasticsearch-expiry|followed-users-backfill|follows-backfill|extract|extract-job|all)
+            # The service may appear anywhere among the options. Stopping the
+            # loop here used to drop every option after it, so
+            # `deploy.sh jetstream --environment prod` deployed to stage.
+            if [ -n "$SERVICE" ]; then
+                log_error "Only one service may be given (got '$SERVICE' and '$1')"
+                exit 1
+            fi
+            SERVICE="$1"
+            shift
             ;;
         *)
             log_error "Unknown option: $1"
@@ -844,4 +854,4 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-main "$@"
+main "${SERVICE:-all}"
