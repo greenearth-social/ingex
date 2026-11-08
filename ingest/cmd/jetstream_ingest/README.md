@@ -75,7 +75,7 @@ Held counts are written on shutdown, but anything that doesn't finish within the
 
 ### Graceful Shutdown
 
-The service responds to SIGINT and SIGTERM by stopping intake, allowing up to eight seconds to drain queued work and save the cursor, then releasing ownership.
+The service responds to SIGINT and SIGTERM by stopping intake, allowing up to five seconds to drain queued work and save the cursor, then releasing ownership. Drain, lease release, and the final metric export are each bounded so the whole sequence fits inside Cloud Run's 10-second window between SIGTERM and SIGKILL; if the release is cut off anyway, the successor takes over when the lease expires.
 
 ### Instance Coordination
 

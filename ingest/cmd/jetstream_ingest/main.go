@@ -48,7 +48,11 @@ func main() {
 	} else {
 		logger.SetMetricCollector(otelCollector)
 		defer func() {
-			if err := otelCollector.Shutdown(context.Background()); err != nil {
+			// Runs after the lease is released; bounded so the final export
+			// cannot outlast Cloud Run's shutdown grace period.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := otelCollector.Shutdown(shutdownCtx); err != nil {
 				logger.Error("Failed to shutdown OTel metric collector: %v", err)
 			}
 		}()

@@ -30,9 +30,12 @@ type leaseTiming struct {
 	ttl, renew, poll, request, margin, drain time.Duration
 }
 
+// Cloud Run sends SIGKILL 10 seconds after SIGTERM. drain + request (the
+// release) must fit well inside that, or the successor waits out the full ttl.
+// A normal drain takes well under a second.
 var ingestionLeaseTiming = leaseTiming{
 	ttl: time.Minute, renew: 20 * time.Second, poll: 5 * time.Second,
-	request: 2 * time.Second, margin: 10 * time.Second, drain: 8 * time.Second,
+	request: 2 * time.Second, margin: 10 * time.Second, drain: 5 * time.Second,
 }
 
 func withIngestionLease(ctx context.Context, statePath string, logger *common.IngestLogger, health *common.HealthServer, run func(context.Context, context.Context) error) error {
