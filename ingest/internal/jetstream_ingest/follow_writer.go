@@ -14,9 +14,12 @@ import (
 // (api#83). Jetstream is what keeps that cache current: we already consume the
 // unfiltered firehose for likes, so follow events cost no extra bandwidth.
 //
-// Only our own users matter — a few hundred DIDs out of the whole network — so
-// events are filtered against the users collection before any write. That is
-// what keeps Firestore write volume negligible.
+// Only our own users matter — the few thousand the API flags with
+// precompute_artifacts, not the much larger set of Explore-tab preview
+// accounts — so events are filtered against that set before any write. That
+// is what keeps Firestore write volume negligible. New real users are rare,
+// so the set is re-read hourly; a user flagged in between misses at most an
+// hour of deltas, which the API's TTL refresh reconciles.
 //
 // Writes are deliberately narrow. A follow appends to pending_adds; an
 // unfollow only stamps invalidated_at, because a jetstream delete carries just
