@@ -304,7 +304,7 @@ deploy_jetstream_service() {
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest,GOOGLE_RUNTIME_VERSION=1.25.7" \
+        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/jetstream_ingest,GOOGLE_RUNTIME_VERSION=1.27.3" \
         --set-env-vars="GE_JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
@@ -414,7 +414,7 @@ deploy_megastream_service() {
         --service-account="ingex-runner-$GE_ENVIRONMENT@$GE_GCP_PROJECT_ID.iam.gserviceaccount.com" \
         --vpc-connector="ingex-vpc-connector-$GE_ENVIRONMENT" \
         --vpc-egress=private-ranges-only \
-        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest,GOOGLE_RUNTIME_VERSION=1.25.7" \
+        --set-build-env-vars="GOOGLE_BUILDABLE=./cmd/megastream_ingest,GOOGLE_RUNTIME_VERSION=1.27.3" \
         --set-env-vars="GE_LOGGING_ENABLED=true" \
         --set-env-vars="GE_GIT_SHA=$GIT_SHA" \
         --set-env-vars="GE_SPOOL_INTERVAL_SEC=60" \
