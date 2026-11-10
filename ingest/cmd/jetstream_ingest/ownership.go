@@ -24,20 +24,18 @@ type ingestionLease interface {
 
 // ttl is the ownership lifetime confirmed by acquisition or renewal; renew is
 // the renewal interval, and poll is the delay between acquisition attempts.
-// request bounds each storage call, retry is the delay between attempts after
-// an uncertain renewal failure, margin stops work before ownership expires,
+// request bounds each storage call, margin stops work before ownership expires,
 // and drain bounds the time allowed to finish work during graceful shutdown.
 type leaseTiming struct {
-	ttl, renew, poll, request, retry, margin, drain time.Duration
+	ttl, renew, poll, request, margin, drain time.Duration
 }
 
 // Cloud Run sends SIGKILL 10 seconds after SIGTERM. drain + request (the
 // release) must fit well inside that, or the successor waits out the full ttl.
-// A normal drain takes well under a second. A failed renewal has ttl - renew -
-// margin (30s) of retries before the watchdog stops work.
+// A normal drain takes well under a second.
 var ingestionLeaseTiming = leaseTiming{
 	ttl: time.Minute, renew: 20 * time.Second, poll: 5 * time.Second,
-	request: 2 * time.Second, retry: 2 * time.Second, margin: 10 * time.Second, drain: 5 * time.Second,
+	request: 2 * time.Second, margin: 10 * time.Second, drain: 5 * time.Second,
 }
 
 func withIngestionLease(ctx context.Context, statePath string, logger *common.IngestLogger, health *common.HealthServer, run func(context.Context, context.Context) error) error {
@@ -123,11 +121,8 @@ func runLeaseSession(ctx context.Context, lease ingestionLease, timing leaseTimi
 		}
 	}()
 
-	// Stop before the confirmed expiry even if renewal stalls or keeps failing.
-	expiry := time.AfterFunc(time.Until(lease.ExpiresAt())-timing.margin, func() {
-		logger.Error("Stopping ingestion: lease renewal was not confirmed before expiry")
-		cancelWork()
-	})
+	// Stop before the confirmed expiry even if a renewal request stalls.
+	expiry := time.AfterFunc(time.Until(lease.ExpiresAt())-timing.margin, cancelWork)
 	defer expiry.Stop()
 	renewCtx, stopRenewing := context.WithCancel(workCtx)
 	renewDone := make(chan struct{})
@@ -141,14 +136,16 @@ func runLeaseSession(ctx context.Context, lease ingestionLease, timing leaseTimi
 			case <-renewCtx.Done():
 				return
 			case <-ticker.C:
-				err := renewWithRetry(renewCtx, lease, timing, logger)
-				if renewCtx.Err() != nil {
-					return
-				}
+				requestCtx, cancel := context.WithTimeout(renewCtx, timing.request)
+				err := lease.Renew(requestCtx, timing.ttl)
+				cancel()
 				if err != nil {
-					logger.Error("Stopping ingestion after lease was lost: %v", err)
-					// Another owner may already be writing, so stop without a
-					// graceful drain allowance.
+					if renewCtx.Err() != nil {
+						return
+					}
+					logger.Error("Stopping ingestion after lease renewal failed: %v", err)
+					// An unconfirmed renewal cannot justify continued writes, so
+					// lease failure stops work without a graceful drain allowance.
 					lost = true
 					cancelWork()
 					return
@@ -180,32 +177,4 @@ func runLeaseSession(ctx context.Context, lease ingestionLease, timing leaseTimi
 		return nil
 	}
 	return err
-}
-
-// renewWithRetry returns nil once a renewal is confirmed and ErrLeaseLost once
-// ownership is definitely gone. Other failures leave the outcome uncertain, but
-// the last confirmed lease still excludes other owners, so writes continue
-// while renewal is retried. The watchdog cancels ctx before that lease expires.
-func renewWithRetry(ctx context.Context, lease ingestionLease, timing leaseTiming, logger *common.IngestLogger) error {
-	for attempt := 1; ; attempt++ {
-		requestCtx, cancel := context.WithTimeout(ctx, timing.request)
-		err := lease.Renew(requestCtx, timing.ttl)
-		cancel()
-		if err == nil {
-			if attempt > 1 {
-				logger.Info("Lease renewal succeeded after %d attempts", attempt)
-			}
-			return nil
-		}
-		if errors.Is(err, jetstream_ingest.ErrLeaseLost) || ctx.Err() != nil {
-			return err
-		}
-		logger.Error("Lease renewal attempt %d failed, retrying in %v (lease expires in %v): %v",
-			attempt, timing.retry, time.Until(lease.ExpiresAt()).Round(time.Second), err)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(timing.retry):
-		}
-	}
 }

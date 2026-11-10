@@ -54,7 +54,7 @@ func (l *testIngestionLease) ExpiresAt() time.Time {
 func testLeaseTiming() leaseTiming {
 	return leaseTiming{
 		ttl: time.Second, renew: 10 * time.Millisecond, poll: 5 * time.Millisecond,
-		request: 100 * time.Millisecond, retry: 10 * time.Millisecond, margin: 100 * time.Millisecond, drain: 500 * time.Millisecond,
+		request: 100 * time.Millisecond, margin: 100 * time.Millisecond, drain: 500 * time.Millisecond,
 	}
 }
 
@@ -186,9 +186,8 @@ func TestRunLeaseSessionShutdownDrainsBeforeRelease(t *testing.T) {
 }
 
 func TestRunWithLeaseRenewalFailureStopsWritersAndReturnsToWaiting(t *testing.T) {
-	// Explicit ownership loss stops writers at once. Storage failures that never
-	// clear stop them when the last confirmed lease nears expiry. Either way the
-	// still-running process waits for ownership again.
+	// Explicit ownership loss and an uncertain storage failure both require
+	// writers to stop before the still-running process can wait for ownership again.
 	for _, renewErr := range []error{jetstream_ingest.ErrLeaseLost, errors.New("storage unavailable")} {
 		t.Run(renewErr.Error(), func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -336,49 +335,4 @@ func TestWithIngestionLeaseLocalCancellationIsNormalShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("normal shutdown returned an error: %v", err)
 	}
-}
-
-func TestRunLeaseSessionRetriesUncertainRenewalFailures(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	lease := &testIngestionLease{expires: time.Now().Add(time.Second)}
-	var attempts atomic.Int32
-	renewed := make(chan struct{}, 1)
-	lease.renew = func(_ context.Context, ttl time.Duration) error {
-		// Fail the first two attempts the way a dropped GCS connection does.
-		if attempts.Add(1) <= 2 {
-			return errors.New("connection reset by peer")
-		}
-		lease.mu.Lock()
-		lease.expires = time.Now().Add(ttl)
-		lease.mu.Unlock()
-		select {
-		case renewed <- struct{}{}:
-		default:
-		}
-		return nil
-	}
-	started := make(chan struct{})
-	result := make(chan error, 1)
-	go func() {
-		result <- runLeaseSession(ctx, lease, testLeaseTiming(), common.NewLogger(false), func(intake, work context.Context) error {
-			close(started)
-			<-intake.Done()
-			if work.Err() != nil {
-				t.Error("renewal retries canceled work before shutdown")
-			}
-			return nil
-		})
-	}()
-	waitForOwnershipEvent(t, started)
-	waitForOwnershipEvent(t, renewed)
-	// Outlive the original lease to show the recovered renewal moved the watchdog.
-	time.Sleep(time.Second)
-	select {
-	case err := <-result:
-		t.Fatalf("session ended despite a confirmed renewal: %v", err)
-	default:
-	}
-	cancel()
-	waitForOwnershipResult(t, result)
 }

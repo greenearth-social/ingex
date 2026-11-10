@@ -30,7 +30,9 @@ type Lease struct {
 	generation int64
 	expiresAt  time.Time
 	// unconfirmed holds deadlines from renewal writes whose outcome is unknown.
-	// GCS may have committed one even though the response never arrived.
+	// GCS may have committed one even though the response never arrived. They
+	// count only once a read finds one stored, which lets a 412 be traced to our
+	// own write instead of another owner's.
 	unconfirmed []time.Time
 	now         func() time.Time
 }
@@ -164,8 +166,20 @@ func (l *Lease) Release(ctx context.Context) error {
 	}
 	// Expiring the record allows immediate takeover without deleting the object.
 	_, err := l.write(ctx, storage.Conditions{GenerationMatch: l.generation}, time.Time{})
+	if leasePreconditionFailed(err) && len(l.unconfirmed) > 0 {
+		// A renewal that stopped ingestion may have committed anyway. Releasing
+		// that generation spares the successor a wait for the full ttl.
+		ownGeneration, _, readErr := l.findOwnRenewal(ctx, l.unconfirmed)
+		if readErr != nil {
+			return readErr
+		}
+		if ownGeneration != 0 {
+			_, err = l.write(ctx, storage.Conditions{GenerationMatch: ownGeneration}, time.Time{})
+		}
+	}
 	if leasePreconditionFailed(err) {
 		l.generation = 0
+		l.unconfirmed = nil
 		return ErrLeaseLost
 	}
 	if err != nil {
@@ -173,6 +187,7 @@ func (l *Lease) Release(ctx context.Context) error {
 	}
 	l.generation = 0
 	l.expiresAt = time.Time{}
+	l.unconfirmed = nil
 	return nil
 }
 

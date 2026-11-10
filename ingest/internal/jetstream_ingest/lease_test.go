@@ -294,33 +294,37 @@ func TestLeaseSlowAcquisitionDoesNotGrantExpiredOwnership(t *testing.T) {
 	}
 }
 
-func TestLeaseRenewalRecoversWriteWhoseResponseWasLost(t *testing.T) {
-	store := &leaseStorage{}
-	now := time.Now()
-	lease := newTestLease(t, store, "a", func() time.Time { return now })
-	acquireLease(t, lease)
-	acquiredExpiry := lease.ExpiresAt()
-	now = now.Add(20 * time.Second)
-	store.lostResponse = errors.New("response lost")
-	if err := lease.Renew(context.Background(), time.Minute); err == nil || errors.Is(err, ErrLeaseLost) {
-		t.Fatalf("lost response should be an uncertain failure: %v", err)
-	}
-	if !lease.ExpiresAt().Equal(acquiredExpiry) {
-		t.Fatal("unconfirmed renewal extended the local expiration")
-	}
-	committedExpiry := now.Add(time.Minute)
-	// The retry's write is rejected because the lost one committed. Recognizing
-	// that write keeps ownership at the deadline GCS actually stored.
-	now = now.Add(2 * time.Second)
-	if err := lease.Renew(context.Background(), time.Minute); err != nil {
-		t.Fatalf("retry should recover the committed renewal: %v", err)
-	}
-	if !lease.ExpiresAt().Equal(committedExpiry) {
-		t.Fatalf("recovered expiry = %v, want %v", lease.ExpiresAt(), committedExpiry)
-	}
-	// Ownership continues normally with the recovered generation.
-	if err := lease.Renew(context.Background(), time.Minute); err != nil {
-		t.Fatalf("renewal after recovery: %v", err)
+func TestLeaseReleaseAfterUncertainRenewalFreesLease(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail func(*leaseStorage)
+	}{
+		// The renewal committed, but the connection dropped before the response.
+		{name: "lost response", fail: func(s *leaseStorage) { s.lostResponse = errors.New("response lost") }},
+		// The renewal never reached storage.
+		{name: "rejected write", fail: func(s *leaseStorage) { s.writeStatus = http.StatusForbidden }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &leaseStorage{}
+			now := time.Now()
+			owner := newTestLease(t, store, "a", func() time.Time { return now })
+			acquireLease(t, owner)
+			acquiredExpiry := owner.ExpiresAt()
+			now = now.Add(20 * time.Second)
+			tc.fail(store)
+			if err := owner.Renew(context.Background(), time.Minute); err == nil || errors.Is(err, ErrLeaseLost) {
+				t.Fatalf("expected an uncertain failure: %v", err)
+			}
+			if !owner.ExpiresAt().Equal(acquiredExpiry) {
+				t.Fatal("unconfirmed renewal extended the local expiration")
+			}
+			store.writeStatus = 0
+			if err := owner.Release(context.Background()); err != nil {
+				t.Fatalf("release after uncertain renewal: %v", err)
+			}
+			// A successor acquires at once instead of waiting out the ttl.
+			acquireLease(t, newTestLease(t, store, "b", func() time.Time { return now }))
+		})
 	}
 }
 
@@ -331,6 +335,7 @@ func TestLeaseRenewalRecoversClientRetryConflict(t *testing.T) {
 	acquireLease(t, lease)
 	now = now.Add(20 * time.Second)
 	// A client-level retry after a dropped connection sees its own commit as a 412.
+	// Reading the record confirms the write, so ownership is not in doubt.
 	store.committedConflict = true
 	if err := lease.Renew(context.Background(), time.Minute); err != nil {
 		t.Fatalf("own committed write should not lose the lease: %v", err)
@@ -343,7 +348,7 @@ func TestLeaseRenewalRecoversClientRetryConflict(t *testing.T) {
 	}
 }
 
-func TestLeaseRenewalAfterUncertainFailureRejectsOtherWriters(t *testing.T) {
+func TestLeaseAfterUncertainRenewalLeavesOtherWritersAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		owner string
@@ -372,9 +377,15 @@ func TestLeaseRenewalAfterUncertainFailureRejectsOtherWriters(t *testing.T) {
 			store.mu.Lock()
 			store.data = data
 			store.generation++
+			generation := store.generation
 			store.mu.Unlock()
-			if err := lease.Renew(context.Background(), time.Minute); !errors.Is(err, ErrLeaseLost) {
-				t.Fatalf("renewal should report the lease lost: %v", err)
+			if err := lease.Release(context.Background()); !errors.Is(err, ErrLeaseLost) {
+				t.Fatalf("release should report the lease lost: %v", err)
+			}
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			if store.generation != generation || !bytes.Equal(store.data, data) {
+				t.Fatal("release overwrote a record this owner did not write")
 			}
 		})
 	}
