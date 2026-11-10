@@ -29,7 +29,10 @@ type Lease struct {
 	ownerID    string
 	generation int64
 	expiresAt  time.Time
-	now        func() time.Time
+	// unconfirmed holds deadlines from renewal writes whose outcome is unknown.
+	// GCS may have committed one even though the response never arrived.
+	unconfirmed []time.Time
+	now         func() time.Time
 }
 
 // NewLease uses one GCS object to coordinate ownership among instances.
@@ -77,6 +80,7 @@ func (l *Lease) TryAcquire(ctx context.Context, ttl time.Duration) (bool, error)
 	// Remember ownership only after GCS confirms the write.
 	l.generation = generation
 	l.expiresAt = expiresAt
+	l.unconfirmed = nil
 	// A delayed response can arrive after the permission it granted has expired.
 	if !l.now().Before(expiresAt) {
 		return false, ErrLeaseLost
@@ -93,19 +97,63 @@ func (l *Lease) Renew(ctx context.Context, ttl time.Duration) error {
 	expiresAt := l.now().Add(ttl)
 	generation, err := l.write(ctx, storage.Conditions{GenerationMatch: l.generation}, expiresAt)
 	if leasePreconditionFailed(err) {
-		l.generation = 0
-		return ErrLeaseLost
-	}
-	if err != nil {
+		// The generation moved. That is another owner, or one of our own writes
+		// that committed after its response was lost (including a client retry of
+		// this request). Only the second case keeps ownership.
+		l.unconfirmed = append(l.unconfirmed, expiresAt)
+		ownGeneration, ownExpiresAt, readErr := l.findOwnRenewal(ctx, l.unconfirmed)
+		if readErr != nil {
+			return readErr
+		}
+		if ownGeneration == 0 {
+			l.generation = 0
+			l.unconfirmed = nil
+			return ErrLeaseLost
+		}
+		generation, expiresAt = ownGeneration, ownExpiresAt
+	} else if err != nil {
+		l.unconfirmed = append(l.unconfirmed, expiresAt)
 		return err
 	}
 	// Keep the previous deadline unless GCS confirms the renewal write.
 	l.generation = generation
 	l.expiresAt = expiresAt
+	l.unconfirmed = nil
 	if !l.now().Before(expiresAt) {
 		return ErrLeaseLost
 	}
 	return nil
+}
+
+// findOwnRenewal returns the stored generation and deadline when the record is
+// one of this owner's renewal writes, or zero when someone else wrote it. Each
+// renewal writes a fresh deadline, so a match identifies a write this instance
+// made against its own generation, which only GCS could have accepted.
+func (l *Lease) findOwnRenewal(ctx context.Context, attempts []time.Time) (int64, time.Time, error) {
+	reader, err := l.object.NewReader(ctx)
+	if errors.Is(err, storage.ErrObjectNotExist) {
+		return 0, time.Time{}, nil
+	}
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("read ingestion lease: %w", err)
+	}
+	var record leaseRecord
+	decodeErr := json.NewDecoder(reader).Decode(&record)
+	generation := reader.Attrs.Generation
+	_ = reader.Close()
+	if decodeErr != nil {
+		return 0, time.Time{}, fmt.Errorf("decode ingestion lease: %w", decodeErr)
+	}
+	// A renewal always extends the confirmed deadline, so anything else is not one.
+	if record.OwnerID != l.ownerID || !record.ExpiresAt.After(l.expiresAt) {
+		return 0, time.Time{}, nil
+	}
+	for _, attempt := range attempts {
+		if record.ExpiresAt.Equal(attempt) {
+			return generation, record.ExpiresAt, nil
+		}
+	}
+	return 0, time.Time{}, nil
 }
 
 // Release makes the lease available after ingestion and cursor persistence stop.

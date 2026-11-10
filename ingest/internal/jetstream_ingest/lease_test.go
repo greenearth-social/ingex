@@ -31,6 +31,10 @@ type leaseStorage struct {
 	writeStatus int
 	beforeWrite func()
 	reads       *sync.WaitGroup
+	// The next committed write reports failure anyway: lostResponse as a
+	// connection error, or committedConflict as the 412 a client retry receives.
+	lostResponse      error
+	committedConflict bool
 }
 
 func (s *leaseStorage) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -105,6 +109,14 @@ func (s *leaseStorage) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	s.generation++
 	s.data = data
+	if err := s.lostResponse; err != nil {
+		s.lostResponse = nil
+		return nil, err
+	}
+	if s.committedConflict {
+		s.committedConflict = false
+		return errorResponse(http.StatusPreconditionFailed)
+	}
 	var checksum [4]byte
 	binary.BigEndian.PutUint32(checksum[:], crc32.Checksum(data, crc32.MakeTable(crc32.Castagnoli)))
 	return response(http.StatusOK, []byte(fmt.Sprintf(`{"generation":"%d","bucket":"test","name":"lease.json","crc32c":"%s"}`,
@@ -279,5 +291,91 @@ func TestLeaseSlowAcquisitionDoesNotGrantExpiredOwnership(t *testing.T) {
 	acquired, err := lease.TryAcquire(context.Background(), time.Minute)
 	if acquired || !errors.Is(err, ErrLeaseLost) {
 		t.Fatalf("slow acquisition granted expired ownership: acquired=%t, err=%v", acquired, err)
+	}
+}
+
+func TestLeaseRenewalRecoversWriteWhoseResponseWasLost(t *testing.T) {
+	store := &leaseStorage{}
+	now := time.Now()
+	lease := newTestLease(t, store, "a", func() time.Time { return now })
+	acquireLease(t, lease)
+	acquiredExpiry := lease.ExpiresAt()
+	now = now.Add(20 * time.Second)
+	store.lostResponse = errors.New("response lost")
+	if err := lease.Renew(context.Background(), time.Minute); err == nil || errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("lost response should be an uncertain failure: %v", err)
+	}
+	if !lease.ExpiresAt().Equal(acquiredExpiry) {
+		t.Fatal("unconfirmed renewal extended the local expiration")
+	}
+	committedExpiry := now.Add(time.Minute)
+	// The retry's write is rejected because the lost one committed. Recognizing
+	// that write keeps ownership at the deadline GCS actually stored.
+	now = now.Add(2 * time.Second)
+	if err := lease.Renew(context.Background(), time.Minute); err != nil {
+		t.Fatalf("retry should recover the committed renewal: %v", err)
+	}
+	if !lease.ExpiresAt().Equal(committedExpiry) {
+		t.Fatalf("recovered expiry = %v, want %v", lease.ExpiresAt(), committedExpiry)
+	}
+	// Ownership continues normally with the recovered generation.
+	if err := lease.Renew(context.Background(), time.Minute); err != nil {
+		t.Fatalf("renewal after recovery: %v", err)
+	}
+}
+
+func TestLeaseRenewalRecoversClientRetryConflict(t *testing.T) {
+	store := &leaseStorage{}
+	now := time.Now()
+	lease := newTestLease(t, store, "a", func() time.Time { return now })
+	acquireLease(t, lease)
+	now = now.Add(20 * time.Second)
+	// A client-level retry after a dropped connection sees its own commit as a 412.
+	store.committedConflict = true
+	if err := lease.Renew(context.Background(), time.Minute); err != nil {
+		t.Fatalf("own committed write should not lose the lease: %v", err)
+	}
+	if want := now.Add(time.Minute); !lease.ExpiresAt().Equal(want) {
+		t.Fatalf("expiry = %v, want %v", lease.ExpiresAt(), want)
+	}
+	if err := lease.Renew(context.Background(), time.Minute); err != nil {
+		t.Fatalf("renewal after recovery: %v", err)
+	}
+}
+
+func TestLeaseRenewalAfterUncertainFailureRejectsOtherWriters(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		owner string
+		// offset moves the stored deadline away from every renewal this owner tried.
+		offset time.Duration
+	}{
+		{name: "other owner", owner: "b"},
+		{name: "unattempted deadline", owner: "a", offset: time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &leaseStorage{}
+			now := time.Now()
+			lease := newTestLease(t, store, "a", func() time.Time { return now })
+			acquireLease(t, lease)
+			now = now.Add(20 * time.Second)
+			store.writeStatus = http.StatusForbidden
+			if err := lease.Renew(context.Background(), time.Minute); err == nil || errors.Is(err, ErrLeaseLost) {
+				t.Fatalf("expected an uncertain failure: %v", err)
+			}
+			store.writeStatus = 0
+			// Replace the record as a different writer would.
+			data, err := json.Marshal(leaseRecord{OwnerID: tc.owner, ExpiresAt: now.Add(time.Minute + tc.offset)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			store.mu.Lock()
+			store.data = data
+			store.generation++
+			store.mu.Unlock()
+			if err := lease.Renew(context.Background(), time.Minute); !errors.Is(err, ErrLeaseLost) {
+				t.Fatalf("renewal should report the lease lost: %v", err)
+			}
+		})
 	}
 }
