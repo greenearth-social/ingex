@@ -298,9 +298,13 @@ func TestLeaseReleaseAfterUncertainRenewalFreesLease(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		fail func(*leaseStorage)
+		// lost means Renew reports the lease lost rather than an unknown outcome.
+		lost bool
 	}{
 		// The renewal committed, but the connection dropped before the response.
 		{name: "lost response", fail: func(s *leaseStorage) { s.lostResponse = errors.New("response lost") }},
+		// A client-level retry after a dropped connection sees its own commit as a 412.
+		{name: "client retry conflict", fail: func(s *leaseStorage) { s.committedConflict = true }, lost: true},
 		// The renewal never reached storage.
 		{name: "rejected write", fail: func(s *leaseStorage) { s.writeStatus = http.StatusForbidden }},
 	} {
@@ -312,8 +316,9 @@ func TestLeaseReleaseAfterUncertainRenewalFreesLease(t *testing.T) {
 			acquiredExpiry := owner.ExpiresAt()
 			now = now.Add(20 * time.Second)
 			tc.fail(store)
-			if err := owner.Renew(context.Background(), time.Minute); err == nil || errors.Is(err, ErrLeaseLost) {
-				t.Fatalf("expected an uncertain failure: %v", err)
+			err := owner.Renew(context.Background(), time.Minute)
+			if err == nil || errors.Is(err, ErrLeaseLost) != tc.lost {
+				t.Fatalf("unexpected renewal result: %v", err)
 			}
 			if !owner.ExpiresAt().Equal(acquiredExpiry) {
 				t.Fatal("unconfirmed renewal extended the local expiration")
@@ -328,35 +333,60 @@ func TestLeaseReleaseAfterUncertainRenewalFreesLease(t *testing.T) {
 	}
 }
 
-func TestLeaseRenewalRecoversClientRetryConflict(t *testing.T) {
-	store := &leaseStorage{}
-	now := time.Now()
-	lease := newTestLease(t, store, "a", func() time.Time { return now })
-	acquireLease(t, lease)
-	now = now.Add(20 * time.Second)
-	// A client-level retry after a dropped connection sees its own commit as a 412.
-	// Reading the record confirms the write, so ownership is not in doubt.
-	store.committedConflict = true
-	if err := lease.Renew(context.Background(), time.Minute); err != nil {
-		t.Fatalf("own committed write should not lose the lease: %v", err)
-	}
-	if want := now.Add(time.Minute); !lease.ExpiresAt().Equal(want) {
-		t.Fatalf("expiry = %v, want %v", lease.ExpiresAt(), want)
-	}
-	if err := lease.Renew(context.Background(), time.Minute); err != nil {
-		t.Fatalf("renewal after recovery: %v", err)
+func TestLeaseReacquiresOwnRecordLeftByLostResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// strand leaves an unexpired record from owner a that a does not hold.
+		strand func(*testing.T, *leaseStorage, *Lease, *time.Time)
+	}{
+		{name: "acquisition", strand: func(t *testing.T, s *leaseStorage, a *Lease, _ *time.Time) {
+			s.lostResponse = errors.New("response lost")
+			if acquired, err := a.TryAcquire(context.Background(), time.Minute); err == nil || acquired {
+				t.Fatalf("expected an uncertain acquisition: acquired=%t, err=%v", acquired, err)
+			}
+		}},
+		{name: "renewal and release", strand: func(t *testing.T, s *leaseStorage, a *Lease, now *time.Time) {
+			acquireLease(t, a)
+			*now = now.Add(20 * time.Second)
+			s.lostResponse = errors.New("response lost")
+			if err := a.Renew(context.Background(), time.Minute); err == nil || errors.Is(err, ErrLeaseLost) {
+				t.Fatalf("expected an uncertain renewal: %v", err)
+			}
+			s.writeStatus = http.StatusForbidden
+			if err := a.Release(context.Background()); err == nil {
+				t.Fatal("expected release to fail")
+			}
+			s.writeStatus = 0
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &leaseStorage{}
+			now := time.Now()
+			clock := func() time.Time { return now }
+			a := newTestLease(t, store, "a", clock)
+			b := newTestLease(t, store, "b", clock)
+			tc.strand(t, store, a, &now)
+			if acquired, err := b.TryAcquire(context.Background(), time.Minute); err != nil || acquired {
+				t.Fatalf("other instance took an unexpired lease: acquired=%t, err=%v", acquired, err)
+			}
+			// The record is a's own, so a need not wait for it to expire.
+			acquireLease(t, a)
+			if err := a.Renew(context.Background(), time.Minute); err != nil {
+				t.Fatalf("renewal after reacquiring: %v", err)
+			}
+		})
 	}
 }
 
-func TestLeaseAfterUncertainRenewalLeavesOtherWritersAlone(t *testing.T) {
+func TestLeaseReleaseLeavesOtherRecordsAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		owner string
-		// offset moves the stored deadline away from every renewal this owner tried.
-		offset time.Duration
+		// expiresIn sets the replacement record's deadline relative to now.
+		expiresIn time.Duration
 	}{
-		{name: "other owner", owner: "b"},
-		{name: "unattempted deadline", owner: "a", offset: time.Second},
+		{name: "other owner", owner: "b", expiresIn: time.Minute},
+		{name: "expired own record", owner: "a", expiresIn: -time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &leaseStorage{}
@@ -364,13 +394,8 @@ func TestLeaseAfterUncertainRenewalLeavesOtherWritersAlone(t *testing.T) {
 			lease := newTestLease(t, store, "a", func() time.Time { return now })
 			acquireLease(t, lease)
 			now = now.Add(20 * time.Second)
-			store.writeStatus = http.StatusForbidden
-			if err := lease.Renew(context.Background(), time.Minute); err == nil || errors.Is(err, ErrLeaseLost) {
-				t.Fatalf("expected an uncertain failure: %v", err)
-			}
-			store.writeStatus = 0
 			// Replace the record as a different writer would.
-			data, err := json.Marshal(leaseRecord{OwnerID: tc.owner, ExpiresAt: now.Add(time.Minute + tc.offset)})
+			data, err := json.Marshal(leaseRecord{OwnerID: tc.owner, ExpiresAt: now.Add(tc.expiresIn)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -385,7 +410,7 @@ func TestLeaseAfterUncertainRenewalLeavesOtherWritersAlone(t *testing.T) {
 			store.mu.Lock()
 			defer store.mu.Unlock()
 			if store.generation != generation || !bytes.Equal(store.data, data) {
-				t.Fatal("release overwrote a record this owner did not write")
+				t.Fatal("release overwrote a record it should leave alone")
 			}
 		})
 	}

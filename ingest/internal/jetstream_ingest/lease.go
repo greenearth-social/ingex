@@ -23,21 +23,20 @@ type leaseRecord struct {
 
 // Lease coordinates one active ingester using GCS generation preconditions.
 // Calls must be serialized; the worker must stop before ExpiresAt if renewal fails.
-// ownerID identifies the process for inspection; generation preconditions decide ownership.
+// Generation preconditions decide ownership. ownerID must be unique to the process:
+// it lets an instance recognize a record its own write stored after the response
+// was lost, and clear it instead of waiting out the ttl.
 type Lease struct {
 	object     *storage.ObjectHandle
 	ownerID    string
 	generation int64
 	expiresAt  time.Time
-	// unconfirmed holds deadlines from renewal writes whose outcome is unknown.
-	// GCS may have committed one even though the response never arrived. They
-	// count only once a read finds one stored, which lets a 412 be traced to our
-	// own write instead of another owner's.
-	unconfirmed []time.Time
-	now         func() time.Time
+	now        func() time.Time
 }
 
-// NewLease uses one GCS object to coordinate ownership among instances.
+// NewLease uses one GCS object to coordinate ownership among instances. Each
+// process needs its own ownerID; sharing one would let instances take over each
+// other's unexpired leases.
 func NewLease(client *storage.Client, bucket, object, ownerID string) *Lease {
 	return &Lease{
 		object:  client.Bucket(bucket).Object(object),
@@ -48,31 +47,26 @@ func NewLease(client *storage.Client, bucket, object, ownerID string) *Lease {
 
 // TryAcquire returns false when another instance owns the lease or wins the race
 // to acquire it. It never changes an unexpired lease held by another instance.
+// Callers must not be ingesting: an unexpired record with this instance's ownerID
+// is taken over, since only a write whose response was lost can leave one behind.
 func (l *Lease) TryAcquire(ctx context.Context, ttl time.Duration) (bool, error) {
 	// Creation and takeover both use a conditional write so only one contender wins.
 	conditions := storage.Conditions{DoesNotExist: true}
-	// NewReader supplies the body and generation from the same response.
-	reader, err := l.object.NewReader(ctx)
-	if err == nil {
-		var record leaseRecord
-		decodeErr := json.NewDecoder(reader).Decode(&record)
-		generation := reader.Attrs.Generation
-		_ = reader.Close()
-		if decodeErr != nil {
-			return false, fmt.Errorf("decode ingestion lease: %w", decodeErr)
-		}
-		if l.now().Before(record.ExpiresAt) {
+	record, generation, err := l.read(ctx)
+	if err != nil {
+		return false, err
+	}
+	if generation != 0 {
+		if record.OwnerID != l.ownerID && l.now().Before(record.ExpiresAt) {
 			return false, nil
 		}
 		conditions = storage.Conditions{GenerationMatch: generation}
-	} else if !errors.Is(err, storage.ErrObjectNotExist) {
-		return false, fmt.Errorf("read ingestion lease: %w", err)
 	}
 
 	// Count upload time against the lease lifetime rather than extending local
 	// permission beyond the expiration written to GCS.
 	expiresAt := l.now().Add(ttl)
-	generation, err := l.write(ctx, conditions, expiresAt)
+	generation, err = l.write(ctx, conditions, expiresAt)
 	if leasePreconditionFailed(err) {
 		return false, nil
 	}
@@ -82,7 +76,6 @@ func (l *Lease) TryAcquire(ctx context.Context, ttl time.Duration) (bool, error)
 	// Remember ownership only after GCS confirms the write.
 	l.generation = generation
 	l.expiresAt = expiresAt
-	l.unconfirmed = nil
 	// A delayed response can arrive after the permission it granted has expired.
 	if !l.now().Before(expiresAt) {
 		return false, ErrLeaseLost
@@ -99,101 +92,86 @@ func (l *Lease) Renew(ctx context.Context, ttl time.Duration) error {
 	expiresAt := l.now().Add(ttl)
 	generation, err := l.write(ctx, storage.Conditions{GenerationMatch: l.generation}, expiresAt)
 	if leasePreconditionFailed(err) {
-		// The generation moved. That is another owner, or one of our own writes
-		// that committed after its response was lost (including a client retry of
-		// this request). Only the second case keeps ownership.
-		l.unconfirmed = append(l.unconfirmed, expiresAt)
-		ownGeneration, ownExpiresAt, readErr := l.findOwnRenewal(ctx, l.unconfirmed)
-		if readErr != nil {
-			return readErr
-		}
-		if ownGeneration == 0 {
-			l.generation = 0
-			l.unconfirmed = nil
-			return ErrLeaseLost
-		}
-		generation, expiresAt = ownGeneration, ownExpiresAt
-	} else if err != nil {
-		l.unconfirmed = append(l.unconfirmed, expiresAt)
+		l.generation = 0
+		return ErrLeaseLost
+	}
+	if err != nil {
 		return err
 	}
 	// Keep the previous deadline unless GCS confirms the renewal write.
 	l.generation = generation
 	l.expiresAt = expiresAt
-	l.unconfirmed = nil
 	if !l.now().Before(expiresAt) {
 		return ErrLeaseLost
 	}
 	return nil
 }
 
-// findOwnRenewal returns the stored generation and deadline when the record is
-// one of this owner's renewal writes, or zero when someone else wrote it. Each
-// renewal writes a fresh deadline, so a match identifies a write this instance
-// made against its own generation, which only GCS could have accepted.
-func (l *Lease) findOwnRenewal(ctx context.Context, attempts []time.Time) (int64, time.Time, error) {
-	reader, err := l.object.NewReader(ctx)
-	if errors.Is(err, storage.ErrObjectNotExist) {
-		return 0, time.Time{}, nil
-	}
-	if err != nil {
-		return 0, time.Time{}, fmt.Errorf("read ingestion lease: %w", err)
-	}
-	var record leaseRecord
-	decodeErr := json.NewDecoder(reader).Decode(&record)
-	generation := reader.Attrs.Generation
-	_ = reader.Close()
-	if decodeErr != nil {
-		return 0, time.Time{}, fmt.Errorf("decode ingestion lease: %w", decodeErr)
-	}
-	// A renewal always extends the confirmed deadline, so anything else is not one.
-	if record.OwnerID != l.ownerID || !record.ExpiresAt.After(l.expiresAt) {
-		return 0, time.Time{}, nil
-	}
-	for _, attempt := range attempts {
-		if record.ExpiresAt.Equal(attempt) {
-			return generation, record.ExpiresAt, nil
-		}
-	}
-	return 0, time.Time{}, nil
-}
-
 // Release makes the lease available after ingestion and cursor persistence stop.
 // The generation check prevents an old owner from releasing its successor's lease.
 func (l *Lease) Release(ctx context.Context) error {
-	if l.generation == 0 {
-		return ErrLeaseLost
+	err := ErrLeaseLost
+	if l.generation != 0 {
+		// Expiring the record allows immediate takeover without deleting the object.
+		_, err = l.write(ctx, storage.Conditions{GenerationMatch: l.generation}, time.Time{})
 	}
-	// Expiring the record allows immediate takeover without deleting the object.
-	_, err := l.write(ctx, storage.Conditions{GenerationMatch: l.generation}, time.Time{})
-	if leasePreconditionFailed(err) && len(l.unconfirmed) > 0 {
-		// A renewal that stopped ingestion may have committed anyway. Releasing
-		// that generation spares the successor a wait for the full ttl.
-		ownGeneration, _, readErr := l.findOwnRenewal(ctx, l.unconfirmed)
-		if readErr != nil {
-			return readErr
-		}
-		if ownGeneration != 0 {
-			_, err = l.write(ctx, storage.Conditions{GenerationMatch: ownGeneration}, time.Time{})
-		}
+	if l.generation == 0 || leasePreconditionFailed(err) {
+		// The generation moved, or a renewal already found it moved. A renewal
+		// that stopped ingestion may have stored this instance's record anyway;
+		// expiring it spares other instances a wait for the full ttl.
+		err = l.releaseOwnRecord(ctx)
 	}
-	if leasePreconditionFailed(err) {
+	if errors.Is(err, ErrLeaseLost) {
 		l.generation = 0
-		l.unconfirmed = nil
-		return ErrLeaseLost
 	}
 	if err != nil {
 		return err
 	}
 	l.generation = 0
 	l.expiresAt = time.Time{}
-	l.unconfirmed = nil
 	return nil
+}
+
+// releaseOwnRecord expires the stored record only if this instance wrote it
+// and it has not expired. Any other record belongs to a successor.
+func (l *Lease) releaseOwnRecord(ctx context.Context) error {
+	record, generation, err := l.read(ctx)
+	if err != nil {
+		return err
+	}
+	if generation == 0 || record.OwnerID != l.ownerID || !l.now().Before(record.ExpiresAt) {
+		return ErrLeaseLost
+	}
+	_, err = l.write(ctx, storage.Conditions{GenerationMatch: generation}, time.Time{})
+	if leasePreconditionFailed(err) {
+		return ErrLeaseLost
+	}
+	return err
 }
 
 // ExpiresAt returns the last successfully persisted ownership deadline.
 func (l *Lease) ExpiresAt() time.Time {
 	return l.expiresAt
+}
+
+// read returns the stored record and its generation, or generation zero when
+// no record exists. NewReader supplies both from the same response.
+func (l *Lease) read(ctx context.Context) (leaseRecord, int64, error) {
+	var record leaseRecord
+	reader, err := l.object.NewReader(ctx)
+	if errors.Is(err, storage.ErrObjectNotExist) {
+		return record, 0, nil
+	}
+	if err != nil {
+		return record, 0, fmt.Errorf("read ingestion lease: %w", err)
+	}
+	decodeErr := json.NewDecoder(reader).Decode(&record)
+	generation := reader.Attrs.Generation
+	_ = reader.Close()
+	if decodeErr != nil {
+		return record, 0, fmt.Errorf("decode ingestion lease: %w", decodeErr)
+	}
+	return record, generation, nil
 }
 
 func (l *Lease) write(ctx context.Context, conditions storage.Conditions, expiresAt time.Time) (int64, error) {
