@@ -17,8 +17,6 @@ SERVICES=(
 SCHEDULED_JOBS=(
     "expiry"
     "extract"
-    "followed-users-backfill-targeted"
-    "followed-users-backfill-full"
 )
 
 COMPUTE_SERVICE_ACCOUNT="21637448064-compute@developer.gserviceaccount.com"
@@ -144,38 +142,23 @@ get_scheduler_job_name() {
         extract)
             echo "extract-halfhourly-${GE_ENVIRONMENT}"
             ;;
-        followed-users-backfill-targeted)
-            echo "followed-users-backfill-targeted-${GE_ENVIRONMENT}"
-            ;;
-        followed-users-backfill-full)
-            echo "followed-users-backfill-full-${GE_ENVIRONMENT}"
-            ;;
         *)
             echo ""
             ;;
     esac
 }
 
-# Get the Cloud Run job name for a logical job. The two followed-users-backfill
-# logical jobs are two Cloud Scheduler triggers for the *same* underlying
-# Cloud Run job, distinguished only by the --mode arg override at trigger time
-# (see get_scheduler_job_args) — mirrors gcp_setup.sh's
-# setup_followed_users_backfill_cloud_scheduler.
+# Get the Cloud Run job name for a logical job.
 get_cloudrun_job_name() {
     local job=$1
     case "$job" in
         expiry) echo "elasticsearch-expiry-${GE_ENVIRONMENT}" ;;
         extract) echo "extract-${GE_ENVIRONMENT}" ;;
-        followed-users-backfill-targeted|followed-users-backfill-full)
-            echo "followed-users-backfill-${GE_ENVIRONMENT}"
-            ;;
         *) echo "" ;;
     esac
 }
 
 # Get the cron schedule and description for a logical job (pipe-separated).
-# Schedules here must stay in sync with gcp_setup.sh's
-# setup_followed_users_backfill_cloud_scheduler.
 get_scheduler_job_config() {
     local job=$1
     case "$job" in
@@ -188,34 +171,6 @@ get_scheduler_job_config() {
             ;;
         extract)
             echo "*/30 * * * *|Half hourly extract job for ${GE_ENVIRONMENT}"
-            ;;
-        followed-users-backfill-targeted)
-            if [ "$GE_ENVIRONMENT" = "prod" ]; then
-                echo "0 * * * *|Frequent targeted followed-users-backfill sweep (incomplete/invalidated/stale) for ${GE_ENVIRONMENT}"
-            else
-                echo "*/15 * * * *|Frequent targeted followed-users-backfill sweep (incomplete/invalidated/stale) for ${GE_ENVIRONMENT}"
-            fi
-            ;;
-        followed-users-backfill-full)
-            echo "0 3 * * 0|Weekly full followed-users-backfill sweep (missing/pending_overflow backstop) for ${GE_ENVIRONMENT}"
-            ;;
-    esac
-}
-
-# Get the Cloud Run Jobs v2 container args override (JSON array), if any, for
-# a logical job. Empty output means no override is needed (the job's
-# deploy-time default args apply).
-get_scheduler_job_args() {
-    local job=$1
-    case "$job" in
-        followed-users-backfill-targeted)
-            echo '["--mode","targeted","--concurrency","20"]'
-            ;;
-        followed-users-backfill-full)
-            echo '["--mode","full","--concurrency","20"]'
-            ;;
-        *)
-            echo ""
             ;;
     esac
 }
@@ -265,19 +220,6 @@ start_scheduled_job() {
     local description="${config##*|}"
     local job_uri="https://run.googleapis.com/v2/projects/${GE_GCP_PROJECT_ID}/locations/${GE_GCP_REGION}/jobs/${cloudrun_job_name}:run"
 
-    # followed-users-backfill's two logical jobs share one Cloud Run job and
-    # are distinguished by a container args override at trigger time (see
-    # gcp_setup.sh's create_or_update_backfill_scheduler_job for the same
-    # pattern). Other jobs have no override and run with their deploy-time
-    # default args.
-    local args_json
-    args_json=$(get_scheduler_job_args "$job")
-    local extra_flags=()
-    if [[ -n "$args_json" ]]; then
-        local body="{\"overrides\":{\"containerOverrides\":[{\"args\":${args_json}}]}}"
-        extra_flags=(--headers="Content-Type=application/json" --message-body="$body")
-    fi
-
     echo -e "${BLUE}Starting scheduled job $scheduler_job_name...${NC}"
 
     if scheduler_job_exists "$scheduler_job_name"; then
@@ -287,7 +229,6 @@ start_scheduled_job() {
             --schedule="$schedule" \
             --uri="$job_uri" \
             --http-method=POST \
-            "${extra_flags[@]}" \
             --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
             --description="$description" \
             --quiet
@@ -299,7 +240,6 @@ start_scheduled_job() {
             --schedule="$schedule" \
             --uri="$job_uri" \
             --http-method=POST \
-            "${extra_flags[@]}" \
             --oauth-service-account-email="$COMPUTE_SERVICE_ACCOUNT" \
             --description="$description"
         echo -e "${GREEN}Scheduled job $scheduler_job_name created (schedule: $schedule)${NC}"

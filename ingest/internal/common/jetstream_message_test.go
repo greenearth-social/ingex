@@ -328,6 +328,7 @@ func TestJetstreamMessage_Follows(t *testing.T) {
 		wantFollow     bool
 		wantUnfollow   bool
 		wantSubjectDID string
+		wantRKey       string
 	}{
 		{
 			name: "follow create event carries the followed DID",
@@ -347,6 +348,7 @@ func TestJetstreamMessage_Follows(t *testing.T) {
 			}`,
 			wantFollow:     true,
 			wantSubjectDID: "did:plc:followed",
+			wantRKey:       "3m4zb3vk46q26",
 		},
 		{
 			name: "unfollow carries no subject, only the rkey",
@@ -361,6 +363,7 @@ func TestJetstreamMessage_Follows(t *testing.T) {
 				}
 			}`,
 			wantUnfollow: true,
+			wantRKey:     "3m4zb3vk46q26",
 		},
 		{
 			name: "a like is not a follow",
@@ -394,6 +397,7 @@ func TestJetstreamMessage_Follows(t *testing.T) {
 					}
 				}
 			}`,
+			wantRKey: "3m4zb3vk46q26",
 		},
 	}
 
@@ -408,6 +412,9 @@ func TestJetstreamMessage_Follows(t *testing.T) {
 			}
 			if got := msg.GetFollowSubjectDID(); got != tt.wantSubjectDID {
 				t.Errorf("GetFollowSubjectDID() = %q, want %q", got, tt.wantSubjectDID)
+			}
+			if got := msg.GetRKey(); got != tt.wantRKey {
+				t.Errorf("GetRKey() = %q, want %q", got, tt.wantRKey)
 			}
 		})
 	}
