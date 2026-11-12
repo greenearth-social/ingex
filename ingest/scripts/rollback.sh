@@ -83,6 +83,98 @@ log_action() {
     echo -e "${BLUE}[ROLLBACK]${NC} $1"
 }
 
+# Announce deploys and rollbacks in Discord #oncall so two people don't change
+# the same service at once (greenearth-social/internal-tools#98). Posts with the oncall bot's own token
+# and channel secrets, which live in the main project whatever --project-id
+# says. Strictly best-effort: a failure here warns and never stops the deploy.
+# GE_DEPLOY_NOTIFY=false turns it off.
+DEPLOY_NOTIFY_SECRETS_PROJECT="greenearth-471522"
+DEPLOY_NOTIFY_TOKEN=""
+DEPLOY_NOTIFY_CHANNEL=""
+DEPLOY_NOTIFY_SUBJECT=""
+DEPLOY_NOTIFY_WHO=""
+DEPLOY_NOTIFY_STARTED_AT=0
+
+_deploy_notify_post() {
+    local content="$1"
+    content=${content//\\/\\\\}
+    content=${content//\"/\\\"}
+    if ! curl -fsS -o /dev/null --max-time 10 -X POST \
+        -H "Authorization: $DEPLOY_NOTIFY_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"content\":\"$content\",\"allowed_mentions\":{\"parse\":[]}}" \
+        "https://discord.com/api/v10/channels/$DEPLOY_NOTIFY_CHANNEL/messages"; then
+        log_warn "Could not post the deploy notification to Discord #oncall."
+    fi
+}
+
+# Usage: deploy_notify_start ENVIRONMENT TARGET [KIND] [DETAIL]
+# TARGET says what is changing, e.g. "api" or "ingex ingest (jetstream only)".
+# KIND is "deploy" (the default) or "rollback". DETAIL defaults to the checkout's
+# git sha and branch. Call once the script is about to change something; it also
+# arms an EXIT trap that reports how it ended.
+deploy_notify_start() {
+    local environment="$1" target="$2" kind="${3:-deploy}" detail="${4:-}"
+    if [ "${GE_DEPLOY_NOTIFY:-true}" = false ] || [ "$environment" = local ]; then
+        return 0
+    fi
+
+    if ! DEPLOY_NOTIFY_TOKEN=$(gcloud secrets versions access latest \
+            --secret=discord-oncall-bot-token \
+            --project="$DEPLOY_NOTIFY_SECRETS_PROJECT" 2>/dev/null) \
+        || ! DEPLOY_NOTIFY_CHANNEL=$(gcloud secrets versions access latest \
+            --secret=discord-oncall-channel-id \
+            --project="$DEPLOY_NOTIFY_SECRETS_PROJECT" 2>/dev/null); then
+        DEPLOY_NOTIFY_TOKEN=""
+        log_warn "Could not read the Discord #oncall secrets; not announcing this $kind."
+        return 0
+    fi
+
+    local name account sha branch
+    name=$(git config user.name 2>/dev/null) || name="${USER:-someone}"
+    account=$(gcloud config get-value account 2>/dev/null) || account=""
+    if [ -z "$detail" ]; then
+        sha=$(git rev-parse --short=7 HEAD 2>/dev/null) || sha="unknown"
+        branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || branch="unknown"
+        detail="\`$sha\` on \`$branch\`"
+    fi
+
+    DEPLOY_NOTIFY_SUBJECT="**$target** · **$environment** $kind"
+    DEPLOY_NOTIFY_WHO="$name"
+    DEPLOY_NOTIFY_STARTED_AT=$(date +%s)
+    trap deploy_notify_finish EXIT
+    # A signal would otherwise reach the EXIT trap with the status of whatever
+    # command happened to run last, and an interrupted deploy would read as done.
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    local icon="🚀"
+    if [ "$kind" = rollback ]; then
+        icon="⏪"
+    fi
+    _deploy_notify_post "$icon $DEPLOY_NOTIFY_SUBJECT started: $detail — by $name${account:+ ($account)}"
+}
+
+# EXIT trap armed by deploy_notify_start. A function that sets its own EXIT
+# trap must call this first in it, so it still sees the script's exit status.
+deploy_notify_finish() {
+    local status=$?
+    if [ -z "$DEPLOY_NOTIFY_TOKEN" ]; then
+        return 0
+    fi
+
+    local elapsed=$(( $(date +%s) - DEPLOY_NOTIFY_STARTED_AT ))
+    local took="$((elapsed / 60))m$((elapsed % 60))s"
+    local outcome
+    case "$status" in
+        0) outcome="✅ $DEPLOY_NOTIFY_SUBJECT finished after $took" ;;
+        130|143) outcome="⚠️ $DEPLOY_NOTIFY_SUBJECT was interrupted after $took" ;;
+        *) outcome="❌ $DEPLOY_NOTIFY_SUBJECT failed after $took (exit $status)" ;;
+    esac
+    _deploy_notify_post "$outcome — by $DEPLOY_NOTIFY_WHO"
+    DEPLOY_NOTIFY_TOKEN=""
+}
+
 # --- workload naming -------------------------------------------------------
 
 service_workloads() {
@@ -614,6 +706,16 @@ plan_jobs() {
     done
 }
 
+# One line per workload for the #oncall announcement: "name → `sha`".
+plan_summary() {
+    local workload _target sha summary=""
+    while IFS='|' read -r workload _target sha; do
+        [ -z "$workload" ] && continue
+        summary="$summary${summary:+, }$workload → \`${sha:-unstamped}\`"
+    done <<< "$SERVICE_PLAN$JOB_PLAN"
+    echo "$summary"
+}
+
 apply_plan() {
     if [ "$DRY_RUN" = true ]; then
         log_info "[dry run] would execute:"
@@ -681,6 +783,9 @@ main() {
     fi
 
     confirm
+    if [ "$DRY_RUN" != true ]; then
+        deploy_notify_start "$GE_ENVIRONMENT" "ingex ingest ($WORKLOAD)" rollback "$(plan_summary)"
+    fi
     apply_plan
     verify_plan
 
