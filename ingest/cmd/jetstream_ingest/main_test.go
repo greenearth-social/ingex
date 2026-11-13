@@ -10,10 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/elastic/go-elasticsearch/v9"
 	"github.com/gorilla/websocket"
 	"github.com/greenearth/ingest/internal/common"
 )
@@ -230,5 +232,109 @@ func TestRunIngestionLoadsCursorAfterAcquiringLease(t *testing.T) {
 	}
 	if got := readTestCursor(t, config.JetstreamStateFile); got != 300 {
 		t.Fatalf("successor final cursor = %d, want 300", got)
+	}
+}
+
+// likeCountES is a fake Elasticsearch that counts the post updates in each
+// like-count bulk request, calling onPostsBulk before it answers. Reply-index
+// requests (each chunk writes to both) are answered but not counted.
+func likeCountES(t *testing.T, onPostsBulk func(updates int)) (*elasticsearch.Client, *atomic.Int64) {
+	t.Helper()
+	var written atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		if n := strings.Count(string(body), `"_index":"posts"`); n > 0 {
+			if onPostsBulk != nil {
+				onPostsBulk(n)
+			}
+			written.Add(int64(n))
+		}
+		_, _ = io.WriteString(w, `{"errors":false,"items":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	client, err := elasticsearch.New(elasticsearch.WithAddresses(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client, &written
+}
+
+// heldCoalescer returns a coalescer holding one like for each of n popular posts.
+func heldCoalescer(n int) *common.LikeCountCoalescer {
+	c := common.NewLikeCountCoalescer(10, n)
+	updates := make([]common.LikeCountUpdate, n)
+	for i := range updates {
+		uri := fmt.Sprintf("at://did:plc:author/app.bsky.feed.post/%d", i)
+		c.Observe([]common.LikeCountResult{{AtURI: uri, LikeCount: 50}})
+		updates[i] = common.LikeCountUpdate{SubjectURI: uri, Increment: 1}
+	}
+	c.Route(updates)
+	return c
+}
+
+func quietLogger() *common.IngestLogger {
+	logger := common.NewLogger(false)
+	logger.SetOutput(io.Discard)
+	return logger
+}
+
+// SIGTERM can land in the middle of a periodic flush, which has already
+// drained the coalescer. The chunk in flight must finish rather than be
+// cancelled, and every update not yet sent must be held for the final flush —
+// before, the remainder was dropped on the floor.
+func TestFlushLikeCountsHoldsWhatItDidNotSend(t *testing.T) {
+	stopCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	es, written := likeCountES(t, func(int) { stop() })
+	coalescer := heldCoalescer(1000)
+
+	flushLikeCounts(stopCtx, context.Background(), es, coalescer, nil, 1, false, quietLogger())
+
+	pending, _ := coalescer.Stats()
+	if written.Load() != 100 {
+		t.Errorf("wrote %d posts, want exactly the 100 in flight when the flush was stopped", written.Load())
+	}
+	if got := written.Load() + int64(pending); got != 1000 {
+		t.Errorf("written (%d) + held (%d) = %d, want all 1000 accounted for", written.Load(), pending, got)
+	}
+}
+
+// The final flush must fit in the drain: a prod flush holds up to ~250
+// chunks at ~50ms each, 10-25s written one at a time against a 5s deadline,
+// which is how every prod deploy was losing its held counts. What makes it fit
+// is writing shutdownFlushConcurrency chunks at once, so that is what this
+// asserts, rather than a wall-clock time that a loaded CI runner can miss.
+//
+// Each posts request is held until shutdownFlushConcurrency of them are in
+// flight together. A flush that writes fewer at a time never gets there, and
+// the requests give up after a timeout instead.
+func TestShutdownFlushWritesChunksConcurrently(t *testing.T) {
+	var inFlight atomic.Int64
+	allInFlight := make(chan struct{})
+	var once sync.Once
+	es, written := likeCountES(t, func(int) {
+		defer inFlight.Add(-1)
+		if inFlight.Add(1) == shutdownFlushConcurrency {
+			once.Do(func() { close(allInFlight) })
+		}
+		select {
+		case <-allInFlight:
+		case <-time.After(time.Second):
+		}
+	})
+	// One chunk per writer, so all of them must be in flight at once.
+	coalescer := heldCoalescer(100 * shutdownFlushConcurrency)
+
+	flushLikeCounts(context.Background(), context.Background(), es, coalescer, nil, shutdownFlushConcurrency, false, quietLogger())
+
+	select {
+	case <-allInFlight:
+	default:
+		t.Fatalf("never had %d chunks in flight at once; the shutdown flush is not concurrent", shutdownFlushConcurrency)
+	}
+	if pending, _ := coalescer.Stats(); written.Load() != int64(100*shutdownFlushConcurrency) || pending != 0 {
+		t.Errorf("wrote %d of %d posts with %d still held, want all written", written.Load(), 100*shutdownFlushConcurrency, pending)
 	}
 }

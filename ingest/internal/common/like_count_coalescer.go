@@ -19,8 +19,10 @@ import (
 //   - Everything else is held and summed per post until Drain.
 //
 // Known counts come from the bulk update responses (Observe), held in a
-// bounded LRU. Held deltas are in memory only: a restart loses up to one flush
-// interval of likes on popular posts, which is an accepted inaccuracy.
+// bounded LRU. Held deltas are in memory only: a crash loses up to one flush
+// interval of likes on popular posts, which is an accepted inaccuracy. A
+// graceful shutdown (a deploy, a scale-in) flushes them first; see
+// runIngestion.
 //
 // Safe for concurrent use.
 type LikeCountCoalescer struct {
@@ -82,6 +84,25 @@ func (c *LikeCountCoalescer) Drain() []LikeCountUpdate {
 	}
 	c.pending = make(map[string]int)
 	return drained
+}
+
+// Hold returns drained updates that were never written, to be written by the
+// next Drain. Deltas are summed into anything held for the same post since, so
+// nothing is double-counted or lost — the caller must only pass updates it did
+// not send, since a sent request may have been applied even if it errored.
+func (c *LikeCountCoalescer) Hold(updates []LikeCountUpdate) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, u := range updates {
+		if total := c.pending[u.SubjectURI] + u.Increment; total != 0 {
+			c.pending[u.SubjectURI] = total
+		} else {
+			delete(c.pending, u.SubjectURI)
+		}
+	}
 }
 
 // Observe records the post-update counts from a bulk update response.
