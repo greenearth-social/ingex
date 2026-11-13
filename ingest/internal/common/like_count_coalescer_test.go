@@ -161,3 +161,34 @@ func TestCoalescer_ConcurrentRoutingLosesNoLikes(t *testing.T) {
 		t.Fatalf("expected all %d likes accounted for, got %d (%v)", 8*250, total, written)
 	}
 }
+
+// A flush cut short hands back what it never sent. Those deltas must merge
+// with likes held since the drain, not overwrite them, and the next drain must
+// carry both.
+func TestCoalescer_HoldReturnsUnsentUpdatesForTheNextDrain(t *testing.T) {
+	c := NewLikeCountCoalescer(10, 100)
+	c.Observe([]LikeCountResult{{AtURI: "at://popular", LikeCount: 50}, {AtURI: "at://other", LikeCount: 50}})
+	c.Route([]LikeCountUpdate{{SubjectURI: "at://popular", Increment: 1}, {SubjectURI: "at://other", Increment: 1}})
+
+	drained := c.Drain()
+	// Likes keep arriving while the flush runs.
+	c.Route([]LikeCountUpdate{{SubjectURI: "at://popular", Increment: 2}})
+	c.Hold(drained)
+
+	got := byURI(c.Drain())
+	if len(got) != 2 || got["at://popular"] != 3 || got["at://other"] != 1 {
+		t.Fatalf("expected held and new deltas summed (popular 1+2, other 1), got %v", got)
+	}
+}
+
+func TestCoalescer_HoldDropsCancellingDeltas(t *testing.T) {
+	c := NewLikeCountCoalescer(10, 100)
+	c.Observe([]LikeCountResult{{AtURI: "at://popular", LikeCount: 50}})
+	c.Route([]LikeCountUpdate{{SubjectURI: "at://popular", Increment: -1}})
+
+	c.Hold([]LikeCountUpdate{{SubjectURI: "at://popular", Increment: 1}})
+
+	if pending, _ := c.Stats(); pending != 0 {
+		t.Fatalf("expected a held like and a later unlike to cancel, got %d pending", pending)
+	}
+}

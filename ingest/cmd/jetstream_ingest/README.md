@@ -71,7 +71,7 @@ Likes are batched and indexed in groups of 100 to optimize Elasticsearch perform
 
 Every like-count update re-indexes the whole post, including its embedding vectors, so writing each like as it arrives is the most expensive part of like ingestion. Posts with fewer than `GE_LIKE_COUNT_EXACT_BELOW` likes, or whose count the service hasn't seen yet, are still written on every like, which keeps small counts exact and quality-corpus promotion immediate. More popular posts have their likes summed in memory and written every `GE_LIKE_COUNT_FLUSH_INTERVAL`.
 
-Held counts are written on shutdown, but anything that doesn't finish within the shutdown window is lost: the cursor has already moved past those likes. Popular posts can therefore drift low by up to one interval's likes per restart, which is accepted.
+Held counts are written on shutdown, ten chunks at a time so a full interval's worth (~25 000 posts in prod) fits in the five-second drain. A periodic flush interrupted by shutdown hands back whatever it hadn't sent, so the shutdown flush covers it too. Anything that still doesn't finish is lost, since the cursor has already moved past those likes, and is reported as `like_counts.flush_abandoned_count` with an error log. A crash skips the shutdown flush entirely, so popular posts can drift low by up to one interval's likes per crash, which is accepted.
 
 ### Graceful Shutdown
 

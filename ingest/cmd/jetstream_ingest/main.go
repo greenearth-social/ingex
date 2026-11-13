@@ -462,7 +462,10 @@ func runIngestion(ctx, workCtx context.Context, config *common.Config, logger *c
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					flushLikeCounts(ctx, esClient, coalescer, qualityCfg, dryRun, logger)
+					// Stops sending at shutdown and holds the rest for the
+					// final flush; a chunk already sent finishes on workCtx
+					// rather than being cancelled mid-request.
+					flushLikeCounts(ctx, workCtx, esClient, coalescer, qualityCfg, 1, dryRun, logger)
 				}
 			}
 		}()
@@ -763,8 +766,17 @@ cleanup:
 	<-workersDone
 
 	<-flusherDone
-	if coalescer != nil && workCtx.Err() == nil {
-		flushLikeCounts(workCtx, esClient, coalescer, qualityCfg, dryRun, logger)
+	if coalescer != nil {
+		if workCtx.Err() == nil {
+			flushLikeCounts(workCtx, workCtx, esClient, coalescer, qualityCfg, shutdownFlushConcurrency, dryRun, logger)
+		}
+		// Whatever is still held now is lost when the process exits. Prod
+		// holds ~25 000 posts per flush interval, so this is the number to
+		// watch if a deploy ever again runs out of drain time.
+		if pending, _ := coalescer.Stats(); pending > 0 {
+			logger.Metric("like_counts.flush_abandoned_count", float64(pending))
+			logger.Error("Shut down with like counts for %d posts unwritten", pending)
+		}
 	}
 
 	// After workers and the periodic writer finish, pendingCursor is no longer
@@ -819,20 +831,67 @@ func writeLikeCounts(ctx context.Context, esClient *elasticsearch.Client, update
 	}
 }
 
-// flushLikeCounts writes every like-count delta the coalescer is holding.
-func flushLikeCounts(ctx context.Context, esClient *elasticsearch.Client, coalescer *common.LikeCountCoalescer, qualityCfg *common.QualityPromotionConfig, dryRun bool, logger *common.IngestLogger) {
+// shutdownFlushConcurrency is how many chunks the final flush writes at once.
+//
+// The final flush has to fit in the drain (ingestionLeaseTiming.drain, 5s),
+// which Cloud Run's 10s SIGTERM-to-SIGKILL window does not let us lengthen. In
+// prod it holds up to ~25 000 posts — 250 chunks — and a chunk takes ~50ms
+// (p95 ~160ms), so written one at a time it needed 10-25s and was cancelled at
+// the deadline, losing the rest on every deploy. Ten at a time is about 2.5s at that worst case. It matches
+// numWorkers, whose writes have all finished by then, so it replaces their
+// load on Elasticsearch rather than adding to it.
+//
+// Periodic flushes stay sequential: they are not racing anything, and
+// spreading them out keeps their re-indexing off ES's peak.
+const shutdownFlushConcurrency = 10
+
+// flushLikeCounts writes every like-count delta the coalescer is holding, in
+// chunks, concurrency at a time.
+//
+// stopCtx ends the flush: no further chunk is sent once it is done, and every
+// unsent update goes back to the coalescer (Hold) for the next flush. writeCtx
+// bounds the requests themselves. They are separate so the periodic flush can
+// stop at SIGTERM without cancelling the chunk it already sent — a cancelled
+// bulk update may or may not have been applied, so it can be neither retried
+// nor counted as lost — and leave the remainder to the final flush.
+func flushLikeCounts(stopCtx, writeCtx context.Context, esClient *elasticsearch.Client, coalescer *common.LikeCountCoalescer, qualityCfg *common.QualityPromotionConfig, concurrency int, dryRun bool, logger *common.IngestLogger) {
 	updates := coalescer.Drain()
 	_, cached := coalescer.Stats()
-	logger.Metric("like_counts.flushed_count", float64(len(updates)))
 	logger.Metric("like_counts.cached_count", float64(cached))
 	// Chunked to the size of a worker batch (100 likes), so one flush can't
 	// build a request big enough to time out.
 	const chunk = 100
-	for start := 0; start < len(updates); start += chunk {
-		if ctx.Err() != nil {
-			return
+
+	chunks := make(chan []common.LikeCountUpdate)
+	var wg sync.WaitGroup
+	for range max(concurrency, 1) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for c := range chunks {
+				writeLikeCounts(writeCtx, esClient, c, coalescer, qualityCfg, dryRun, logger)
+			}
+		}()
+	}
+	sent := 0
+	// Checked before every send: a select with both cases ready picks at
+	// random, and would keep sending after stopCtx is done.
+	for sent < len(updates) && stopCtx.Err() == nil {
+		end := min(sent+chunk, len(updates))
+		select {
+		case chunks <- updates[sent:end]:
+			sent = end
+		case <-stopCtx.Done():
 		}
-		writeLikeCounts(ctx, esClient, updates[start:min(start+chunk, len(updates))], coalescer, qualityCfg, dryRun, logger)
+	}
+	close(chunks)
+	wg.Wait()
+
+	logger.Metric("like_counts.flushed_count", float64(sent))
+	if unsent := updates[sent:]; len(unsent) > 0 {
+		coalescer.Hold(unsent)
+		logger.Info("Like-count flush stopped after %d of %d posts; holding the rest", sent, len(updates))
+		return
 	}
 	logger.Info("Flushed held like counts for %d posts (%d counts cached)", len(updates), cached)
 }
