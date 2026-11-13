@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -300,21 +301,40 @@ func TestFlushLikeCountsHoldsWhatItDidNotSend(t *testing.T) {
 	}
 }
 
-// The final flush must fit in the drain. A prod flush holds up to ~250 chunks;
-// at a 20ms write each that is 5s sequentially, past the deadline, which is how
-// every prod deploy was losing its held counts.
-func TestShutdownFlushFitsTheDrainDeadline(t *testing.T) {
-	es, written := likeCountES(t, func(int) { time.Sleep(20 * time.Millisecond) })
-	coalescer := heldCoalescer(25000)
-	workCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+// The final flush must fit in the drain: a prod flush holds up to ~250
+// chunks at ~50ms each, 10-25s written one at a time against a 5s deadline,
+// which is how every prod deploy was losing its held counts. What makes it fit
+// is writing shutdownFlushConcurrency chunks at once, so that is what this
+// asserts, rather than a wall-clock time that a loaded CI runner can miss.
+//
+// Each posts request is held until shutdownFlushConcurrency of them are in
+// flight together. A flush that writes fewer at a time never gets there, and
+// the requests give up after a timeout instead.
+func TestShutdownFlushWritesChunksConcurrently(t *testing.T) {
+	var inFlight atomic.Int64
+	allInFlight := make(chan struct{})
+	var once sync.Once
+	es, written := likeCountES(t, func(int) {
+		defer inFlight.Add(-1)
+		if inFlight.Add(1) == shutdownFlushConcurrency {
+			once.Do(func() { close(allInFlight) })
+		}
+		select {
+		case <-allInFlight:
+		case <-time.After(time.Second):
+		}
+	})
+	// One chunk per writer, so all of them must be in flight at once.
+	coalescer := heldCoalescer(100 * shutdownFlushConcurrency)
 
-	flushLikeCounts(workCtx, workCtx, es, coalescer, nil, shutdownFlushConcurrency, false, quietLogger())
+	flushLikeCounts(context.Background(), context.Background(), es, coalescer, nil, shutdownFlushConcurrency, false, quietLogger())
 
-	if workCtx.Err() != nil {
-		t.Fatal("the shutdown flush ran past its deadline")
+	select {
+	case <-allInFlight:
+	default:
+		t.Fatalf("never had %d chunks in flight at once; the shutdown flush is not concurrent", shutdownFlushConcurrency)
 	}
-	if pending, _ := coalescer.Stats(); written.Load() != 25000 || pending != 0 {
-		t.Errorf("wrote %d of 25000 posts with %d still held, want all written", written.Load(), pending)
+	if pending, _ := coalescer.Stats(); written.Load() != int64(100*shutdownFlushConcurrency) || pending != 0 {
+		t.Errorf("wrote %d of %d posts with %d still held, want all written", written.Load(), 100*shutdownFlushConcurrency, pending)
 	}
 }
