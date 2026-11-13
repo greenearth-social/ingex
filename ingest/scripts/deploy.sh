@@ -803,6 +803,8 @@ main() {
     echo "1. Check service logs to ensure they're running correctly"
     echo "2. Verify data is being ingested into Elasticsearch"
     echo "3. Use './ingestctl status' to check service status"
+    echo "4. After a jetstream deploy, wait ~3 minutes, then run"
+    echo "   './scripts/jetstream_health.py --environment $GE_ENVIRONMENT' (exit 0 = healthy)"
     echo
 }
 
