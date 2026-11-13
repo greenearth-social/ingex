@@ -29,6 +29,9 @@ type BackfillConfig struct {
 type BackfillStats struct {
 	Scanned int
 	Scored  int
+	// PartiallyScored counts non-English posts written with the multilingual
+	// attribute scores and no combined score.
+	PartiallyScored int
 	// Unscorable counts posts stamped but not scored: no text, or a language
 	// the API declines to rate. They are written, so they leave the scan.
 	Unscorable int
@@ -132,6 +135,14 @@ func Backfill(
 					ScoredAt:      scoredAt,
 				})
 				stats.Scored++
+			case OutcomePartiallyScored:
+				updates = append(updates, common.PerspectiveUpdate{
+					Index:    indexByURI[result.AtURI],
+					AtURI:    result.AtURI,
+					Scores:   result.Scores,
+					ScoredAt: scoredAt,
+				})
+				stats.PartiallyScored++
 			case OutcomeUnsupportedLanguage, OutcomeNoContent:
 				updates = append(updates, common.PerspectiveUpdate{
 					Index:    indexByURI[result.AtURI],
@@ -152,8 +163,8 @@ func Backfill(
 		}
 		stats.Updated += updated
 
-		logger.Debug("Backfill page %d: %d scanned, %d scored, %d unscorable, %d skipped, %d failed, %d written",
-			stats.Pages, len(posts), stats.Scored, stats.Unscorable, stats.Skipped, stats.Failed, updated)
+		logger.Debug("Backfill page %d: %d scanned, %d scored, %d partially scored, %d unscorable, %d skipped, %d failed, %d written",
+			stats.Pages, len(posts), stats.Scored, stats.PartiallyScored, stats.Unscorable, stats.Skipped, stats.Failed, updated)
 
 		// A page that came back short of what was asked for is the last one.
 		if cursor.HitCount < size {

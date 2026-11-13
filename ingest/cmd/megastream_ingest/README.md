@@ -119,7 +119,7 @@ Failures are fail-open: posts are still indexed without the field. Disabled in
 
 When `GE_PERSPECTIVE_API_KEY` is set, each new non-reply post is scored by
 Google's Perspective API and the result is stored on the posts index as
-`perspective_scores` (the 15 raw PRC attribute scores), `combined_perspective_score`
+`perspective_scores` (the 15 raw PRC attribute scores, or 4 for non-English text), `combined_perspective_score`
 (the weighted PRC score in `[0, 1]`), and `perspective_scored_at`.
 
 This exists so the api does not have to score candidates on the serving path,
@@ -131,8 +131,22 @@ Three states are meaningful, and the api distinguishes all three:
 | document state | meaning |
 |---|---|
 | all three fields set | scored |
-| `perspective_scored_at` only | permanently unscorable — no text at all (an image-only post), or a language the API declines to rate. Never retried. |
+| `perspective_scored_at` and `perspective_scores`, no combined score | non-English: only the four multilingual attributes were scored (below). No PRC score, so ranking treats it as unscorable. Never retried. |
+| `perspective_scored_at` only | permanently unscorable — no text at all (an image-only post), or a language no attribute supports (Thai, Turkish). Never retried. |
 | no fields | not scored yet. The api scores it live; `backfill_perspective` fills it in. |
+
+**Non-English posts.** Every `*_EXPERIMENTAL` attribute in the PRC formula is
+English-only, and the API rejects a whole request if any one requested attribute
+does not support the detected language — between a third and over half of posts,
+depending on the hour. When that happens ingest retries once with just
+`toxicity`, `identity_attack`, `insult` and `threat`, which cover most major
+languages, and stores those raw scores without a combined score. The PRC score
+over four of fifteen attributes is a different quantity, and mixing the two
+would rank posts by language. The retry draws from the same rate limiter;
+`perspective.score.multilingual_count` counts successes, and
+`multilingual_unsupported_count`, `multilingual_skipped_count` and
+`multilingual_failed_count` the rest, all of which stamp the post unscorable as
+before. Posts stamped unscorable before the retry existed are not revisited.
 
 `backfill_perspective` writes to the concrete index each post lives in, taken
 from the scan's `_index`, not to `--source-index`. That flag is normally the
@@ -152,23 +166,34 @@ destination index mapping the fields (below).
 
 - `GE_PERSPECTIVE_API_KEY` - Perspective API key (GSM secret `perspective-api-key-{env}`); unset disables scoring
 - `GE_PERSPECTIVE_HOST` - API host override (default: `https://commentanalyzer.googleapis.com`); the devenv points this at its local stub
-- `GE_PERSPECTIVE_QPS` - Token-bucket refill rate, this service's share of the shared quota (default: `141` in prod, `15` in stage)
+- `GE_PERSPECTIVE_QPS` - Token-bucket refill rate, this service's share of the shared quota (default: `250` in prod, `15` in stage)
 - `GE_PERSPECTIVE_ON_QUOTA` - `wait` to throttle ingest, `skip` to index posts unscored (default: `wait`)
 - `GE_PERSPECTIVE_TIMEOUT` - Per-request HTTP timeout (default: `2s`)
 - `GE_PERSPECTIVE_MAX_CONCURRENCY` - Concurrent scoring requests (default: `32`)
 - `GE_PERSPECTIVE_RETRY_MAX` - Retries beyond the first attempt, for `5xx` only — `429` is never retried (default: `2`)
 
 > **Quota is shared.** The Perspective quota is 36 000 requests/minute (600 QPS)
-> across *both* this service and the api's serving path. `GE_PERSPECTIVE_QPS` is
-> ingest's slice of it — 8 972 RPM at the default, against serving's 26 700
-> (`GE_PERSPECTIVE_QPM` in the api), leaving the 300 RPM buffer unclaimed.
+> per GCP project, shared by prod and stage ingest, the api's serving path, and
+> offline scoring jobs (notebooks, dataset backfills) on the same key:
 >
-> That 8 972 is `141 × 60 + 512`, not `141 × 60`. The limiter is a token bucket
+> | Slice | RPM | Set by |
+> |---|---|---|
+> | prod ingest | 15 512 | `GE_PERSPECTIVE_QPS=250` |
+> | stage ingest | 1 412 | `GE_PERSPECTIVE_QPS=15` |
+> | api serving | 3 000 | `GE_PERSPECTIVE_QPM` in the api |
+> | buffer | 300 | — |
+> | offline jobs | ~15 776 | unenforced; whatever is left |
+>
+> Serving is only a backstop for posts ingest has not scored, so it gets a
+> small slice. Prod ingest's is sized for the multilingual retry (below), which
+> adds roughly one request per non-English post.
+>
+> That 15 512 is `250 × 60 + 512`, not `250 × 60`. The limiter is a token bucket
 > whose burst is one megastream batch (`perspectiveBurst`), and a bucket admits
 > `B + R×T` over a window `T` — so the burst is part of the minute's ceiling and
 > the refill rate was picked to leave room for it. **Changing either number
-> means redoing that sum.** That buffer covers the inexactness of two independent limiters in
-> separate processes; raising either slice without lowering the other spends it.
+> means redoing that sum.** The buffer covers the inexactness of independent limiters in
+> separate processes; raising any slice spends the offline headroom first.
 > Serving also sees spikes ingest does not. `wait` keeps ingest inside its slice by slowing
 > it down; switch to `skip` when serving needs the budget more than the corpus
 > does, then recover the gap with `backfill_perspective`.

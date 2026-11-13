@@ -754,10 +754,10 @@ func indexDocuments(ctx context.Context, msgs []common.MegaStreamMessage, esClie
 	}()
 	go func() {
 		defer enrich.Done()
-		scored, unscorable, skipped, failed := perspective.AttachPerspectiveScores(ctx, scorer, postsBatch)
+		scored, partial, unscorable, skipped, failed := perspective.AttachPerspectiveScores(ctx, scorer, postsBatch)
 		if scorer != nil {
-			logger.Debug("[%s] Perspective: %d scored, %d unscorable, %d skipped, %d failed",
-				batchContext, scored, unscorable, skipped, failed)
+			logger.Debug("[%s] Perspective: %d scored, %d partially scored, %d unscorable, %d skipped, %d failed",
+				batchContext, scored, partial, unscorable, skipped, failed)
 		}
 	}()
 	enrich.Wait()

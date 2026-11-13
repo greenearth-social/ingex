@@ -60,7 +60,7 @@ func TestAttachPerspectiveScoresSetsAllThreeFields(t *testing.T) {
 	})
 
 	docs := []common.PostDoc{postDoc("at://did:plc:a/app.bsky.feed.post/1", "hello")}
-	scored, unscorable, skipped, failed := AttachPerspectiveScores(context.Background(), testScorer(server.URL, 100, QuotaWait), docs)
+	scored, _, unscorable, skipped, failed := AttachPerspectiveScores(context.Background(), testScorer(server.URL, 100, QuotaWait), docs)
 
 	if scored != 1 || unscorable != 0 || skipped != 0 || failed != 0 {
 		t.Fatalf("counts = %d/%d/%d/%d, want 1/0/0/0", scored, unscorable, skipped, failed)
@@ -115,16 +115,19 @@ func TestZeroCombinedScoreSurvivesMarshalling(t *testing.T) {
 	}
 }
 
-// Unscorable text is stamped but unscored. The stamp is what stops the api
-// re-querying every non-English post on every request forever.
+// Text no attribute supports — both the full request and the multilingual
+// retry declined — is stamped but unscored. The stamp is what stops the api
+// re-querying those posts on every request forever.
 func TestAttachPerspectiveScoresStampsUnsupportedLanguage(t *testing.T) {
+	var requests atomic.Int32
 	server := scoringServer(t, func(_ string, w http.ResponseWriter) {
+		requests.Add(1)
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":{"details":[{"errorType":"LANGUAGE_NOT_SUPPORTED_BY_ATTRIBUTE"}]}}`))
+		_, _ = w.Write([]byte(languageNotSupportedBody))
 	})
 
 	docs := []common.PostDoc{postDoc("at://did:plc:a/app.bsky.feed.post/1", "日本語")}
-	scored, unscorable, _, _ := AttachPerspectiveScores(context.Background(), testScorer(server.URL, 100, QuotaWait), docs)
+	scored, _, unscorable, _, _ := AttachPerspectiveScores(context.Background(), testScorer(server.URL, 100, QuotaWait), docs)
 
 	if scored != 0 || unscorable != 1 {
 		t.Fatalf("counts = %d scored, %d unscorable; want 0, 1", scored, unscorable)
@@ -137,6 +140,116 @@ func TestAttachPerspectiveScoresStampsUnsupportedLanguage(t *testing.T) {
 	}
 	if docs[0].PerspectiveScores != nil {
 		t.Error("an unscorable post must have no attribute scores")
+	}
+	if got := requests.Load(); got != 2 {
+		t.Errorf("made %d requests, want 2: the full request and the multilingual retry", got)
+	}
+}
+
+const languageNotSupportedBody = `{"error":{"details":[{"errorType":"LANGUAGE_NOT_SUPPORTED_BY_ATTRIBUTE"}]}}`
+
+// nonEnglishServer behaves like the live API for non-English text: it declines
+// any request that includes an English-only attribute, and hands requests for
+// MultilingualAttributes alone to respondMultilingual. It counts both kinds.
+func nonEnglishServer(t *testing.T, respondMultilingual func(w http.ResponseWriter)) (*httptest.Server, *atomic.Int32, *atomic.Int32) {
+	t.Helper()
+	var full, multilingual atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			RequestedAttributes map[string]struct{} `json:"requestedAttributes"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("failed to decode request: %v", err)
+		}
+		for name := range body.RequestedAttributes {
+			if strings.HasSuffix(name, "_EXPERIMENTAL") {
+				full.Add(1)
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(languageNotSupportedBody))
+				return
+			}
+		}
+		multilingual.Add(1)
+		if len(body.RequestedAttributes) != len(MultilingualAttributes) {
+			t.Errorf("retry requested %d attributes, want the %d multilingual ones",
+				len(body.RequestedAttributes), len(MultilingualAttributes))
+		}
+		respondMultilingual(w)
+	}))
+	t.Cleanup(server.Close)
+	return server, &full, &multilingual
+}
+
+// A non-English post the full request is declined for gets the multilingual
+// attributes on a second request, stored raw, with no combined score: the PRC
+// score is not defined over four of its fifteen attributes, and putting a
+// subset score on the same scale would rank posts by language.
+func TestAttachPerspectiveScoresRetriesNonEnglishWithMultilingualAttributes(t *testing.T) {
+	server, full, multilingual := nonEnglishServer(t, func(w http.ResponseWriter) {
+		_ = json.NewEncoder(w).Encode(fullScoreResponse(0.25))
+	})
+
+	docs := []common.PostDoc{postDoc("at://did:plc:a/app.bsky.feed.post/1", "日本語")}
+	scored, partial, unscorable, skipped, failed := AttachPerspectiveScores(context.Background(), testScorer(server.URL, 100, QuotaWait), docs)
+
+	if scored != 0 || partial != 1 || unscorable != 0 || skipped != 0 || failed != 0 {
+		t.Fatalf("counts = %d/%d/%d/%d/%d, want 0/1/0/0/0", scored, partial, unscorable, skipped, failed)
+	}
+	if full.Load() != 1 || multilingual.Load() != 1 {
+		t.Errorf("made %d full and %d multilingual requests, want 1 and 1", full.Load(), multilingual.Load())
+	}
+	if docs[0].CombinedPerspectiveScore != nil {
+		t.Errorf("combined score = %v, want none for a partial score", *docs[0].CombinedPerspectiveScore)
+	}
+	if len(docs[0].PerspectiveScores) != len(MultilingualAttributes) {
+		t.Errorf("got %d attribute scores, want %d", len(docs[0].PerspectiveScores), len(MultilingualAttributes))
+	}
+	if got, ok := docs[0].PerspectiveScores["toxicity"]; !ok || got != 0.25 {
+		t.Errorf("scores[toxicity] = %v, %v; want 0.25 under its storage key", got, ok)
+	}
+	// Stamped, so neither the api nor the backfill asks again.
+	if docs[0].PerspectiveScoredAt == "" {
+		t.Error("a partially scored post must be stamped")
+	}
+}
+
+// If the retry fails, the post falls back to exactly what it was before the
+// retry existed: stamped, unscored. Leaving it for the backfill would spend a
+// full request the backfill already knows will be declined.
+func TestAttachPerspectiveScoresStampsWhenMultilingualRetryFails(t *testing.T) {
+	server, _, _ := nonEnglishServer(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	docs := []common.PostDoc{postDoc("at://did:plc:a/app.bsky.feed.post/1", "日本語")}
+	_, partial, unscorable, _, failed := AttachPerspectiveScores(context.Background(), testScorer(server.URL, 100, QuotaWait), docs)
+
+	if partial != 0 || unscorable != 1 || failed != 0 {
+		t.Fatalf("counts = %d partial, %d unscorable, %d failed; want 0, 1, 0", partial, unscorable, failed)
+	}
+	if docs[0].PerspectiveScoredAt == "" || docs[0].PerspectiveScores != nil || docs[0].CombinedPerspectiveScore != nil {
+		t.Errorf("want stamped with no scores, got %+v", docs[0])
+	}
+}
+
+// The retry is a second request, so it has to take a second limiter slot —
+// otherwise ingest's real draw is up to twice its configured slice.
+func TestMultilingualRetryTakesItsOwnQuotaSlot(t *testing.T) {
+	server, full, multilingual := nonEnglishServer(t, func(w http.ResponseWriter) {
+		_ = json.NewEncoder(w).Encode(fullScoreResponse(0.25))
+	})
+
+	// One slot and no meaningful refill: the full request gets it, the retry
+	// is refused.
+	scorer := testScorerWithBurst(server.URL, 1, 1, QuotaSkip)
+	docs := []common.PostDoc{postDoc("at://did:plc:a/app.bsky.feed.post/1", "日本語")}
+	_, partial, unscorable, _, _ := AttachPerspectiveScores(context.Background(), scorer, docs)
+
+	if full.Load() != 1 || multilingual.Load() != 0 {
+		t.Errorf("made %d full and %d multilingual requests, want 1 and 0", full.Load(), multilingual.Load())
+	}
+	if partial != 0 || unscorable != 1 {
+		t.Errorf("counts = %d partial, %d unscorable; want 0, 1", partial, unscorable)
 	}
 }
 
@@ -156,7 +269,7 @@ func TestAttachPerspectiveScoresFailsOpen(t *testing.T) {
 		postDoc("at://did:plc:a/app.bsky.feed.post/2", "bad"),
 		postDoc("at://did:plc:a/app.bsky.feed.post/3", "good"),
 	}
-	scored, _, _, failed := AttachPerspectiveScores(context.Background(), testScorer(server.URL, 100, QuotaWait), docs)
+	scored, _, _, _, failed := AttachPerspectiveScores(context.Background(), testScorer(server.URL, 100, QuotaWait), docs)
 
 	if scored != 2 || failed != 1 {
 		t.Fatalf("counts = %d scored, %d failed; want 2, 1", scored, failed)
@@ -188,7 +301,7 @@ func TestAttachPerspectiveScoresStampsContentlessPosts(t *testing.T) {
 		postDoc("at://did:plc:a/app.bsky.feed.post/2", "   \n  "),
 		postDoc("at://did:plc:a/app.bsky.feed.post/3", "text"),
 	}
-	scored, unscorable, skipped, _ := AttachPerspectiveScores(context.Background(), testScorer(server.URL, 100, QuotaWait), docs)
+	scored, _, unscorable, skipped, _ := AttachPerspectiveScores(context.Background(), testScorer(server.URL, 100, QuotaWait), docs)
 
 	if scored != 1 || unscorable != 2 || skipped != 0 {
 		t.Fatalf("counts = %d scored, %d unscorable, %d skipped; want 1, 2, 0", scored, unscorable, skipped)
@@ -210,7 +323,7 @@ func TestAttachPerspectiveScoresStampsContentlessPosts(t *testing.T) {
 // change to the documents.
 func TestAttachPerspectiveScoresNilScorerIsNoOp(t *testing.T) {
 	docs := []common.PostDoc{postDoc("at://did:plc:a/app.bsky.feed.post/1", "text")}
-	scored, unscorable, skipped, failed := AttachPerspectiveScores(context.Background(), nil, docs)
+	scored, _, unscorable, skipped, failed := AttachPerspectiveScores(context.Background(), nil, docs)
 
 	if scored|unscorable|skipped|failed != 0 {
 		t.Errorf("counts = %d/%d/%d/%d, want all zero", scored, unscorable, skipped, failed)
@@ -233,7 +346,7 @@ func TestAttachPerspectiveScoresSkipModeLeavesPostsUnscored(t *testing.T) {
 	}
 	// Budget of 1/s with burst 1: one post gets through, the rest are dropped.
 	scorer := testScorerWithBurst(server.URL, 1, 1, QuotaSkip)
-	scored, _, skipped, _ := AttachPerspectiveScores(context.Background(), scorer, docs)
+	scored, _, _, skipped, _ := AttachPerspectiveScores(context.Background(), scorer, docs)
 
 	if scored != 1 {
 		t.Errorf("scored %d posts, want 1 (the burst allowance)", scored)

@@ -289,6 +289,38 @@ func TestBackfillStampsUnsupportedLanguage(t *testing.T) {
 	}
 }
 
+// A non-English post is written with the multilingual attribute scores and its
+// stamp, and no combined score — the same partial document ingest writes.
+func TestBackfillWritesPartialScoresForNonEnglish(t *testing.T) {
+	es := &fakeES{pages: [][]string{{"at://did:plc:a/app.bsky.feed.post/1"}}}
+	scoring, _, _ := nonEnglishServer(t, func(w http.ResponseWriter) {
+		_ = json.NewEncoder(w).Encode(fullScoreResponse(0.5))
+	})
+
+	stats, err := Backfill(t.Context(), es.client(t), common.NewLogger(false),
+		testScorer(scoring.URL, 1000, QuotaWait),
+		BackfillConfig{SourceIndex: "posts_recent", PageSize: 1}, false)
+	if err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+	if stats.PartiallyScored != 1 || stats.Unscorable != 0 || stats.Updated != 1 {
+		t.Errorf("stats = %+v, want 1 partially scored and 1 written", stats)
+	}
+	if len(es.bulkBodies) != 1 {
+		t.Fatalf("got %d bulk requests, want 1", len(es.bulkBodies))
+	}
+	body := es.bulkBodies[0]
+	if strings.Contains(body, "combined_perspective_score") {
+		t.Errorf("partial scores must not carry a combined score: %s", body)
+	}
+	if !strings.Contains(body, `"toxicity":0.5`) || strings.Contains(body, "reasoning_experimental") {
+		t.Errorf("want exactly the multilingual attributes written: %s", body)
+	}
+	if !strings.Contains(body, "perspective_scored_at") {
+		t.Errorf("partial scores must be stamped: %s", body)
+	}
+}
+
 // A failed post is not written at all, so the next run finds it again.
 func TestBackfillLeavesFailedPostsUnwritten(t *testing.T) {
 	es := &fakeES{pages: [][]string{{"at://did:plc:a/app.bsky.feed.post/1"}}}

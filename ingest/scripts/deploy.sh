@@ -458,25 +458,25 @@ deploy_megastream_service() {
     # secretAccessor on it (granted by gcp_setup.sh).
     #
     # GE_PERSPECTIVE_QPS is this service's slice of a 36 000 QPM (600 QPS)
-    # quota shared with the api's serving path, so raising it takes budget away
-    # from serving. GE_PERSPECTIVE_ON_QUOTA=wait throttles ingest to stay
+    # quota shared with the api's serving path and with offline scoring jobs,
+    # so raising it takes budget away from them. GE_PERSPECTIVE_ON_QUOTA=wait
+    # throttles ingest to stay
     # inside that slice; set it to "skip" to index posts unscored instead, and
     # recover them later with cmd/backfill_perspective. Watch
     # perspective.rate_limit.skipped_count to know when that is owed.
     #
-    # 141, not 150, because the limiter's bucket carries a batch-sized burst
-    # (perspectiveBurst, 512) on top of the refill rate. A token bucket admits
-    # B + R*60 in a minute, so the slice is 141*60 + 512 = 8 972 -- inside the
-    # 9 000 this service is budgeted, with serving's 26 700 and the 300 RPM
-    # buffer untouched. Changing either number means redoing that sum.
+    # The limiter's bucket carries a batch-sized burst (perspectiveBurst, 512)
+    # on top of the refill rate. A token bucket admits B + R*60 in a minute, so
+    # prod's slice is 250*60 + 512 = 15 512 and stage's is 15*60 + 512 = 1 412.
+    # Both come out of the one pool -- stage and prod deploy into the same GCP
+    # project and Perspective quota is per project. The full split, with the
+    # headroom it leaves for offline jobs, is in the PerspectiveQPS comment in
+    # internal/common/config.go; changing either number means redoing it.
     #
-    # The published split budgets for one ingest process and one serving fleet,
-    # but stage and prod deploy into the same GCP project and Perspective quota
-    # is per project, so all four deployments draw on the one pool. Stage keeps
-    # a much lower rate: its sustained draw is ~2 QPS, the burst is what makes
-    # its batches prompt, and a low ceiling still bounds a runaway.
+    # Stage keeps a much lower rate: its sustained draw is ~2 QPS, the burst is
+    # what makes its batches prompt, and a low ceiling still bounds a runaway.
     local perspective_api_key_secret="perspective-api-key-$GE_ENVIRONMENT"
-    local perspective_qps_default=141
+    local perspective_qps_default=250
     if [ "$GE_ENVIRONMENT" = "stage" ]; then
         perspective_qps_default=15
     fi

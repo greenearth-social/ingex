@@ -41,6 +41,12 @@ const (
 	// OutcomeFailed means the request was made and errored. Also leaves the
 	// document unstamped.
 	OutcomeFailed
+	// OutcomePartiallyScored means the full request was declined for its
+	// language and the MultilingualAttributes retry succeeded. Scores holds
+	// those attributes only and Combined is unset: the PRC score is not
+	// defined over a subset, and approximating it would rank posts by language.
+	// Stamped like an unsupported language — re-submitting will not help.
+	OutcomePartiallyScored
 )
 
 // ScoreResult is the outcome for a single input, in input order.
@@ -48,7 +54,7 @@ type ScoreResult struct {
 	AtURI    string
 	Outcome  Outcome
 	Scores   map[string]float64 // raw attribute scores, keyed by storage key
-	Combined float64            // PRC score in ScoreBounds
+	Combined float64            // PRC score in ScoreBounds; OutcomeScored only
 	Err      error
 }
 
@@ -153,8 +159,8 @@ func (b *BatchScorer) scoreOne(ctx context.Context, input ScoreInput) ScoreResul
 		result.Combined = PRCScore(scores)
 		b.logger.Metric("perspective.score_count", 1)
 	case errors.Is(err, ErrLanguageNotSupported):
-		result.Outcome = OutcomeUnsupportedLanguage
 		b.logger.Metric("perspective.score.unsupported_language_count", 1)
+		b.scoreMultilingual(ctx, input, &result)
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		// The scoring budget ran out with this request in flight. That is the
 		// same event as a post that never got a slot, not an API fault, and
@@ -168,6 +174,41 @@ func (b *BatchScorer) scoreOne(ctx context.Context, input ScoreInput) ScoreResul
 		b.logger.Debug("Perspective scoring failed for %s: %v", input.AtURI, err)
 	}
 	return result
+}
+
+// scoreMultilingual retries a post the API declined for its language, asking
+// only for MultilingualAttributes. It costs a second request, and takes a
+// second limiter slot for it: roughly a third to a half of Bluesky is not
+// English, so these retries are a real share of ingest's quota slice.
+//
+// Anything short of success leaves the post OutcomeUnsupportedLanguage, which
+// is exactly how it was stamped before this retry existed. That includes a
+// refused slot or a failed request, which would otherwise be left unstamped for
+// the backfill — but the backfill would repeat the full request first, spending
+// a call it already knows will be declined, to recover a score that does not
+// feed ranking. Not worth it for a path that fails tens of times a day.
+func (b *BatchScorer) scoreMultilingual(ctx context.Context, input ScoreInput, result *ScoreResult) {
+	result.Outcome = OutcomeUnsupportedLanguage
+
+	if err := b.limiter.acquire(ctx); err != nil {
+		b.logger.Metric("perspective.score.multilingual_skipped_count", 1)
+		return
+	}
+
+	scores, err := b.client.ScoreMultilingual(ctx, input.Content)
+	switch {
+	case err == nil:
+		result.Outcome = OutcomePartiallyScored
+		result.Scores = scores
+		b.logger.Metric("perspective.score.multilingual_count", 1)
+	case errors.Is(err, ErrLanguageNotSupported):
+		b.logger.Metric("perspective.score.multilingual_unsupported_count", 1)
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		b.logger.Metric("perspective.score.multilingual_skipped_count", 1)
+	default:
+		b.logger.Metric("perspective.score.multilingual_failed_count", 1)
+		b.logger.Debug("Perspective multilingual scoring failed for %s: %v", input.AtURI, err)
+	}
 }
 
 // scoringBudgetFraction is how much of a batch's remaining time Perspective may

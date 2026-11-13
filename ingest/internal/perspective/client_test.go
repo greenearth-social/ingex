@@ -94,6 +94,49 @@ func TestScoreSuccess(t *testing.T) {
 	}
 }
 
+// The retry asks for the multilingual attributes and nothing else, and checks
+// the response against what it asked for — not against the full fifteen, which
+// a multilingual response never has.
+func TestScoreMultilingualRequestsOnlyMultilingualAttributes(t *testing.T) {
+	var requested map[string]struct{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			RequestedAttributes map[string]struct{} `json:"requestedAttributes"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+		requested = body.RequestedAttributes
+		scores := make(map[string]interface{}, len(MultilingualAttributes))
+		for _, name := range MultilingualAttributes {
+			scores[name] = map[string]interface{}{
+				"summaryScore": map[string]interface{}{"value": 0.75},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"attributeScores": scores})
+	}))
+	defer server.Close()
+
+	scores, err := testClient(server.URL, 0).ScoreMultilingual(context.Background(), "日本語のテキスト")
+	if err != nil {
+		t.Fatalf("ScoreMultilingual() error = %v", err)
+	}
+	if len(requested) != len(MultilingualAttributes) {
+		t.Errorf("requested %d attributes, want %d", len(requested), len(MultilingualAttributes))
+	}
+	for _, name := range MultilingualAttributes {
+		if _, ok := requested[name]; !ok {
+			t.Errorf("did not request %s", name)
+		}
+		if got := scores[storageKey(name)]; got != 0.75 {
+			t.Errorf("scores[%s] = %v, want 0.75", storageKey(name), got)
+		}
+	}
+	if len(scores) != len(MultilingualAttributes) {
+		t.Errorf("got %d scores, want %d", len(scores), len(MultilingualAttributes))
+	}
+}
+
 // A partial response would be combined with the missing attributes treated as
 // zero, which for a negatively weighted attribute reads as "not toxic" — a
 // silently wrong score is worse than no score.

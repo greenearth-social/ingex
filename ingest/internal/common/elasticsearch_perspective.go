@@ -14,7 +14,9 @@ import (
 //
 // Scores and CombinedScore are nil for a post the API declined to score;
 // ScoredAt is still set, which is what marks it permanently unscorable rather
-// than merely not-yet-scored.
+// than merely not-yet-scored. A non-English post has Scores holding only the
+// multilingual attributes and CombinedScore nil: as far as ranking is
+// concerned it is unscorable, and its stamp keeps it out of the backfill.
 type PerspectiveUpdate struct {
 	// Index is the concrete index holding the document, as the scan reported
 	// it in _index — never an alias. A bulk update addressed to an alias is

@@ -98,7 +98,7 @@ func TestAttachPerspectiveScoresIsNoOpUntilGateOpens(t *testing.T) {
 	}
 
 	docs := []common.PostDoc{postDoc("at://did:plc:a/app.bsky.feed.post/1", "hello")}
-	scored, unscorable, skipped, failed := AttachPerspectiveScores(context.Background(), scorer, docs)
+	scored, _, unscorable, skipped, failed := AttachPerspectiveScores(context.Background(), scorer, docs)
 
 	if scored+unscorable+skipped+failed != 0 {
 		t.Errorf("counts = %d/%d/%d/%d, want all zero while gated", scored, unscorable, skipped, failed)
@@ -115,7 +115,7 @@ func TestAttachPerspectiveScoresIsNoOpUntilGateOpens(t *testing.T) {
 
 	// Opening the gate starts scoring, with no other change.
 	scorer.SetIndexReady(true)
-	scored, _, _, _ = AttachPerspectiveScores(context.Background(), scorer, docs)
+	scored, _, _, _, _ = AttachPerspectiveScores(context.Background(), scorer, docs)
 	if scored != 1 {
 		t.Errorf("scored %d after opening the gate, want 1", scored)
 	}
