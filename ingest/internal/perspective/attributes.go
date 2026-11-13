@@ -46,6 +46,22 @@ var prcWeights = map[string]float64{
 // request body is stable across runs (handy when diffing captured traffic).
 var RequestedAttributes = sortedAttributeNames()
 
+// MultilingualAttributes are the subset of RequestedAttributes that Perspective
+// scores in languages other than English. Every *_EXPERIMENTAL attribute is
+// English-only, and the API rejects a request outright if any one requested
+// attribute does not support the detected language — so without this subset a
+// non-English post gets nothing at all, not even a toxicity score.
+//
+// Probed against the live API (Nov 2026): these four accept ja, pt, de, es,
+// fr, ko and zh; every experimental attribute rejects all of them; Thai and
+// Turkish are rejected by all fifteen.
+//
+// Scores from this subset are stored but never combined. PRCScore over four of
+// fifteen attributes is not the same quantity as PRCScore over all of them, and
+// putting the two on one scale would rank posts differently by language.
+// Sorted, like RequestedAttributes.
+var MultilingualAttributes = []string{"IDENTITY_ATTACK", "INSULT", "THREAT", "TOXICITY"}
+
 // prcWeightsByStorageKey is prcWeights re-keyed by storage key. Weights are
 // declared under the API's names above so they diff cleanly against the api
 // and the PRC reference implementation, but every consumer downstream of the

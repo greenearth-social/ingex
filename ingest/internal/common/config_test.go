@@ -259,21 +259,25 @@ func TestLoadConfig_PerspectiveDefaults(t *testing.T) {
 	if config.PerspectiveEnabled() {
 		t.Error("PerspectiveEnabled() should be false without an API key")
 	}
-	// Ingest takes a slice of the 36 000 QPM (600 QPS) quota it shares with
-	// the api's serving path. 150 QPS is 9 000 QPM; the api's default is
-	// 26 700 (GE_PERSPECTIVE_QPM there). They sum to 35 700 on purpose, so
-	// 300 QPM stays unclaimed as a buffer for two limiters that live in
-	// different processes and neither of which is exact.
+	// Ingest takes a slice of the 36 000 QPM (600 QPS) per-project quota it
+	// shares with stage ingest, the api's serving path and offline scoring
+	// jobs. 250 QPS plus the 512 burst (perspectiveBurst) is 15 512 QPM; stage
+	// takes 1 412 and serving 3 000 (GE_PERSPECTIVE_QPM there), and 300 QPM
+	// stays unclaimed as a buffer for limiters that live in different
+	// processes, none of which is exact. What is left is for offline jobs.
 	//
-	// If this number changes, change the api's to match and keep the buffer —
-	// the failure mode is 429s in production, which neither side's tests can
-	// see.
-	if config.PerspectiveQPS != 150 {
-		t.Errorf("Expected PerspectiveQPS default of 150, got %d", config.PerspectiveQPS)
+	// If this number changes, redo the split in config.go — the failure mode
+	// is 429s in production, which no repo's tests can see.
+	if config.PerspectiveQPS != 250 {
+		t.Errorf("Expected PerspectiveQPS default of 250, got %d", config.PerspectiveQPS)
 	}
-	if config.PerspectiveQPS*60+26700 != 35700 {
-		t.Errorf("ingest (%d QPM) + serving (26700 QPM) = %d, want 35700 — a 300 QPM buffer under the 36000 quota",
-			config.PerspectiveQPS*60, config.PerspectiveQPS*60+26700)
+	const (
+		quota, burst, stage, serving, buffer = 36000, 512, 1412, 3000, 300
+		offlineFloor                         = 15000
+	)
+	if offline := quota - (config.PerspectiveQPS*60 + burst) - stage - serving - buffer; offline < offlineFloor {
+		t.Errorf("ingest's %d QPM leaves %d QPM for offline scoring jobs, want at least %d",
+			config.PerspectiveQPS*60+burst, offline, offlineFloor)
 	}
 	// Throttling ingest is the safe default; skipping loses scores.
 	if config.PerspectiveOnQuota != "wait" {

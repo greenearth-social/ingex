@@ -42,6 +42,10 @@ type ExtractPost struct {
 	// is a pointer so an absent score stays distinguishable from a genuine
 	// 0.0. PerspectiveScoredAt set with no combined score means "attempted,
 	// unscorable" — training must not read that as a missing row to retry.
+	// Those rows may still carry PerspectiveScores for the multilingual
+	// attributes only (toxicity, identity_attack, insult, threat): the
+	// non-English labels. A key absent from the map means "not requested",
+	// never 0.0.
 	PerspectiveScores        map[string]float64 `json:"perspective_scores,omitempty" parquet:"perspective_scores,optional"`
 	CombinedPerspectiveScore *float64           `json:"combined_perspective_score,omitempty" parquet:"combined_perspective_score,optional"`
 	PerspectiveScoredAt      string             `json:"perspective_scored_at,omitempty" parquet:"perspective_scored_at,optional"`

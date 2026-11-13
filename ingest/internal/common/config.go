@@ -95,16 +95,26 @@ type Config struct {
 	// the api off the serving path and builds the complete attribute-score
 	// corpus we need to train a replacement before the API sunsets.
 	//
-	// The 36 000 requests/minute quota is shared with the api's serving path,
-	// so PerspectiveQPS is ingest's *slice* of it, not the whole thing. The
-	// default of 150 QPS is 9 000 RPM, against the api's 26 700
-	// (GE_PERSPECTIVE_QPM there): 35 700 together, leaving a 300 RPM buffer.
+	// The 36 000 requests/minute quota is per GCP project, so PerspectiveQPS
+	// is ingest's *slice* of it, not the whole thing. The split:
+	//
+	//	prod ingest   15 512  250 QPS × 60 + 512 burst (perspectiveBurst)
+	//	stage ingest   1 412   15 QPS × 60 + 512 burst (scripts/deploy.sh)
+	//	api serving    3 000  GE_PERSPECTIVE_QPM there; a backstop now that
+	//	                      ingest scores nearly every post
+	//	buffer           300
+	//	offline       15 776  unenforced: notebooks and dataset scoring jobs
+	//	                      on the same key, which are expected to grow
+	//
+	// Prod ingest's slice is sized for the multilingual retry, which roughly
+	// adds one request per non-English post: the observed peak before it was
+	// ~7 200/min, of which ~2 800 were language rejections, so ~10 000 with
+	// it, and the slice leaves room above that for the firehose to grow.
 	//
 	// The buffer is deliberate. Neither limiter is exact — this one is a token
 	// bucket in this process, the api's is a calendar-minute bucket in each of
 	// several processes — so the true combined ceiling sits above the sum of
-	// the two numbers. Raising either without lowering the other spends the
-	// buffer.
+	// the numbers. Raising any slice spends the offline headroom first.
 	PerspectiveAPIKey         string        // GE_PERSPECTIVE_API_KEY; empty disables scoring entirely
 	PerspectiveHost           string        // GE_PERSPECTIVE_HOST, overridable for the devenv stub
 	PerspectiveQPS            int           // GE_PERSPECTIVE_QPS, this service's share of the shared quota
@@ -188,7 +198,7 @@ func LoadConfig() *Config {
 		InferenceRetryMax:          getEnvInt("GE_INFERENCE_RETRY_MAX", 3),
 		PerspectiveAPIKey:          getEnv("GE_PERSPECTIVE_API_KEY", ""),
 		PerspectiveHost:            getEnv("GE_PERSPECTIVE_HOST", ""),
-		PerspectiveQPS:             getEnvInt("GE_PERSPECTIVE_QPS", 150),
+		PerspectiveQPS:             getEnvInt("GE_PERSPECTIVE_QPS", 250),
 		PerspectiveOnQuota:         getEnv("GE_PERSPECTIVE_ON_QUOTA", "wait"),
 		PerspectiveTimeout:         getEnvDuration("GE_PERSPECTIVE_TIMEOUT", 2*time.Second),
 		PerspectiveMaxConcurrency:  getEnvInt("GE_PERSPECTIVE_MAX_CONCURRENCY", 32),

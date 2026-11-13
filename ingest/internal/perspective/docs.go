@@ -16,7 +16,10 @@ import (
 // scoring it live, and cmd/backfill_perspective can pick it up later.
 //
 // Posts that can never be scored — no text at all, or a language the API
-// declines to rate — are stamped with perspective_scored_at and no score. That
+// declines to rate — are stamped with perspective_scored_at and no score.
+// Non-English posts that the MultilingualAttributes retry could rate are
+// stamped the same way, with those raw scores attached but still no combined
+// score, so ranking treats them exactly as it did before they had any. That
 // distinction is what makes both the backfill and the api converge: an
 // unstamped post is retried forever, which for the permanently unscorable is
 // pure waste.
@@ -27,9 +30,9 @@ import (
 // the api scores them live, and the backfill can collect them later.
 //
 // Returns per-outcome counts for the caller to log.
-func AttachPerspectiveScores(ctx context.Context, b *BatchScorer, docs []common.PostDoc) (scored, unscorable, skipped, failed int) {
+func AttachPerspectiveScores(ctx context.Context, b *BatchScorer, docs []common.PostDoc) (scored, partial, unscorable, skipped, failed int) {
 	if b == nil || !b.IndexReady() || len(docs) == 0 {
-		return 0, 0, 0, 0
+		return 0, 0, 0, 0, 0
 	}
 
 	inputs := make([]ScoreInput, len(docs))
@@ -44,7 +47,7 @@ func AttachPerspectiveScores(ctx context.Context, b *BatchScorer, docs []common.
 		// holding, every post in the batch would silently receive some other
 		// post's toxicity score — far worse than no score at all.
 		b.logger.Error("Perspective returned %d results for %d posts; skipping the batch", len(results), len(docs))
-		return 0, 0, 0, len(docs)
+		return 0, 0, 0, 0, len(docs)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -57,6 +60,10 @@ func AttachPerspectiveScores(ctx context.Context, b *BatchScorer, docs []common.
 			doc.CombinedPerspectiveScore = &combined
 			doc.PerspectiveScoredAt = now
 			scored++
+		case OutcomePartiallyScored:
+			doc.PerspectiveScores = results[i].Scores
+			doc.PerspectiveScoredAt = now
+			partial++
 		case OutcomeUnsupportedLanguage, OutcomeNoContent:
 			// Stamped but unscored: permanently unscorable, so neither the
 			// backfill nor the api should ever ask about it again.
@@ -70,9 +77,10 @@ func AttachPerspectiveScores(ctx context.Context, b *BatchScorer, docs []common.
 	}
 
 	b.logger.Metric("posts.perspective.scored_count", float64(scored))
+	b.logger.Metric("posts.perspective.partially_scored_count", float64(partial))
 	b.logger.Metric("posts.perspective.unscorable_count", float64(unscorable))
 	b.logger.Metric("posts.perspective.skipped_count", float64(skipped))
 	b.logger.Metric("posts.perspective.failed_count", float64(failed))
 
-	return scored, unscorable, skipped, failed
+	return scored, partial, unscorable, skipped, failed
 }

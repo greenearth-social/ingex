@@ -2,6 +2,7 @@ package perspective
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -177,5 +178,23 @@ func TestStorageKeysMatchRequestedAttributes(t *testing.T) {
 	}
 	if got := storageKey("MORAL_OUTRAGE_EXPERIMENTAL"); got != "moral_outrage_experimental" {
 		t.Errorf("storageKey lowercases: got %q", got)
+	}
+}
+
+// The multilingual retry's scores are stored alongside full ones, under the
+// same storage keys, so every multilingual attribute must be one the full
+// request also asks for. None may be experimental: those are English-only, and
+// one English-only attribute is enough for the API to decline the whole retry.
+func TestMultilingualAttributesAreANonExperimentalSubset(t *testing.T) {
+	for i, name := range MultilingualAttributes {
+		if _, ok := prcWeights[name]; !ok {
+			t.Errorf("%s is not a PRC attribute", name)
+		}
+		if strings.HasSuffix(name, "_EXPERIMENTAL") {
+			t.Errorf("%s is English-only and would get the retry declined", name)
+		}
+		if i > 0 && MultilingualAttributes[i-1] >= name {
+			t.Errorf("MultilingualAttributes is not sorted at %s", name)
+		}
 	}
 }

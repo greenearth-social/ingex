@@ -90,9 +90,11 @@ type PostDoc struct {
 	// All three are omitempty and travel together. CombinedPerspectiveScore is
 	// a pointer because 0.0 is a meaningful score (maximally toxic) that a
 	// plain float64 would omit. PerspectiveScoredAt set with no combined score
-	// means "attempted, unscorable" — nearly always non-English text the API
-	// declines to rate — and is what stops the api re-querying those posts
-	// forever. All three absent means "not scored yet".
+	// means "attempted, no PRC score" — nearly always non-English text — and
+	// is what stops the api re-querying those posts forever. Such a post may
+	// still carry PerspectiveScores: the multilingual attributes only
+	// (perspective.MultilingualAttributes), which the PRC formula cannot be
+	// computed from. All three absent means "not scored yet".
 	PerspectiveScores        map[string]float64 `json:"perspective_scores,omitempty"`
 	CombinedPerspectiveScore *float64           `json:"combined_perspective_score,omitempty"`
 	PerspectiveScoredAt      string             `json:"perspective_scored_at,omitempty"`

@@ -45,9 +45,10 @@ var ErrQuotaExhausted = errors.New("perspective quota exhausted")
 
 // limiter caps requests to our share of the Perspective quota.
 //
-// The quota is 36 000 requests per minute, shared between this service and the
-// api's serving path, so ingest takes a configured slice of it — 8 460 RPM by
-// default, against serving's 26 700. A token bucket rather than the
+// The quota is 36 000 requests per minute, shared between this service, the
+// api's serving path and offline scoring jobs, so ingest takes a configured
+// slice of it — see the PerspectiveQPS comment in common/config.go for the
+// whole split. A token bucket rather than the
 // calendar-minute counter the api uses, because the refill rate bounds
 // sustained draw over every window rather than resetting on a wall-clock edge.
 //
@@ -60,20 +61,19 @@ var ErrQuotaExhausted = errors.New("perspective quota exhausted")
 //
 // The arithmetic that matters: a bucket with burst B and rate R admits at most
 // B + R×T over a window T, so the true per-minute ceiling is R×60 + B, not
-// R×60. The slice numbers above are chosen against that, not against R×60 —
-// 141×60 + 512 = 8 972, inside 9 000 with the 300 RPM buffer untouched. Raising
-// perspectiveBurst or GE_PERSPECTIVE_QPS means redoing that sum.
+// R×60. The slice numbers are chosen against that, not against R×60 —
+// 250×60 + 512 = 15 512 for prod. Raising perspectiveBurst or
+// GE_PERSPECTIVE_QPS means redoing that sum.
 //
 // Note this is a per-process limit. That is correct here only because
 // megastream_ingest runs a single instance (it owns one cursor); anything that
 // scales out would need a shared counter.
 //
-// It is also per *environment*, which the 9 000 figure does not by itself
-// account for: stage and prod deploy into the same GCP project and Perspective
-// quota is per project, so stage ingest spends from the same pool. Its ceiling
-// is scaled down at deploy time instead (scripts/deploy.sh), by the same factor
-// ShouldSampleDID drops posts at, since stage ingests a tenth of the stream and
-// so can never want more than a tenth of the rate.
+// It is also per *environment*: stage and prod deploy into the same GCP project
+// and Perspective quota is per project, so stage ingest spends from the same
+// pool. Its ceiling is scaled down at deploy time instead (scripts/deploy.sh),
+// by the same factor ShouldSampleDID drops posts at, since stage ingests a
+// tenth of the stream and so can never want more than a tenth of the rate.
 type limiter struct {
 	rl     *rate.Limiter
 	policy QuotaPolicy

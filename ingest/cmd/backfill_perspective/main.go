@@ -110,9 +110,9 @@ func main() {
 		MaxPosts:    *maxPosts,
 	}, *dryRun)
 
-	logger.Info("Backfill finished in %s: %d scanned, %d scored, %d unscorable, %d skipped, %d failed, %d written, %d pages",
+	logger.Info("Backfill finished in %s: %d scanned, %d scored, %d partially scored, %d unscorable, %d skipped, %d failed, %d written, %d pages",
 		time.Since(start).Round(time.Second),
-		stats.Scanned, stats.Scored, stats.Unscorable, stats.Skipped, stats.Failed, stats.Updated, stats.Pages)
+		stats.Scanned, stats.Scored, stats.PartiallyScored, stats.Unscorable, stats.Skipped, stats.Failed, stats.Updated, stats.Pages)
 
 	if err != nil {
 		logger.Error("%v", err)

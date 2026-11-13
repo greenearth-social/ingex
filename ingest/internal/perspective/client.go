@@ -84,9 +84,9 @@ type analyzeResponse struct {
 	} `json:"attributeScores"`
 }
 
-func requestedAttributesPayload() map[string]struct{} {
-	payload := make(map[string]struct{}, len(RequestedAttributes))
-	for _, name := range RequestedAttributes {
+func requestedAttributesPayload(attributes []string) map[string]struct{} {
+	payload := make(map[string]struct{}, len(attributes))
+	for _, name := range attributes {
 		payload[name] = struct{}{}
 	}
 	return payload
@@ -97,9 +97,20 @@ func requestedAttributesPayload() map[string]struct{} {
 //
 // Returns ErrLanguageNotSupported for text the API declines to score.
 func (c *Client) Score(ctx context.Context, text string) (map[string]float64, error) {
+	return c.scoreAttributes(ctx, text, RequestedAttributes)
+}
+
+// ScoreMultilingual is Score restricted to MultilingualAttributes: the request
+// to make once Score has returned ErrLanguageNotSupported. It can return
+// ErrLanguageNotSupported too, for languages none of the attributes cover.
+func (c *Client) ScoreMultilingual(ctx context.Context, text string) (map[string]float64, error) {
+	return c.scoreAttributes(ctx, text, MultilingualAttributes)
+}
+
+func (c *Client) scoreAttributes(ctx context.Context, text string, attributes []string) (map[string]float64, error) {
 	body, err := json.Marshal(analyzeRequest{
 		Comment:             analyzeComment{Text: text},
-		RequestedAttributes: requestedAttributesPayload(),
+		RequestedAttributes: requestedAttributesPayload(attributes),
 		// Bluesky posts are public, but we have no need for Google to retain
 		// them and every reason not to hand over a copy of the firehose.
 		DoNotStore: true,
@@ -109,12 +120,12 @@ func (c *Client) Score(ctx context.Context, text string) (map[string]float64, er
 	}
 
 	start := time.Now()
-	scores, err := c.doWithRetries(ctx, body)
+	scores, err := c.doWithRetries(ctx, body, attributes)
 	c.logger.Metric("perspective.score.duration_ms", float64(time.Since(start).Milliseconds()))
 	return scores, err
 }
 
-func (c *Client) doWithRetries(ctx context.Context, body []byte) (map[string]float64, error) {
+func (c *Client) doWithRetries(ctx context.Context, body []byte, attributes []string) (map[string]float64, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -127,7 +138,7 @@ func (c *Client) doWithRetries(ctx context.Context, body []byte) (map[string]flo
 			}
 		}
 
-		scores, retryable, err := c.doOnce(ctx, body)
+		scores, retryable, err := c.doOnce(ctx, body, attributes)
 		if err == nil {
 			return scores, nil
 		}
@@ -140,9 +151,9 @@ func (c *Client) doWithRetries(ctx context.Context, body []byte) (map[string]flo
 	return nil, fmt.Errorf("perspective request failed after %d attempts: %w", c.config.MaxRetries+1, lastErr)
 }
 
-// doOnce performs a single request. The second return value reports whether
-// the failure is worth retrying.
-func (c *Client) doOnce(ctx context.Context, body []byte) (map[string]float64, bool, error) {
+// doOnce performs a single request for attributes. The second return value
+// reports whether the failure is worth retrying.
+func (c *Client) doOnce(ctx context.Context, body []byte, attributes []string) (map[string]float64, bool, error) {
 	endpoint := c.config.Host + analyzePath + "?key=" + url.QueryEscape(c.config.APIKey)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -185,8 +196,8 @@ func (c *Client) doOnce(ctx context.Context, body []byte) (map[string]float64, b
 		return nil, false, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	scores := make(map[string]float64, len(RequestedAttributes))
-	for _, name := range RequestedAttributes {
+	scores := make(map[string]float64, len(attributes))
+	for _, name := range attributes {
 		attr, ok := parsed.AttributeScores[name]
 		if !ok {
 			// A partial response would silently become a score computed with
