@@ -60,6 +60,7 @@ ingest/
 │       └── client.go               # WebSocket client
 ├── scripts/
 │   ├── deploy.sh                                      # Deployment automation
+│   ├── jetstream_health.py                            # Post-deploy health check for jetstream-ingest
 │   ├── gcp_setup.sh                                   # GCP environment setup
 │   ├── ingestctl.sh                                   # Control script for ingest services
 │   ├── k8s_recreate_api_key.sh                        # Recreate Elasticsearch API key
@@ -263,6 +264,32 @@ service and job in two places:
   past deployments are identifiable when choosing a rollback target
   (`./scripts/rollback.sh --list`, see [Rolling back a
   deployment](#rolling-back-a-deployment)).
+
+### Verifying a jetstream deploy
+
+`scripts/jetstream_health.py` checks the revision currently serving
+`jetstream-ingest` against the window just before it went live, and exits `0`
+(healthy), `1` (unhealthy, with reasons) or `2` (too early to tell). Run it
+about three minutes after `deploy.sh jetstream` returns, and before promoting
+the same commit from stage to prod:
+
+```bash
+./scripts/deploy.sh jetstream --environment stage
+# ~3 minutes later:
+./scripts/jetstream_health.py --environment stage && \
+  ./scripts/deploy.sh jetstream --environment prod
+# ~3 minutes later:
+./scripts/jetstream_health.py --environment prod
+```
+
+It checks that the revision is Ready at 100% traffic, that inbound event volume
+has not collapsed against the baseline, that the cursor is persisting, and that
+the serving revision has no crash/restart logs and has stopped logging errors.
+A few `[ERROR]` lines at the cutover — typically an ES `409
+version_conflict_engine_exception` on a like-count update while the old and new
+revisions overlap — are normal and do not fail it. `--minutes N` drops the
+before/after comparison for a plain health read; `--since` sets the cutover
+time explicitly. See the script's docstring for the exact thresholds.
 
 ### Rolling back a deployment
 
