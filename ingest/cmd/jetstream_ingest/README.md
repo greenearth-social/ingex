@@ -73,6 +73,22 @@ Every like-count update re-indexes the whole post, including its embedding vecto
 
 Held counts are written on shutdown, ten chunks at a time so a full interval's worth (~25 000 posts in prod) fits in the five-second drain. A periodic flush interrupted by shutdown hands back whatever it hadn't sent, so the shutdown flush covers it too. Anything that still doesn't finish is lost, since the cursor has already moved past those likes, and is reported as `like_counts.flush_abandoned_count` with an error log. A crash skips the shutdown flush entirely, so popular posts can drift low by up to one interval's likes per crash, which is accepted.
 
+### Like-History Invalidation
+
+The API caches each user's recent like history in Firestore
+(`user_history_cache`), which feeds its two-tower retrieval and heavy ranker.
+For the users it tracks for follow deltas (`precompute_artifacts`), jetstream
+marks that cache stale (`invalidated_at`) when one of them likes or unlikes a
+post, so the API can keep the history for hours otherwise (api#602).
+
+A newly indexed like is only searchable after the likes index refreshes
+(30 s), so a user is marked once `GE_HISTORY_INVALIDATION_DELAY_SEC` (default
+40) has passed since their latest indexed like, and at least every
+`GE_HISTORY_INVALIDATION_MAX_WAIT_SEC` (default 120) while they keep liking.
+It uses the same Firestore client as follow deltas, so it is off when
+`GE_FIRESTORE_PROJECT` is unset. Metrics: `jetstream.history_invalidations_count`
+and `jetstream.history_invalidation_failures_count`.
+
 ### Graceful Shutdown
 
 The service responds to SIGINT and SIGTERM by stopping intake, allowing up to five seconds to drain queued work and save the cursor, then releasing ownership. Drain, lease release, and the final metric export are each bounded so the whole sequence fits inside Cloud Run's 10-second window between SIGTERM and SIGKILL; if the release is cut off anyway, the successor takes over when the lease expires.

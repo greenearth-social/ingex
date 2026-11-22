@@ -132,6 +132,12 @@ type Config struct {
 	FirestoreEmulatorHost    string // GE_FIRESTORE_EMULATOR_HOST, for devenv
 	FollowsTrackedRefreshSec int    // GE_FOLLOWS_TRACKED_REFRESH_SEC, default 3600
 	FollowsWriteBuffer       int    // GE_FOLLOWS_WRITE_BUFFER, default 1024
+
+	// Like-history invalidation for the same tracked users (api#602). A user is
+	// marked once their latest indexed like is searchable (the likes index
+	// refreshes every 30 s), and at least every max-wait while they keep liking.
+	HistoryInvalidationDelaySec   int // GE_HISTORY_INVALIDATION_DELAY_SEC, default 40
+	HistoryInvalidationMaxWaitSec int // GE_HISTORY_INVALIDATION_MAX_WAIT_SEC, default 120
 }
 
 // PerspectiveEnabled reports whether posts should be scored at ingest. An
@@ -208,6 +214,9 @@ func LoadConfig() *Config {
 		FirestoreEmulatorHost:      getEnv("GE_FIRESTORE_EMULATOR_HOST", ""),
 		FollowsTrackedRefreshSec:   getEnvInt("GE_FOLLOWS_TRACKED_REFRESH_SEC", 3600),
 		FollowsWriteBuffer:         getEnvInt("GE_FOLLOWS_WRITE_BUFFER", 1024),
+
+		HistoryInvalidationDelaySec:   getEnvInt("GE_HISTORY_INVALIDATION_DELAY_SEC", 40),
+		HistoryInvalidationMaxWaitSec: getEnvInt("GE_HISTORY_INVALIDATION_MAX_WAIT_SEC", 120),
 	}
 }
 

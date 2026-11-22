@@ -2,6 +2,8 @@ package common
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -11,14 +13,16 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Firestore is the API's datastore, not ours — ingest owns Elasticsearch. The
-// one thing we write here is follow deltas for the API's per-user
-// followed-users cache (api#83), because jetstream is the only place on the
-// system that sees follow and unfollow events as they happen.
+// Firestore is the API's datastore, not ours — ingest owns Elasticsearch. We
+// write two things here, both because jetstream is the only place on the
+// system that sees user activity as it happens: follow deltas for the API's
+// per-user followed-users cache (api#83), and a staleness mark on the API's
+// per-user like-history cache when a tracked user likes something (api#602).
 
 const (
 	usersCollection              = "users"
 	followedUsersCacheCollection = "followed_users_cache"
+	userHistoryCacheCollection   = "user_history_cache"
 
 	// Prefix stripped from a DID to form a Firestore document ID. Mirrors
 	// app.lib.firestore.user_doc_id in the API: colons in a document ID break
@@ -144,6 +148,42 @@ func (s *FirestoreFollowStore) tolerateMissing(err error, userDocID string) erro
 	}
 	if status.Code(err) == codes.NotFound {
 		s.logger.Debug("No followed-users cache entry for %s yet; dropping delta", userDocID)
+		return nil
+	}
+	return err
+}
+
+// UserHistoryCacheDocID maps a DID to its document ID in the API's
+// user_history_cache collection: the hex SHA-256 of the full DID. Mirrors
+// app.lib.user_history_cache._user_history_cache_key in the API.
+func UserHistoryCacheDocID(did string) string {
+	sum := sha256.Sum256([]byte(did))
+	return hex.EncodeToString(sum[:])
+}
+
+// FirestoreHistoryStore marks entries of the API's like-history cache stale.
+type FirestoreHistoryStore struct {
+	client *firestore.Client
+	logger *IngestLogger
+}
+
+// NewFirestoreHistoryStore returns a store backed by the given Firestore client.
+func NewFirestoreHistoryStore(client *firestore.Client, logger *IngestLogger) *FirestoreHistoryStore {
+	return &FirestoreHistoryStore{client: client, logger: logger}
+}
+
+// MarkHistoryStale stamps invalidated_at on did's cached like history.
+//
+// The API treats an entry whose invalidated_at is later than the start of the
+// fetch that produced it as stale: it serves it once more and refreshes it in
+// the background. Update rather than Set: a user with no cached history has
+// nothing to invalidate, and creating a document here would leave one with no
+// history in it.
+func (s *FirestoreHistoryStore) MarkHistoryStale(ctx context.Context, did string) error {
+	_, err := s.client.Collection(userHistoryCacheCollection).Doc(UserHistoryCacheDocID(did)).Update(
+		ctx, []firestore.Update{{Path: "invalidated_at", Value: firestore.ServerTimestamp}},
+	)
+	if err != nil && status.Code(err) == codes.NotFound {
 		return nil
 	}
 	return err
