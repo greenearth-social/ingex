@@ -228,6 +228,7 @@ func runIngestion(ctx, workCtx context.Context, config *common.Config, logger *c
 	// client cannot be built, ingestion carries on exactly as before and the
 	// API falls back to its TTL refresh.
 	var followWriter *jetstream_ingest.FollowWriter
+	var historyInvalidator *jetstream_ingest.HistoryInvalidator
 	var followFirestore *firestore.Client
 	if !dryRun && config.FollowCacheEnabled() {
 		followFirestore, err = common.NewFirestoreClient(ctx, config.FirestoreProject, config.FirestoreDatabase)
@@ -244,6 +245,19 @@ func runIngestion(ctx, workCtx context.Context, config *common.Config, logger *c
 
 			followWriter = jetstream_ingest.NewFollowWriter(followStore, trackedUsers, logger, config.FollowsWriteBuffer)
 			go followWriter.Run(workCtx)
+
+			historyInvalidator = jetstream_ingest.NewHistoryInvalidator(
+				common.NewFirestoreHistoryStore(followFirestore, logger),
+				trackedUsers,
+				logger,
+				time.Duration(config.HistoryInvalidationDelaySec)*time.Second,
+				time.Duration(config.HistoryInvalidationMaxWaitSec)*time.Second,
+			)
+			background.Add(1)
+			go func() {
+				defer background.Done()
+				historyInvalidator.Run(ctx, 5*time.Second)
+			}()
 			defer func() {
 				followWriter.Close()
 				<-followWriter.Done()
@@ -482,7 +496,7 @@ func runIngestion(ctx, workCtx context.Context, config *common.Config, logger *c
 		var wg sync.WaitGroup
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go esWorker(workCtx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, qualityCfg, coalescer, &wg)
+			go esWorker(workCtx, i, batchChan, esClient, &cursorMu, &pendingCursor, &hasPendingUpdate, &pendingBatchCount, &pendingSkipCount, dryRun, logger, qualityCfg, coalescer, historyInvalidator, &wg)
 		}
 		wg.Wait()
 		close(workersDone)
@@ -897,7 +911,7 @@ func flushLikeCounts(stopCtx, writeCtx context.Context, esClient *elasticsearch.
 }
 
 // esWorker processes batches of documents and writes them to Elasticsearch
-func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, qualityCfg *common.QualityPromotionConfig, coalescer *common.LikeCountCoalescer, wg *sync.WaitGroup) {
+func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *elasticsearch.Client, cursorMu *sync.Mutex, pendingCursor *int64, hasPendingUpdate *bool, pendingBatchCount *int, pendingSkipCount *int, dryRun bool, logger *common.IngestLogger, qualityCfg *common.QualityPromotionConfig, coalescer *common.LikeCountCoalescer, historyInvalidator *jetstream_ingest.HistoryInvalidator, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	batchCounter := 0
@@ -938,6 +952,13 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 							logger.Debug("Worker %d: Deleted %d likes (freshness: %ds)", id, len(job.deleteBatch), freshnessSeconds)
 						}
 
+						// An unlike changes the author's like history too.
+						unliked := make([]common.LikeDoc, len(job.tombstoneBatch))
+						for i, tombstone := range job.tombstoneBatch {
+							unliked[i] = common.LikeDoc{AuthorDID: tombstone.AuthorDID}
+						}
+						historyInvalidator.NoteIndexed(unliked)
+
 						// Decrement like counts on posts
 						updates := make([]common.LikeCountUpdate, len(job.tombstoneBatch))
 						for i, tombstone := range job.tombstoneBatch {
@@ -964,6 +985,8 @@ func esWorker(ctx context.Context, id int, batchChan <-chan batchJob, esClient *
 				} else {
 					logger.Debug("Worker %d: Indexed %d likes (skipped: %d, freshness: %ds)", id, job.batchCount, job.skipCount, freshnessSeconds)
 				}
+
+				historyInvalidator.NoteIndexed(job.batch)
 
 				// Update like counts on posts
 				updates := make([]common.LikeCountUpdate, len(job.batch))
